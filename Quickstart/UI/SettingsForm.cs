@@ -57,13 +57,13 @@ public sealed class SettingsForm : Form
         {
             Text = config.TotalCommanderPath,
             Dock = DockStyle.Fill,
-            Margin = new Padding(0)
+            Margin = new Padding(0),
+            Anchor = AnchorStyles.Left | AnchorStyles.Right
         };
         var tcBrowseBtn = new Button
         {
             Text = "...",
             Width = 44,
-            Height = 30,
             Font = new Font("Segoe UI", 9f),
             Margin = new Padding(8, 0, 0, 0)
         };
@@ -81,8 +81,6 @@ public sealed class SettingsForm : Form
         var tcDetectBtn = new Button
         {
             Text = "自动检测",
-            Width = 90,
-            Height = 30,
             FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 9f),
             Margin = new Padding(8, 0, 0, 0),
@@ -92,6 +90,14 @@ public sealed class SettingsForm : Form
         tcDetectBtn.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
         tcDetectBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(236, 239, 243);
         tcDetectBtn.FlatAppearance.MouseDownBackColor = Color.FromArgb(224, 229, 235);
+
+        // Keep textbox and path action buttons visually aligned across DPI scales.
+        var pathRowHeight = Math.Max(_tcPathBox.PreferredHeight + 2, 30);
+        _tcPathBox.MinimumSize = new Size(0, pathRowHeight);
+        tcBrowseBtn.Size = new Size(44, pathRowHeight);
+        var detectTextWidth = TextRenderer.MeasureText(tcDetectBtn.Text, tcDetectBtn.Font).Width;
+        tcDetectBtn.Size = new Size(Math.Max(104, detectTextWidth + 24), pathRowHeight);
+
         tcDetectBtn.Click += (_, _) =>
         {
             var detected = TcDetector.Detect();
@@ -184,19 +190,30 @@ public sealed class SettingsForm : Form
             Margin = new Padding(0, 10, 0, 0)
         };
 
+        var pathActions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+            Dock = DockStyle.None,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0)
+        };
+        pathActions.Controls.Add(tcBrowseBtn);
+        pathActions.Controls.Add(tcDetectBtn);
+
         var tcPathRow = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 3,
+            ColumnCount = 2,
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 6)
         };
         tcPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         tcPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        tcPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         tcPathRow.Controls.Add(_tcPathBox, 0, 0);
-        tcPathRow.Controls.Add(tcBrowseBtn, 1, 0);
-        tcPathRow.Controls.Add(tcDetectBtn, 2, 0);
+        tcPathRow.Controls.Add(pathActions, 1, 0);
 
         var openRow = new TableLayoutPanel
         {
@@ -232,6 +249,16 @@ public sealed class SettingsForm : Form
         root.Controls.Add(infoLabel, 0, 7);
 
         Controls.Add(root);
+
+        var exePath = Application.ExecutablePath;
+        var buildTag = exePath.Contains("\\Debug\\", StringComparison.OrdinalIgnoreCase)
+            ? "Debug"
+            : exePath.Contains("\\Release\\", StringComparison.OrdinalIgnoreCase)
+                ? "Release"
+                : exePath.Contains("\\publish\\", StringComparison.OrdinalIgnoreCase)
+                    ? "Publish"
+                    : "Custom";
+        Text = $"Quickstart 设置 [{buildTag}]";
     }
 
     private void OnSave(object? sender, EventArgs e)
