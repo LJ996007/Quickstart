@@ -1,6 +1,7 @@
 namespace Quickstart.UI;
 
 using Quickstart.Models;
+using Quickstart.Utils;
 
 public sealed class EntryEditForm : Form
 {
@@ -17,7 +18,7 @@ public sealed class EntryEditForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
 
         Text = string.IsNullOrEmpty(entry.Name) ? "添加条目" : "编辑条目";
-        Size = new Size(500, 270);
+        Size = new Size(500, 310);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -49,6 +50,7 @@ public sealed class EntryEditForm : Form
             Font = new Font("Segoe UI", 9f)
         };
         browseBtn.Click += OnBrowse;
+        ButtonStyler.ApplySecondary(browseBtn);
 
         var typeLabel = new Label { Text = "类型:", Location = new Point(16, 92), AutoSize = true };
         _typeBox = new ComboBox
@@ -72,25 +74,23 @@ public sealed class EntryEditForm : Form
         {
             Text = "确定",
             DialogResult = DialogResult.OK,
-            Location = new Point(278, 180),
+            Location = new Point(278, 205),
             Width = 88,
             Height = 34,
-            BackColor = Color.FromArgb(59, 130, 246),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 9f)
         };
-        okBtn.FlatAppearance.BorderSize = 0;
+        ButtonStyler.ApplyPrimary(okBtn);
 
         var cancelBtn = new Button
         {
             Text = "取消",
             DialogResult = DialogResult.Cancel,
-            Location = new Point(372, 180),
+            Location = new Point(372, 205),
             Width = 88,
             Height = 34,
             Font = new Font("Segoe UI", 9f)
         };
+        ButtonStyler.ApplySecondary(cancelBtn);
 
         AcceptButton = okBtn;
         CancelButton = cancelBtn;

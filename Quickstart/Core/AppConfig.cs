@@ -6,6 +6,7 @@ public enum OpenWith
 {
     TotalCommander,
     Explorer,
+    DirectoryOpus,
     LastUsed
 }
 
@@ -13,6 +14,7 @@ public sealed class AppConfig
 {
     public List<QuickEntry> Entries { get; set; } = [];
     public string TotalCommanderPath { get; set; } = string.Empty;
+    public string DirectoryOpusPath { get; set; } = string.Empty;
     public OpenWith DefaultOpenWith { get; set; } = OpenWith.TotalCommander;
     public bool StartWithWindows { get; set; }
     public bool ShellMenuEnabled { get; set; }

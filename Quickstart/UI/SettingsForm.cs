@@ -1,11 +1,13 @@
 namespace Quickstart.UI;
 
 using Quickstart.Core;
+using Quickstart.Utils;
 
 public sealed class SettingsForm : Form
 {
     private readonly ConfigManager _configManager;
     private readonly TextBox _tcPathBox;
+    private readonly TextBox _dopusPathBox;
     private readonly ComboBox _openWithBox;
     private readonly CheckBox _startupCheck;
     private readonly CheckBox _shellMenuCheck;
@@ -18,8 +20,8 @@ public sealed class SettingsForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
 
         Text = "Quickstart 设置";
-        ClientSize = new Size(580, 340);
-        MinimumSize = new Size(620, 380);
+        ClientSize = new Size(580, 420);
+        MinimumSize = new Size(620, 460);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -31,12 +33,14 @@ public sealed class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 8,
+            RowCount = 10,
             AutoSize = false,
             Margin = new Padding(0),
             Padding = new Padding(0)
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -67,6 +71,7 @@ public sealed class SettingsForm : Form
             Font = new Font("Segoe UI", 9f),
             Margin = new Padding(8, 0, 0, 0)
         };
+        ButtonStyler.ApplySecondary(tcBrowseBtn);
         tcBrowseBtn.Click += (_, _) =>
         {
             using var dlg = new OpenFileDialog
@@ -81,15 +86,10 @@ public sealed class SettingsForm : Form
         var tcDetectBtn = new Button
         {
             Text = "自动检测",
-            FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 9f),
-            Margin = new Padding(8, 0, 0, 0),
-            BackColor = Color.FromArgb(244, 246, 248),
-            ForeColor = Color.FromArgb(55, 65, 81)
+            Margin = new Padding(8, 0, 0, 0)
         };
-        tcDetectBtn.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
-        tcDetectBtn.FlatAppearance.MouseOverBackColor = Color.FromArgb(236, 239, 243);
-        tcDetectBtn.FlatAppearance.MouseDownBackColor = Color.FromArgb(224, 229, 235);
+        ButtonStyler.ApplySecondary(tcDetectBtn);
 
         // Keep textbox and path action buttons visually aligned across DPI scales.
         var pathRowHeight = Math.Max(_tcPathBox.PreferredHeight + 2, 30);
@@ -114,6 +114,90 @@ public sealed class SettingsForm : Form
             }
         };
 
+        // Directory Opus Path
+        var doLabel = new Label
+        {
+            Text = "Directory Opus 路径:",
+            AutoSize = true,
+            Margin = new Padding(0, 8, 0, 8)
+        };
+        _dopusPathBox = new TextBox
+        {
+            Text = config.DirectoryOpusPath,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0),
+            Anchor = AnchorStyles.Left | AnchorStyles.Right
+        };
+        var doBrowseBtn = new Button
+        {
+            Text = "...",
+            Width = 44,
+            Font = new Font("Segoe UI", 9f),
+            Margin = new Padding(8, 0, 0, 0)
+        };
+        ButtonStyler.ApplySecondary(doBrowseBtn);
+        _dopusPathBox.MinimumSize = new Size(0, pathRowHeight);
+        doBrowseBtn.Size = new Size(44, pathRowHeight);
+        doBrowseBtn.Click += (_, _) =>
+        {
+            using var dlg = new OpenFileDialog
+            {
+                Filter = "Directory Opus|dopus.exe|所有文件|*.*",
+                Title = "选择 Directory Opus 可执行文件"
+            };
+            if (dlg.ShowDialog(this) == DialogResult.OK)
+                _dopusPathBox.Text = dlg.FileName;
+        };
+
+        var doDetectBtn = new Button
+        {
+            Text = "自动检测",
+            Font = new Font("Segoe UI", 9f),
+            Margin = new Padding(8, 0, 0, 0)
+        };
+        ButtonStyler.ApplySecondary(doDetectBtn);
+        doDetectBtn.Size = new Size(tcDetectBtn.Width, pathRowHeight);
+        doDetectBtn.Click += (_, _) =>
+        {
+            var detected = DopusDetector.Detect();
+            if (detected != null)
+            {
+                _dopusPathBox.Text = detected;
+                MessageBox.Show($"检测到 Directory Opus:\n{detected}", "自动检测",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+            }
+            else
+            {
+                MessageBox.Show("未检测到 Directory Opus，请手动指定路径。", "自动检测",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            }
+        };
+
+        var doPathActions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+            Dock = DockStyle.None,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0)
+        };
+        doPathActions.Controls.Add(doBrowseBtn);
+        doPathActions.Controls.Add(doDetectBtn);
+
+        var dopusPathRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 6)
+        };
+        dopusPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        dopusPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        dopusPathRow.Controls.Add(_dopusPathBox, 0, 0);
+        dopusPathRow.Controls.Add(doPathActions, 1, 0);
+
         // Default open with
         var openLabel = new Label
         {
@@ -127,8 +211,13 @@ public sealed class SettingsForm : Form
             Dock = DockStyle.Fill,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
-        _openWithBox.Items.AddRange(["Total Commander", "资源管理器"]);
-        _openWithBox.SelectedIndex = config.DefaultOpenWith == OpenWith.TotalCommander ? 0 : 1;
+        _openWithBox.Items.AddRange(["Total Commander", "资源管理器", "Directory Opus"]);
+        _openWithBox.SelectedIndex = config.DefaultOpenWith switch
+        {
+            OpenWith.DirectoryOpus => 2,
+            OpenWith.Explorer => 1,
+            _ => 0
+        };
 
         // Start with Windows
         _startupCheck = new CheckBox
@@ -154,13 +243,10 @@ public sealed class SettingsForm : Form
             Text = "保存",
             Width = 84,
             Height = 34,
-            BackColor = Color.FromArgb(59, 130, 246),
-            ForeColor = Color.White,
-            FlatStyle = FlatStyle.Flat,
             Font = new Font("Segoe UI", 9f),
             Margin = new Padding(8, 0, 0, 0)
         };
-        okBtn.FlatAppearance.BorderSize = 0;
+        ButtonStyler.ApplyPrimary(okBtn);
         okBtn.Click += OnSave;
 
         var cancelBtn = new Button
@@ -172,6 +258,7 @@ public sealed class SettingsForm : Form
             Font = new Font("Segoe UI", 9f),
             Margin = new Padding(8, 0, 0, 0)
         };
+        ButtonStyler.ApplySecondary(cancelBtn);
 
         AcceptButton = okBtn;
         CancelButton = cancelBtn;
@@ -242,11 +329,13 @@ public sealed class SettingsForm : Form
 
         root.Controls.Add(tcLabel, 0, 0);
         root.Controls.Add(tcPathRow, 0, 1);
-        root.Controls.Add(openRow, 0, 2);
-        root.Controls.Add(_startupCheck, 0, 3);
-        root.Controls.Add(_shellMenuCheck, 0, 4);
-        root.Controls.Add(buttonsRow, 0, 6);
-        root.Controls.Add(infoLabel, 0, 7);
+        root.Controls.Add(doLabel, 0, 2);
+        root.Controls.Add(dopusPathRow, 0, 3);
+        root.Controls.Add(openRow, 0, 4);
+        root.Controls.Add(_startupCheck, 0, 5);
+        root.Controls.Add(_shellMenuCheck, 0, 6);
+        root.Controls.Add(buttonsRow, 0, 8);
+        root.Controls.Add(infoLabel, 0, 9);
 
         Controls.Add(root);
 
@@ -265,7 +354,13 @@ public sealed class SettingsForm : Form
     {
         var config = _configManager.Config;
         config.TotalCommanderPath = _tcPathBox.Text.Trim();
-        config.DefaultOpenWith = _openWithBox.SelectedIndex == 0 ? OpenWith.TotalCommander : OpenWith.Explorer;
+        config.DirectoryOpusPath = _dopusPathBox.Text.Trim();
+        config.DefaultOpenWith = _openWithBox.SelectedIndex switch
+        {
+            2 => OpenWith.DirectoryOpus,
+            1 => OpenWith.Explorer,
+            _ => OpenWith.TotalCommander
+        };
 
         // Handle startup
         var startupChanged = config.StartWithWindows != _startupCheck.Checked;

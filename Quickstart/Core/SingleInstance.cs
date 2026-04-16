@@ -1,8 +1,6 @@
 namespace Quickstart.Core;
 
 using System.IO.Pipes;
-using System.Security.Cryptography;
-using System.Text;
 
 public sealed class SingleInstance : IDisposable
 {
@@ -17,9 +15,8 @@ public sealed class SingleInstance : IDisposable
 
     public SingleInstance()
     {
-        var instanceKey = BuildInstanceKey();
-        _mutexName = $"Quickstart_SingleInstance_Mutex_{instanceKey}";
-        _pipeName = $"Quickstart_SingleInstance_Pipe_{instanceKey}";
+        _mutexName = "Quickstart_SingleInstance_Mutex";
+        _pipeName = "Quickstart_SingleInstance_Pipe";
     }
 
     public bool TryAcquire()
@@ -72,7 +69,7 @@ public sealed class SingleInstance : IDisposable
         try
         {
             using var client = new NamedPipeClientStream(".",
-                $"Quickstart_SingleInstance_Pipe_{BuildInstanceKey()}", PipeDirection.Out);
+                "Quickstart_SingleInstance_Pipe", PipeDirection.Out);
             client.Connect(2000);
             using var writer = new StreamWriter(client) { AutoFlush = true };
             writer.Write(message);
@@ -82,15 +79,6 @@ public sealed class SingleInstance : IDisposable
         {
             return false;
         }
-    }
-
-    private static string BuildInstanceKey()
-    {
-        var baseDir = Path.GetFullPath(AppContext.BaseDirectory)
-            .TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar)
-            .ToLowerInvariant();
-        var hash = SHA256.HashData(Encoding.UTF8.GetBytes(baseDir));
-        return Convert.ToHexString(hash.AsSpan(0, 8));
     }
 
     public void Dispose()

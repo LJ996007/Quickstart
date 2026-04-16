@@ -48,6 +48,17 @@ static class Program
             }
         }
 
+        // Auto-detect Directory Opus on first run
+        if (string.IsNullOrEmpty(configManager.Config.DirectoryOpusPath))
+        {
+            var detectedDopus = DopusDetector.Detect();
+            if (detectedDopus != null)
+            {
+                configManager.Config.DirectoryOpusPath = detectedDopus;
+                configManager.Save();
+            }
+        }
+
         var launcher = new ProcessLauncher(configManager);
 
         // UI

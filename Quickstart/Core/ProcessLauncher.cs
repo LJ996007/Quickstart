@@ -31,6 +31,16 @@ public sealed class ProcessLauncher(ConfigManager configManager)
                     OpenInExplorer(entry.Path);
                 }
                 break;
+            case OpenWith.DirectoryOpus:
+                if (!string.IsNullOrEmpty(config.DirectoryOpusPath) && File.Exists(config.DirectoryOpusPath))
+                {
+                    OpenInDirectoryOpus(entry.Path, config.DirectoryOpusPath);
+                }
+                else
+                {
+                    OpenInExplorer(entry.Path);
+                }
+                break;
             case OpenWith.Explorer:
             default:
                 OpenInExplorer(entry.Path);
@@ -46,6 +56,26 @@ public sealed class ProcessLauncher(ConfigManager configManager)
             {
                 FileName = tcPath,
                 Arguments = $"/O /T /L=\"{path}\"",
+                UseShellExecute = false
+            });
+        }
+        catch
+        {
+            OpenInExplorer(path);
+        }
+    }
+
+    public void OpenInDirectoryOpus(string path, string dopusPath)
+    {
+        try
+        {
+            // dopusrt.exe lives alongside dopus.exe
+            var dopusrt = Path.Combine(Path.GetDirectoryName(dopusPath)!, "dopusrt.exe");
+            var exe = File.Exists(dopusrt) ? dopusrt : dopusPath;
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = exe,
+                Arguments = $"/open \"{path}\"",
                 UseShellExecute = false
             });
         }

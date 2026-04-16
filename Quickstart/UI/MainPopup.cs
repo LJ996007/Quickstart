@@ -207,28 +207,21 @@ public sealed class MainPopup : Form
         var addBtn = new Button
         {
             Text = "+ 添加",
-            FlatStyle = FlatStyle.Flat,
             Size = new Size(96, 34),
             Font = new Font("Segoe UI", 9f),
-            Location = new Point(8, 8),
-            BackColor = Color.FromArgb(59, 130, 246),
-            ForeColor = Color.White
+            Location = new Point(8, 8)
         };
-        addBtn.FlatAppearance.BorderSize = 0;
+        ButtonStyler.ApplyPrimary(addBtn);
         addBtn.Click += (_, _) => AddNewEntry();
 
         var settingsBtn = new Button
         {
             Text = "设置",
-            FlatStyle = FlatStyle.Flat,
             Size = new Size(86, 34),
             Font = new Font("Segoe UI", 9f),
-            Location = new Point(110, 8),
-            BackColor = Color.FromArgb(245, 245, 245),
-            ForeColor = Color.FromArgb(80, 80, 80)
+            Location = new Point(110, 8)
         };
-        settingsBtn.FlatAppearance.BorderSize = 1;
-        settingsBtn.FlatAppearance.BorderColor = Color.FromArgb(200, 200, 200);
+        ButtonStyler.ApplySecondary(settingsBtn);
         settingsBtn.Click += (_, _) => ShowSettings?.Invoke();
 
         var countLabel = new Label
@@ -265,6 +258,10 @@ public sealed class MainPopup : Form
         var openExplorer = new ToolStripMenuItem("用资源管理器打开");
         openExplorer.Click += (_, _) => OpenSelectedEntry(OpenWith.Explorer);
         menu.Items.Add(openExplorer);
+
+        var openDopus = new ToolStripMenuItem("用 Directory Opus 打开");
+        openDopus.Click += (_, _) => OpenSelectedEntry(OpenWith.DirectoryOpus);
+        menu.Items.Add(openDopus);
 
         menu.Items.Add(new ToolStripSeparator());
 
