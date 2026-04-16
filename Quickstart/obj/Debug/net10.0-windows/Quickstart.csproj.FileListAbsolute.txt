@@ -1,0 +1,14 @@
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Debug\net10.0-windows\Quickstart.GeneratedMSBuildEditorConfig.editorconfig
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Debug\net10.0-windows\Quickstart.AssemblyInfoInputs.cache
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Debug\net10.0-windows\Quickstart.AssemblyInfo.cs
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Debug\net10.0-windows\Quickstart.csproj.CoreCompileInputs.cache
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\bin\Debug\net10.0-windows\Quickstart.exe
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\bin\Debug\net10.0-windows\Quickstart.deps.json
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\bin\Debug\net10.0-windows\Quickstart.runtimeconfig.json
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\bin\Debug\net10.0-windows\Quickstart.dll
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\bin\Debug\net10.0-windows\Quickstart.pdb
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Debug\net10.0-windows\Quickstart.dll
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Debug\net10.0-windows\refint\Quickstart.dll
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Debug\net10.0-windows\Quickstart.pdb
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Debug\net10.0-windows\Quickstart.genruntimeconfig.cache
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Debug\net10.0-windows\ref\Quickstart.dll
