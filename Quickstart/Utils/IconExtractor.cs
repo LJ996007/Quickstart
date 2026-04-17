@@ -36,17 +36,22 @@ public static class IconExtractor
 
     private static readonly Dictionary<string, Icon> _cache = new(StringComparer.OrdinalIgnoreCase);
 
-    public static Icon? GetIcon(string path, bool isDirectory)
+    public static Icon? GetIcon(string path, bool isDirectory, bool useLargeIcon = false)
     {
+        var sizeSuffix = useLargeIcon ? "@L" : "@S";
         var cacheKey = isDirectory ? "<DIR>" : Path.GetExtension(path).ToLowerInvariant();
         if (string.IsNullOrEmpty(cacheKey)) cacheKey = "<NOEXT>";
+        cacheKey += sizeSuffix;
 
         if (_cache.TryGetValue(cacheKey, out var cached))
             return cached;
 
         var shfi = new SHFILEINFO();
-        uint flags = SHGFI_ICON | SHGFI_SMALLICON;
+        uint flags = SHGFI_ICON;
         uint attrs = 0;
+
+        if (!useLargeIcon)
+            flags |= SHGFI_SMALLICON;
 
         if (isDirectory)
         {
@@ -75,9 +80,9 @@ public static class IconExtractor
     }
 
     /// <summary>Get an icon from shell32.dll by index.</summary>
-    public static Icon? GetShellIcon(int index)
+    public static Icon? GetShellIcon(int index, bool useLargeIcon = false)
     {
-        var cacheKey = $"<SHELL:{index}>";
+        var cacheKey = $"<SHELL:{index}:{(useLargeIcon ? "L" : "S")}>";
         if (_cache.TryGetValue(cacheKey, out var cached))
             return cached;
 

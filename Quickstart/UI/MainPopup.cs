@@ -6,23 +6,31 @@ using Quickstart.Utils;
 
 public sealed class MainPopup : Form
 {
-    // Which tab category is active
     private enum TabKind { Files, Urls, Texts }
+
+    private static readonly Size PreferredPopupLogicalSize = new(420, 500);
+    private static readonly Size MinimumPopupLogicalSize = new(320, 380);
 
     private readonly ConfigManager _configManager;
     private readonly ProcessLauncher _launcher;
     private readonly TextBox _searchBox;
     private readonly ListView _listView;
     private readonly ImageList _imageList;
-    private readonly Image? _webEntryImage;
+    private Image? _webEntryImage;
     private readonly System.Windows.Forms.Timer _debounceTimer;
     private readonly Label[] _tabLabels;
-    private readonly Panel _tabPanel;
-    private TabKind _activeTab = TabKind.Files;
-
-    // "Copied!" toast label (shown briefly after text copy)
+    private readonly TableLayoutPanel _tabLayout;
     private readonly Label _toastLabel;
     private readonly System.Windows.Forms.Timer _toastTimer;
+    private readonly Panel _searchPanel;
+    private readonly Panel _separatorPanel;
+    private readonly TableLayoutPanel _toolbarLayout;
+    private readonly Button _addButton;
+    private readonly Button _settingsButton;
+    private readonly Label _countLabel;
+    private readonly Panel _listHost;
+    private readonly Panel _tabSeparator;
+    private TabKind _activeTab = TabKind.Files;
 
     public event Action? ShowSettings;
 
@@ -33,15 +41,13 @@ public sealed class MainPopup : Form
 
         AutoScaleMode = AutoScaleMode.Dpi;
 
-        // Form settings - borderless popup style
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
-        Size = new Size(420, 500);
+        Size = PreferredPopupLogicalSize;
         BackColor = Color.FromArgb(250, 250, 250);
         TopMost = true;
 
-        // Rounded border panel
         var border = new Panel
         {
             Dock = DockStyle.Fill,
@@ -55,88 +61,52 @@ public sealed class MainPopup : Form
             BackColor = Color.FromArgb(250, 250, 250)
         };
 
-        // Search box
+        var outerLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 4,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        outerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        outerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        outerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 1));
+        outerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        outerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+
         _searchBox = new TextBox
         {
-            Dock = DockStyle.Top,
-            Font = new Font("Segoe UI", 11),
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 11f),
             PlaceholderText = "搜索文件夹或文件... (拼音首字母也可)",
             BorderStyle = BorderStyle.None,
-            Height = 40,
-            Padding = new Padding(8, 8, 8, 8),
+            Margin = new Padding(0),
             BackColor = Color.White
         };
 
-        var searchPanel = new Panel
+        _searchPanel = new Panel
         {
-            Dock = DockStyle.Top,
-            Height = 48,
-            Padding = new Padding(8, 10, 8, 2),
-            BackColor = Color.White
+            Dock = DockStyle.Fill,
+            BackColor = Color.White,
+            Margin = new Padding(0)
         };
-        searchPanel.Controls.Add(_searchBox);
+        _searchPanel.Controls.Add(_searchBox);
 
-        var separator = new Panel
+        _separatorPanel = new Panel
         {
-            Dock = DockStyle.Top,
+            Dock = DockStyle.Fill,
             Height = 1,
-            BackColor = Color.FromArgb(220, 220, 220)
+            BackColor = Color.FromArgb(220, 220, 220),
+            Margin = new Padding(0)
         };
 
-        // Toolbar
-        var toolbar = CreateToolbar();
-
-        // ── Right-side vertical tab panel ──
-        _tabPanel = new Panel
-        {
-            Dock = DockStyle.Right,
-            Width = 36,
-            BackColor = Color.FromArgb(240, 240, 240)
-        };
-
-        string[] tabTexts = ["文\n件", "网\n页", "文\n本"];
-        TabKind[] tabKinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
-        _tabLabels = new Label[3];
-
-        for (int i = 0; i < 3; i++)
-        {
-            var kind = tabKinds[i];
-            var lbl = new Label
-            {
-                Text = tabTexts[i],
-                TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Microsoft YaHei UI", 9f),
-                Dock = DockStyle.Top,
-                Height = 56,
-                Cursor = Cursors.Hand
-            };
-            lbl.Click += (_, _) => SwitchTab(kind);
-            _tabLabels[i] = lbl;
-        }
-
-        // Add in reverse order so the first tab is on top (Dock=Top stacks)
-        for (int i = _tabLabels.Length - 1; i >= 0; i--)
-            _tabPanel.Controls.Add(_tabLabels[i]);
-
-        ApplyTabStyles();
-
-        // Separator between tabs and content
-        var tabSep = new Panel
-        {
-            Dock = DockStyle.Right,
-            Width = 1,
-            BackColor = Color.FromArgb(220, 220, 220)
-        };
-
-        // Image list for icons
         _imageList = new ImageList
         {
             ImageSize = new Size(16, 16),
             ColorDepth = ColorDepth.Depth32Bit
         };
-        _webEntryImage = LoadWebEntryImage();
 
-        // ListView
         _listView = new ListView
         {
             Dock = DockStyle.Fill,
@@ -147,21 +117,172 @@ public sealed class MainPopup : Form
             BorderStyle = BorderStyle.None,
             Font = new Font("Segoe UI", 9.5f),
             ShowGroups = false,
-            MultiSelect = false
+            MultiSelect = false,
+            Margin = new Padding(0)
         };
-
-        _listView.Columns.Add("名称", 358);
+        _listView.Columns.Add("名称", 100);
         _listView.OwnerDraw = true;
         _listView.DrawColumnHeader += (_, e) => e.DrawDefault = true;
         _listView.DrawItem += (_, e) =>
         {
-            // 只画选中背景，文字由 DrawSubItem 负责
             using var bg = new SolidBrush(e.Item.Selected ? SystemColors.Highlight : _listView.BackColor);
             e.Graphics.FillRectangle(bg, e.Bounds);
         };
         _listView.DrawSubItem += OnDrawSubItem;
 
-        // Item context menu — built dynamically on each right-click
+        _toastLabel = new Label
+        {
+            Text = "已复制",
+            AutoSize = false,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Font = new Font("Microsoft YaHei UI", 9f),
+            ForeColor = Color.White,
+            BackColor = Color.FromArgb(60, 60, 60),
+            Visible = false
+        };
+
+        _toastTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _toastTimer.Tick += (_, _) =>
+        {
+            _toastTimer.Stop();
+            _toastLabel.Visible = false;
+        };
+
+        _listHost = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0),
+            BackColor = Color.Transparent
+        };
+        _listHost.Controls.Add(_listView);
+        _listHost.Controls.Add(_toastLabel);
+
+        _tabLabels = new Label[3];
+        _tabLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 1,
+            RowCount = 4,
+            Margin = new Padding(0),
+            Padding = new Padding(0),
+            BackColor = Color.FromArgb(240, 240, 240)
+        };
+        _tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        for (int i = 0; i < 3; i++)
+            _tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+        _tabLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+        string[] tabTexts = ["文\n件", "网\n页", "文\n本"];
+        TabKind[] tabKinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
+        for (int i = 0; i < tabTexts.Length; i++)
+        {
+            var kind = tabKinds[i];
+            var label = new Label
+            {
+                Text = tabTexts[i],
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Microsoft YaHei UI", 9f),
+                Dock = DockStyle.Fill,
+                Cursor = Cursors.Hand,
+                Margin = new Padding(0)
+            };
+            label.Click += (_, _) => SwitchTab(kind);
+            _tabLabels[i] = label;
+            _tabLayout.Controls.Add(label, 0, i);
+        }
+
+        _tabSeparator = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Width = 1,
+            BackColor = Color.FromArgb(220, 220, 220),
+            Margin = new Padding(0)
+        };
+
+        var contentLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            RowCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
+        contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        contentLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        contentLayout.Controls.Add(_listHost, 0, 0);
+        contentLayout.Controls.Add(_tabSeparator, 1, 0);
+        contentLayout.Controls.Add(_tabLayout, 2, 0);
+
+        _addButton = new Button
+        {
+            Text = "+ 添加",
+            Font = new Font("Segoe UI", 9f),
+            Margin = new Padding(0)
+        };
+        ButtonStyler.ApplyPrimary(_addButton);
+        _addButton.Click += (_, _) => AddNewEntry();
+
+        _settingsButton = new Button
+        {
+            Text = "设置",
+            Font = new Font("Segoe UI", 9f),
+            Margin = new Padding(8, 0, 0, 0)
+        };
+        ButtonStyler.ApplySecondary(_settingsButton);
+        _settingsButton.Click += (_, _) => ShowSettings?.Invoke();
+
+        _countLabel = new Label
+        {
+            AutoSize = false,
+            Dock = DockStyle.Fill,
+            Font = new Font("Segoe UI", 8.5f),
+            ForeColor = Color.FromArgb(150, 150, 150),
+            TextAlign = ContentAlignment.MiddleRight,
+            Margin = new Padding(0)
+        };
+
+        var buttonFlow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0)
+        };
+        buttonFlow.Controls.Add(_addButton);
+        buttonFlow.Controls.Add(_settingsButton);
+
+        _toolbarLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 3,
+            AutoSize = true,
+            Margin = new Padding(0),
+            Padding = new Padding(8, 6, 8, 6),
+            BackColor = Color.FromArgb(245, 245, 245)
+        };
+        _toolbarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _toolbarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _toolbarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _toolbarLayout.Controls.Add(buttonFlow, 0, 0);
+        _toolbarLayout.Controls.Add(new Panel { Dock = DockStyle.Fill, Margin = new Padding(0) }, 1, 0);
+        _toolbarLayout.Controls.Add(_countLabel, 2, 0);
+
+        outerLayout.Controls.Add(_searchPanel, 0, 0);
+        outerLayout.Controls.Add(_separatorPanel, 0, 1);
+        outerLayout.Controls.Add(contentLayout, 0, 2);
+        outerLayout.Controls.Add(_toolbarLayout, 0, 3);
+
+        inner.Controls.Add(outerLayout);
+        border.Controls.Add(inner);
+        Controls.Add(border);
+
+        ApplyTabStyles();
+        ApplyScaledMetrics();
+
         _listView.MouseClick += (_, e) =>
         {
             if (e.Button == MouseButtons.Right && _listView.FocusedItem?.Bounds.Contains(e.Location) == true)
@@ -171,7 +292,7 @@ public sealed class MainPopup : Form
             }
         };
 
-        _listView.MouseDoubleClick += (_, e) =>
+        _listView.MouseDoubleClick += (_, _) =>
         {
             if (_listView.SelectedItems.Count > 0)
                 OpenSelectedEntry();
@@ -196,7 +317,6 @@ public sealed class MainPopup : Form
             }
         };
 
-        // Debounce timer for search
         _debounceTimer = new System.Windows.Forms.Timer { Interval = 200 };
         _debounceTimer.Tick += (_, _) =>
         {
@@ -231,7 +351,6 @@ public sealed class MainPopup : Form
             }
         };
 
-        // Enable drag-drop (file tab only — checked in OnDragEnter)
         AllowDrop = true;
         _listView.AllowDrop = true;
         DragEnter += OnDragEnter;
@@ -239,45 +358,96 @@ public sealed class MainPopup : Form
         _listView.DragEnter += OnDragEnter;
         _listView.DragDrop += OnDragDrop;
 
-        // Toast label for "已复制" feedback
-        _toastLabel = new Label
+        Resize += (_, _) =>
         {
-            Text = "已复制",
-            AutoSize = false,
-            Size = new Size(80, 28),
-            TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Microsoft YaHei UI", 9f),
-            ForeColor = Color.White,
-            BackColor = Color.FromArgb(60, 60, 60),
-            Visible = false
+            UpdateListColumnWidth();
+            CenterToast();
         };
-        _toastTimer = new System.Windows.Forms.Timer { Interval = 1000 };
-        _toastTimer.Tick += (_, _) =>
-        {
-            _toastTimer.Stop();
-            _toastLabel.Visible = false;
-        };
+        _listView.Resize += (_, _) => UpdateListColumnWidth();
 
-        // Assembly: inner contains toolbar at bottom, tab panel right, listview fills, separator, searchpanel at top
-        inner.Controls.Add(_listView);      // Fill
-        inner.Controls.Add(_toastLabel);    // Overlay (positioned in RefreshList)
-        inner.Controls.Add(toolbar);        // Bottom
-        inner.Controls.Add(tabSep);         // Right (separator)
-        inner.Controls.Add(_tabPanel);      // Right (tabs)
-        inner.Controls.Add(separator);      // Top (below search)
-        inner.Controls.Add(searchPanel);    // Top
+        DpiChanged += (_, _) => ApplyScaledMetrics();
 
-        border.Controls.Add(inner);
-        Controls.Add(border);
-
-        // Hide on deactivate
         Deactivate += (_, _) =>
         {
             if (Visible) Hide();
         };
     }
 
-    // ── Tab switching ──
+    private void ApplyScaledMetrics()
+    {
+        var separatorWidth = Math.Max(1, UiScaleHelper.Scale(this, 1));
+        _separatorPanel.Height = separatorWidth;
+        _separatorPanel.MinimumSize = new Size(0, separatorWidth);
+        _tabSeparator.Width = separatorWidth;
+
+        _searchPanel.Padding = UiScaleHelper.ScalePadding(this, new Padding(8, 4, 8, 4));
+        var searchHeight = Math.Max(UiScaleHelper.Scale(this, 24), _searchBox.PreferredHeight);
+        _searchBox.MinimumSize = new Size(0, searchHeight);
+        _searchPanel.MinimumSize = new Size(0, searchHeight + _searchPanel.Padding.Vertical);
+
+        _toolbarLayout.Padding = UiScaleHelper.ScalePadding(this, new Padding(8, 6, 8, 6));
+        _addButton.Size = UiScaleHelper.GetButtonSize(this, _addButton.Text, _addButton.Font, 96, 34, horizontalLogicalPadding: 12);
+        _settingsButton.Size = UiScaleHelper.GetButtonSize(this, _settingsButton.Text, _settingsButton.Font, 86, 34, horizontalLogicalPadding: 12);
+        _countLabel.MinimumSize = new Size(UiScaleHelper.Scale(this, 80), Math.Max(_addButton.Height, _settingsButton.Height));
+        _countLabel.Padding = UiScaleHelper.ScalePadding(this, new Padding(0, 0, 4, 0));
+
+        var tabWidth = 0;
+        var tabHeight = 0;
+        foreach (var label in _tabLabels)
+        {
+            var measured = TextRenderer.MeasureText(label.Text, label.Font);
+            tabWidth = Math.Max(tabWidth, measured.Width + UiScaleHelper.Scale(this, 12));
+            tabHeight = Math.Max(tabHeight, measured.Height + UiScaleHelper.Scale(this, 12));
+        }
+
+        for (int i = 0; i < _tabLabels.Length; i++)
+            _tabLayout.RowStyles[i].Height = tabHeight;
+        _tabLayout.MinimumSize = new Size(tabWidth, tabHeight * _tabLabels.Length);
+        _tabLayout.Width = tabWidth;
+
+        var toastSize = UiScaleHelper.GetButtonSize(this, _toastLabel.Text, _toastLabel.Font, 80, 28, horizontalLogicalPadding: 10, verticalLogicalPadding: 3);
+        _toastLabel.Size = toastSize;
+
+        UpdateImageList();
+        UpdateListColumnWidth();
+        CenterToast();
+        ApplyTabStyles();
+    }
+
+    private void UpdateImageList()
+    {
+        var iconSize = UiScaleHelper.GetIconSize(this, 16);
+        if (_imageList.ImageSize.Width == iconSize && _webEntryImage?.Width == iconSize)
+            return;
+
+        _imageList.ImageSize = new Size(iconSize, iconSize);
+        _imageList.Images.Clear();
+        _webEntryImage?.Dispose();
+        _webEntryImage = LoadWebEntryImage(iconSize);
+
+        if (IsHandleCreated)
+            RefreshList();
+    }
+
+    private void UpdateListColumnWidth()
+    {
+        if (_listView.Columns.Count == 0)
+            return;
+
+        var width = Math.Max(UiScaleHelper.Scale(this, 120), _listView.ClientSize.Width - UiScaleHelper.Scale(this, 6));
+        _listView.Columns[0].Width = width;
+    }
+
+    private void CenterToast()
+    {
+        if (_listHost.Width <= 0 || _listHost.Height <= 0)
+            return;
+
+        _toastLabel.Location = new Point(
+            Math.Max(0, (_listHost.Width - _toastLabel.Width) / 2),
+            Math.Max(0, (_listHost.Height - _toastLabel.Height) / 2));
+        _toastLabel.BringToFront();
+    }
 
     private void SwitchTab(TabKind kind)
     {
@@ -304,58 +474,10 @@ public sealed class MainPopup : Form
         _searchBox.PlaceholderText = _activeTab switch
         {
             TabKind.Files => "搜索文件夹或文件... (拼音首字母也可)",
-            TabKind.Urls  => "搜索网页...",
+            TabKind.Urls => "搜索网页...",
             TabKind.Texts => "搜索文本...",
             _ => "搜索..."
         };
-    }
-
-    private Panel CreateToolbar()
-    {
-        var toolbar = new Panel
-        {
-            Dock = DockStyle.Bottom,
-            Height = 50,
-            BackColor = Color.FromArgb(245, 245, 245),
-            Padding = new Padding(8, 6, 8, 6)
-        };
-
-        var addBtn = new Button
-        {
-            Text = "+ 添加",
-            Size = new Size(96, 34),
-            Font = new Font("Segoe UI", 9f),
-            Location = new Point(8, 8)
-        };
-        ButtonStyler.ApplyPrimary(addBtn);
-        addBtn.Click += (_, _) => AddNewEntry();
-
-        var settingsBtn = new Button
-        {
-            Text = "设置",
-            Size = new Size(86, 34),
-            Font = new Font("Segoe UI", 9f),
-            Location = new Point(110, 8)
-        };
-        ButtonStyler.ApplySecondary(settingsBtn);
-        settingsBtn.Click += (_, _) => ShowSettings?.Invoke();
-
-        var countLabel = new Label
-        {
-            Name = "countLabel",
-            AutoSize = false,
-            Dock = DockStyle.Right,
-            Width = 90,
-            Font = new Font("Segoe UI", 8.5f),
-            ForeColor = Color.FromArgb(150, 150, 150),
-            Padding = new Padding(0, 0, 4, 0),
-            TextAlign = ContentAlignment.MiddleRight
-        };
-
-        toolbar.Controls.Add(countLabel);
-        toolbar.Controls.Add(addBtn);
-        toolbar.Controls.Add(settingsBtn);
-        return toolbar;
     }
 
     private ContextMenuStrip BuildItemContextMenu()
@@ -405,8 +527,8 @@ public sealed class MainPopup : Form
                 var locateItem = new ToolStripMenuItem("在资源管理器中定位");
                 locateItem.Click += (_, _) =>
                 {
-                    var e2 = GetSelectedEntry();
-                    if (e2 != null) ProcessLauncher.OpenInExplorer(e2.Path);
+                    var selected = GetSelectedEntry();
+                    if (selected != null) ProcessLauncher.OpenInExplorer(selected.Path);
                 };
                 menu.Items.Add(locateItem);
                 break;
@@ -422,8 +544,8 @@ public sealed class MainPopup : Form
                 var copyUrl = new ToolStripMenuItem("复制网址");
                 copyUrl.Click += (_, _) =>
                 {
-                    var e2 = GetSelectedEntry();
-                    if (e2 != null) CopyToClipboard(e2.Path);
+                    var selected = GetSelectedEntry();
+                    if (selected != null) CopyToClipboard(selected.Path);
                 };
                 menu.Items.Add(copyUrl);
 
@@ -465,11 +587,12 @@ public sealed class MainPopup : Form
     public void ShowPopup()
     {
         _activeTab = TabKind.Files;
+        _searchBox.Clear();
         ApplyTabStyles();
         UpdateSearchPlaceholder();
+        EnsurePopupSizeForScreen(Screen.PrimaryScreen ?? Screen.FromPoint(Cursor.Position));
         RefreshList();
         PositionNearTray();
-        _searchBox.Clear();
         Show();
         Activate();
         _searchBox.Focus();
@@ -502,7 +625,7 @@ public sealed class MainPopup : Form
         {
             Type = _activeTab switch
             {
-                TabKind.Urls  => EntryType.Url,
+                TabKind.Urls => EntryType.Url,
                 TabKind.Texts => EntryType.Text,
                 _ => EntryType.Folder
             }
@@ -535,7 +658,9 @@ public sealed class MainPopup : Form
 
         var result = MessageBox.Show(
             $"确定要删除 \"{entry.Name}\" 吗？",
-            "确认删除", MessageBoxButtons.YesNo, MessageBoxIcon.Question);
+            "确认删除",
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Question);
 
         if (result == DialogResult.Yes)
         {
@@ -552,7 +677,6 @@ public sealed class MainPopup : Form
         Hide();
     }
 
-    /// <summary>Execute the action for an entry based on its type.</summary>
     private void ExecuteEntry(QuickEntry entry, OpenWith? overrideWith = null)
     {
         switch (entry.Type)
@@ -580,11 +704,7 @@ public sealed class MainPopup : Form
 
     private void ShowToast()
     {
-        // Position toast in center of the ListView
-        _toastLabel.Location = new Point(
-            _listView.Left + (_listView.Width - _toastLabel.Width) / 2,
-            _listView.Top + (_listView.Height - _toastLabel.Height) / 2);
-        _toastLabel.BringToFront();
+        CenterToast();
         _toastLabel.Visible = true;
         _toastTimer.Stop();
         _toastTimer.Start();
@@ -601,11 +721,10 @@ public sealed class MainPopup : Form
         var query = _searchBox.Text.Trim();
         var entries = _configManager.Config.Entries;
 
-        // Filter by active tab
         entries = _activeTab switch
         {
             TabKind.Files => entries.Where(e => e.Type is EntryType.Folder or EntryType.File).ToList(),
-            TabKind.Urls  => entries.Where(e => e.Type == EntryType.Url).ToList(),
+            TabKind.Urls => entries.Where(e => e.Type == EntryType.Url).ToList(),
             TabKind.Texts => entries.Where(e => e.Type == EntryType.Text).ToList(),
             _ => entries
         };
@@ -614,11 +733,13 @@ public sealed class MainPopup : Form
         {
             entries = entries
                 .Where(e => PinyinHelper.MatchesPinyin(e.Name, query)
-                         || PinyinHelper.MatchesPinyin(e.Path, query))
+                    || PinyinHelper.MatchesPinyin(e.Path, query))
                 .ToList();
         }
 
         entries = entries.OrderBy(e => e.SortOrder).ToList();
+
+        var useLargeIcon = _imageList.ImageSize.Width > 16;
 
         _listView.BeginUpdate();
         _listView.Items.Clear();
@@ -648,14 +769,14 @@ public sealed class MainPopup : Form
                     }
                     else
                     {
-                        var icon = IconExtractor.GetIcon(iconKey, isDirectory: false);
+                        var icon = IconExtractor.GetIcon(iconKey, isDirectory: false, useLargeIcon);
                         if (icon != null)
                             _imageList.Images.Add(iconKey, icon);
                     }
                 }
                 else
                 {
-                    var icon = IconExtractor.GetIcon(entry.Path, entry.Type == EntryType.Folder);
+                    var icon = IconExtractor.GetIcon(entry.Path, entry.Type == EntryType.Folder, useLargeIcon);
                     if (icon != null)
                         _imageList.Images.Add(iconKey, icon);
                 }
@@ -663,10 +784,7 @@ public sealed class MainPopup : Form
 
             var item = string.IsNullOrEmpty(iconKey)
                 ? new ListViewItem(entry.Name)
-                : new ListViewItem(entry.Name, iconKey)
-                {
-                    ImageKey = iconKey
-                };
+                : new ListViewItem(entry.Name, iconKey) { ImageKey = iconKey };
 
             item.Tag = entry;
             item.ToolTipText = entry.Type == EntryType.Text
@@ -674,22 +792,18 @@ public sealed class MainPopup : Form
                 : entry.Path;
 
             if (entry.Type is EntryType.Folder or EntryType.File && !PathExists(entry))
-            {
                 item.ForeColor = Color.Red;
-            }
 
             _listView.Items.Add(item);
         }
 
         _listView.EndUpdate();
 
-        // Update count label
-        var countLabel = Controls.Find("countLabel", true).FirstOrDefault() as Label;
-        if (countLabel != null)
-            countLabel.Text = $"{entries.Count} 项";
+        _countLabel.Text = $"{entries.Count} 项";
+        UpdateListColumnWidth();
     }
 
-    private static Image? LoadWebEntryImage()
+    private static Image? LoadWebEntryImage(int size)
     {
         try
         {
@@ -698,7 +812,7 @@ public sealed class MainPopup : Form
             if (stream == null) return null;
 
             using var original = Image.FromStream(stream);
-            return new Bitmap(original, new Size(16, 16));
+            return new Bitmap(original, new Size(size, size));
         }
         catch
         {
@@ -712,8 +826,7 @@ public sealed class MainPopup : Form
         var item = e.Item!;
         var bounds = e.Bounds;
 
-        // 图标（仅第 0 列）
-        int textX = bounds.X + 2;
+        int textX = bounds.X + UiScaleHelper.Scale(this, 2);
         if (e.ColumnIndex == 0 && _listView.SmallImageList is { } imgList)
         {
             bool drewIcon = false;
@@ -728,18 +841,21 @@ public sealed class MainPopup : Form
                     drewIcon = true;
                 }
             }
+
             if (drewIcon)
-                textX += imgList.ImageSize.Width + 4;
+                textX += imgList.ImageSize.Width + UiScaleHelper.Scale(this, 4);
         }
 
-        // 文字颜色
         var textColor = item.Selected ? SystemColors.HighlightText : item.ForeColor;
-
-        // 文字区域
-        var textBounds = new Rectangle(textX, bounds.Y, bounds.Right - textX - 2, bounds.Height);
+        var textBounds = new Rectangle(textX, bounds.Y, bounds.Right - textX - UiScaleHelper.Scale(this, 2), bounds.Height);
         var display = MidTruncate(item.Text, _listView.Font, textBounds.Width);
 
-        TextRenderer.DrawText(g, display, _listView.Font, textBounds, textColor,
+        TextRenderer.DrawText(
+            g,
+            display,
+            _listView.Font,
+            textBounds,
+            textColor,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
     }
 
@@ -749,13 +865,13 @@ public sealed class MainPopup : Form
         if (TextRenderer.MeasureText(text, font).Width <= maxPx) return text;
 
         const string dots = "...";
-        int dotsW = TextRenderer.MeasureText(dots, font).Width;
-        int avail = maxPx - dotsW;
-        if (avail <= 0) return dots;
+        int dotsWidth = TextRenderer.MeasureText(dots, font).Width;
+        int available = maxPx - dotsWidth;
+        if (available <= 0) return dots;
 
-        // 二分求起始段可放字符数（占一半空间）
-        int half = avail / 2;
-        int lo = 0, hi = text.Length / 2;
+        int half = available / 2;
+        int lo = 0;
+        int hi = text.Length / 2;
         while (lo < hi)
         {
             int mid = (lo + hi + 1) / 2;
@@ -765,50 +881,50 @@ public sealed class MainPopup : Form
         int startLen = lo;
         int usedStart = startLen > 0 ? TextRenderer.MeasureText(text[..startLen], font).Width : 0;
 
-        // 剩余空间给末尾段
-        int endAvail = avail - usedStart;
-        lo = 0; hi = text.Length - startLen;
+        int endAvailable = available - usedStart;
+        lo = 0;
+        hi = text.Length - startLen;
         while (lo < hi)
         {
             int mid = (lo + hi + 1) / 2;
-            if (TextRenderer.MeasureText(text[^mid..], font).Width <= endAvail) lo = mid;
+            if (TextRenderer.MeasureText(text[^mid..], font).Width <= endAvailable) lo = mid;
             else hi = mid - 1;
         }
-        int endLen = lo;
 
+        int endLen = lo;
         return text[..startLen] + dots + (endLen > 0 ? text[^endLen..] : "");
     }
 
     private static bool PathExists(QuickEntry entry)
-    {
-        return entry.Type == EntryType.Folder
+        => entry.Type == EntryType.Folder
             ? Directory.Exists(entry.Path)
             : File.Exists(entry.Path);
-    }
 
     public void ShowAtGesturePoint(Point screenPt)
     {
-        // Reset to Files tab for gesture
         _activeTab = TabKind.Files;
+        _searchBox.Clear();
         ApplyTabStyles();
         UpdateSearchPlaceholder();
-        RefreshList();
-        _searchBox.Clear();
 
-        // Position so cursor lands in the list area (search panel is ~49px tall, add 8px margin)
-        var wa = Screen.FromPoint(screenPt).WorkingArea;
-        int x = Math.Max(wa.Left, Math.Min(screenPt.X - 8, wa.Right - Width));
-        int y = Math.Max(wa.Top, Math.Min(screenPt.Y - 57, wa.Bottom - Height));
+        var screen = Screen.FromPoint(screenPt);
+        EnsurePopupSizeForScreen(screen);
+        RefreshList();
+
+        var workingArea = screen.WorkingArea;
+        var popupMargin = UiScaleHelper.Scale(this, 8);
+        var listAnchorOffsetY = _searchPanel.Height + _separatorPanel.Height + popupMargin;
+        int x = Math.Max(workingArea.Left + popupMargin, Math.Min(screenPt.X - popupMargin, workingArea.Right - Width - popupMargin));
+        int y = Math.Max(workingArea.Top + popupMargin, Math.Min(screenPt.Y - listAnchorOffsetY, workingArea.Bottom - Height - popupMargin));
         Location = new Point(x, y);
 
-        Show(); // No Activate() — keep focus on drag source window
+        Show();
     }
 
     public void HighlightAtScreenPoint(Point screenPt)
     {
-        // Check if mouse is over a tab label → auto-switch tab
-        var tabClientPt = _tabPanel.PointToClient(screenPt);
-        if (_tabPanel.ClientRectangle.Contains(tabClientPt))
+        var tabClientPt = _tabLayout.PointToClient(screenPt);
+        if (_tabLayout.ClientRectangle.Contains(tabClientPt))
         {
             TabKind[] kinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
             for (int i = 0; i < _tabLabels.Length; i++)
@@ -820,13 +936,12 @@ public sealed class MainPopup : Form
                     break;
                 }
             }
-            // Clear list selection when over tabs
+
             if (_listView.SelectedItems.Count > 0)
                 _listView.SelectedItems.Clear();
             return;
         }
 
-        // Otherwise highlight list item
         var clientPt = _listView.PointToClient(screenPt);
         var item = _listView.GetItemAt(clientPt.X, clientPt.Y);
         if (item != null)
@@ -837,10 +952,9 @@ public sealed class MainPopup : Form
                 item.Selected = true;
             }
         }
-        else
+        else if (_listView.SelectedItems.Count > 0)
         {
-            if (_listView.SelectedItems.Count > 0)
-                _listView.SelectedItems.Clear();
+            _listView.SelectedItems.Clear();
         }
     }
 
@@ -861,23 +975,36 @@ public sealed class MainPopup : Form
             return true;
         }
 
-        // Released in popup but not on an entry — activate so user can continue interacting
         Activate();
         _searchBox.Focus();
         return false;
     }
 
+    private void EnsurePopupSizeForScreen(Screen screen)
+    {
+        var margin = UiScaleHelper.Scale(this, 8);
+        var preferred = UiScaleHelper.ScaleSize(this, PreferredPopupLogicalSize);
+        var minimum = UiScaleHelper.ScaleSize(this, MinimumPopupLogicalSize);
+        var maxWidth = Math.Max(minimum.Width, screen.WorkingArea.Width - margin * 2);
+        var maxHeight = Math.Max(minimum.Height, screen.WorkingArea.Height - margin * 2);
+
+        Size = new Size(
+            Math.Min(preferred.Width, maxWidth),
+            Math.Min(preferred.Height, maxHeight));
+    }
+
     private void PositionNearTray()
     {
-        var screen = Screen.PrimaryScreen!.WorkingArea;
-        var taskbarOnBottom = screen.Bottom < Screen.PrimaryScreen.Bounds.Bottom;
+        var screen = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromPoint(Cursor.Position).WorkingArea;
+        var taskbarOnBottom = screen.Bottom < (Screen.PrimaryScreen?.Bounds.Bottom ?? screen.Bottom);
+        var margin = UiScaleHelper.Scale(this, 8);
 
-        int x = screen.Right - Width - 8;
+        int x = screen.Right - Width - margin;
         int y = taskbarOnBottom
-            ? screen.Bottom - Height - 8
-            : screen.Top + 8;
+            ? screen.Bottom - Height - margin
+            : screen.Top + margin;
 
-        Location = new Point(x, y);
+        Location = new Point(Math.Max(screen.Left + margin, x), Math.Max(screen.Top + margin, y));
     }
 
     private void OnDragEnter(object? sender, DragEventArgs e)
@@ -893,9 +1020,7 @@ public sealed class MainPopup : Form
         if (e.Data?.GetData(DataFormats.FileDrop) is string[] files)
         {
             foreach (var path in files)
-            {
                 AddPathEntry(path);
-            }
         }
     }
 
@@ -906,7 +1031,7 @@ public sealed class MainPopup : Form
         get
         {
             var cp = base.CreateParams;
-            cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW - hide from Alt+Tab
+            cp.ExStyle |= 0x00000080;
             return cp;
         }
     }

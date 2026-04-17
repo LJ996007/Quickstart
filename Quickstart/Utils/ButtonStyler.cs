@@ -42,27 +42,27 @@ public static class ButtonStyler
     private static void UpdateRegion(Control ctrl)
     {
         if (ctrl.Width > 0 && ctrl.Height > 0)
-            ctrl.Region = CreateRoundedRegion(ctrl.Size);
+            ctrl.Region = CreateRoundedRegion(ctrl, ctrl.Size);
     }
 
     private static void DrawRoundedBorder(object? sender, PaintEventArgs e)
     {
         if (sender is not Button btn) return;
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using var path = CreateRoundedPath(new Rectangle(0, 0, btn.Width - 1, btn.Height - 1));
+        using var path = CreateRoundedPath(btn, new Rectangle(0, 0, btn.Width - 1, btn.Height - 1));
         using var pen = new Pen(Color.FromArgb(200, 200, 200));
         e.Graphics.DrawPath(pen, path);
     }
 
-    private static Region CreateRoundedRegion(Size size)
+    private static Region CreateRoundedRegion(Control control, Size size)
     {
-        using var path = CreateRoundedPath(new Rectangle(0, 0, size.Width, size.Height));
+        using var path = CreateRoundedPath(control, new Rectangle(0, 0, size.Width, size.Height));
         return new Region(path);
     }
 
-    private static GraphicsPath CreateRoundedPath(Rectangle rect)
+    private static GraphicsPath CreateRoundedPath(Control control, Rectangle rect)
     {
-        int r = Math.Min(CornerRadius, Math.Min(rect.Width, rect.Height) / 2);
+        int r = Math.Min(UiScaleHelper.Scale(control, CornerRadius), Math.Min(rect.Width, rect.Height) / 2);
         var path = new GraphicsPath();
         path.AddArc(rect.X, rect.Y, r, r, 180, 90);
         path.AddArc(rect.Right - r, rect.Y, r, r, 270, 90);

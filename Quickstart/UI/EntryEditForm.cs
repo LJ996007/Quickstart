@@ -14,18 +14,9 @@ public sealed class EntryEditForm : Form
     private readonly Label _pathLabel;
     private readonly Button _okBtn;
     private readonly Button _cancelBtn;
-
-    // Baseline positions for File/Folder mode
-    private const int PathLabelY = 56;
-    private const int TypeRowY = 92;
-    private const int ButtonY = 205;
-    private const int FormHeight = 310;
-
-    // Expanded positions for Text mode (multiline)
-    private const int TextBoxHeight = 120;
-    private const int TextTypeRowY = 56 + TextBoxHeight + 12; // pathBox top + height + gap
-    private const int TextButtonY = TextTypeRowY + 36;
-    private const int TextFormHeight = TextButtonY + 80;
+    private readonly TableLayoutPanel _root;
+    private readonly TableLayoutPanel _pathInputLayout;
+    private readonly FlowLayoutPanel _buttonRow;
 
     public EntryEditForm(QuickEntry entry)
     {
@@ -34,73 +25,94 @@ public sealed class EntryEditForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
 
         Text = string.IsNullOrEmpty(entry.Name) ? "添加条目" : "编辑条目";
-        Size = new Size(500, FormHeight);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
         Font = new Font("Segoe UI", 9.5f);
+        Padding = new Padding(14);
+        AutoSize = true;
+        AutoSizeMode = AutoSizeMode.GrowAndShrink;
 
-        var nameLabel = new Label { Text = "名称:", Location = new Point(16, 20), AutoSize = true };
+        _root = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        _root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+
+        var nameLabel = CreateFieldLabel("名称:");
         _nameBox = new TextBox
         {
             Text = entry.Name,
-            Location = new Point(80, 17),
-            Width = 380
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0)
         };
 
-        _pathLabel = new Label { Text = "路径:", Location = new Point(16, PathLabelY), AutoSize = true };
+        _pathLabel = CreateFieldLabel("路径:");
         _pathBox = new TextBox
         {
             Text = entry.Path,
-            Location = new Point(80, 53),
-            Width = 330
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0)
         };
 
         _browseBtn = new Button
         {
             Text = "...",
-            Location = new Point(418, 51),
-            Width = 42,
-            Height = 30,
-            Font = new Font("Segoe UI", 9f)
+            Font = new Font("Segoe UI", 9f),
+            Margin = new Padding(8, 0, 0, 0)
         };
         _browseBtn.Click += OnBrowse;
         ButtonStyler.ApplySecondary(_browseBtn);
 
-        var typeLabel = new Label { Text = "类型:", Location = new Point(16, TypeRowY), AutoSize = true };
+        _pathInputLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            Margin = new Padding(0)
+        };
+        _pathInputLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _pathInputLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _pathInputLayout.Controls.Add(_pathBox, 0, 0);
+        _pathInputLayout.Controls.Add(_browseBtn, 1, 0);
+
+        var typeLabel = CreateFieldLabel("类型:");
         _typeBox = new ComboBox
         {
-            Location = new Point(80, TypeRowY - 3),
-            Width = 120,
-            DropDownStyle = ComboBoxStyle.DropDownList
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Margin = new Padding(0)
         };
         _typeBox.Items.AddRange(["文件夹", "文件", "网页", "文本"]);
         _typeBox.SelectedIndex = entry.Type switch
         {
             EntryType.Folder => 0,
-            EntryType.File   => 1,
-            EntryType.Url    => 2,
-            EntryType.Text   => 3,
+            EntryType.File => 1,
+            EntryType.Url => 2,
+            EntryType.Text => 3,
             _ => 0
         };
 
-        var groupLabel = new Label { Text = "分组:", Location = new Point(220, TypeRowY), AutoSize = true };
+        var groupLabel = CreateFieldLabel("分组:");
         _groupBox = new TextBox
         {
             Text = entry.Group,
-            Location = new Point(270, TypeRowY - 3),
-            Width = 190
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0)
         };
 
         _okBtn = new Button
         {
             Text = "确定",
             DialogResult = DialogResult.OK,
-            Location = new Point(278, ButtonY),
-            Width = 88,
-            Height = 34,
-            Font = new Font("Segoe UI", 9f)
+            Margin = new Padding(8, 0, 0, 0)
         };
         ButtonStyler.ApplyPrimary(_okBtn);
 
@@ -108,10 +120,7 @@ public sealed class EntryEditForm : Form
         {
             Text = "取消",
             DialogResult = DialogResult.Cancel,
-            Location = new Point(372, ButtonY),
-            Width = 88,
-            Height = 34,
-            Font = new Font("Segoe UI", 9f)
+            Margin = new Padding(8, 0, 0, 0)
         };
         ButtonStyler.ApplySecondary(_cancelBtn);
 
@@ -127,7 +136,7 @@ public sealed class EntryEditForm : Form
             {
                 var hint = currentType switch
                 {
-                    EntryType.Url  => "请输入网址。",
+                    EntryType.Url => "请输入网址。",
                     EntryType.Text => "请输入内容。",
                     _ => "请输入路径。"
                 };
@@ -146,31 +155,59 @@ public sealed class EntryEditForm : Form
             _entry.Group = _groupBox.Text.Trim();
         };
 
-        // Type change → adjust layout dynamically
         _typeBox.SelectedIndexChanged += (_, _) => AdjustLayoutForType();
 
-        // Auto-detect type when path changes (only for file/folder types)
         _pathBox.TextChanged += (_, _) =>
         {
             var currentType = GetSelectedEntryType();
             if (currentType is EntryType.Url or EntryType.Text) return;
 
-            var p = _pathBox.Text.Trim();
-            if (Directory.Exists(p))
+            var path = _pathBox.Text.Trim();
+            if (Directory.Exists(path))
                 _typeBox.SelectedIndex = 0;
-            else if (File.Exists(p))
+            else if (File.Exists(path))
                 _typeBox.SelectedIndex = 1;
 
             if (string.IsNullOrWhiteSpace(_nameBox.Text) || _nameBox.Text == _entry.Name)
-            {
-                _nameBox.Text = Path.GetFileName(p);
-            }
+                _nameBox.Text = Path.GetFileName(path);
         };
 
-        Controls.AddRange([nameLabel, _nameBox, _pathLabel, _pathBox, _browseBtn,
-            typeLabel, _typeBox, groupLabel, _groupBox, _okBtn, _cancelBtn]);
+        _buttonRow = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.RightToLeft,
+            WrapContents = false,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 14, 0, 0)
+        };
+        _buttonRow.Controls.Add(_cancelBtn);
+        _buttonRow.Controls.Add(_okBtn);
 
-        // Enable drag-drop on path box (file/folder mode only)
+        var metaRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 4,
+            Margin = new Padding(0, 10, 0, 0)
+        };
+        metaRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        metaRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
+        metaRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        metaRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 56));
+        metaRow.Controls.Add(typeLabel, 0, 0);
+        metaRow.Controls.Add(_typeBox, 1, 0);
+        metaRow.Controls.Add(groupLabel, 2, 0);
+        metaRow.Controls.Add(_groupBox, 3, 0);
+
+        _root.Controls.Add(CreateFieldRow(nameLabel, _nameBox), 0, 0);
+        _root.Controls.Add(CreateFieldRow(_pathLabel, _pathInputLayout), 0, 1);
+        _root.Controls.Add(metaRow, 0, 2);
+        _root.Controls.Add(_buttonRow, 0, 3);
+
+        Controls.Add(_root);
+
         _pathBox.AllowDrop = true;
         _pathBox.DragEnter += (_, e) =>
         {
@@ -183,8 +220,38 @@ public sealed class EntryEditForm : Form
                 _pathBox.Text = files[0];
         };
 
-        // Apply initial layout for the current type
+        ApplyScaledMetrics();
         AdjustLayoutForType();
+        DpiChanged += (_, _) =>
+        {
+            ApplyScaledMetrics();
+            AdjustLayoutForType();
+        };
+    }
+
+    private Label CreateFieldLabel(string text) => new()
+    {
+        Text = text,
+        AutoSize = true,
+        Anchor = AnchorStyles.Left,
+        Margin = new Padding(0, 6, 10, 0)
+    };
+
+    private static TableLayoutPanel CreateFieldRow(Label label, Control input)
+    {
+        var row = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            Margin = new Padding(0, 0, 0, 10)
+        };
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        row.Controls.Add(label, 0, 0);
+        row.Controls.Add(input, 1, 0);
+        return row;
     }
 
     private EntryType GetSelectedEntryType() => _typeBox.SelectedIndex switch
@@ -196,71 +263,75 @@ public sealed class EntryEditForm : Form
         _ => EntryType.Folder
     };
 
+    private void ApplyScaledMetrics()
+    {
+        Padding = UiScaleHelper.ScalePadding(this, new Padding(14));
+
+        var inputHeight = UiScaleHelper.GetInputHeight(_nameBox, 30);
+        var comboHeight = UiScaleHelper.GetInputHeight(_typeBox, 32);
+        var browseButtonSize = UiScaleHelper.GetButtonSize(this, _browseBtn.Text, _browseBtn.Font, 44, 30, horizontalLogicalPadding: 10);
+
+        _nameBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 360), inputHeight);
+        _groupBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 160), inputHeight);
+        _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 360), inputHeight);
+        _typeBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 128), comboHeight);
+        _browseBtn.Size = new Size(browseButtonSize.Width, inputHeight);
+
+        _okBtn.Size = UiScaleHelper.GetButtonSize(this, _okBtn.Text, _okBtn.Font, 88, 34, horizontalLogicalPadding: 12);
+        _cancelBtn.Size = UiScaleHelper.GetButtonSize(this, _cancelBtn.Text, _cancelBtn.Font, 88, 34, horizontalLogicalPadding: 12);
+
+        var minClientWidth = UiScaleHelper.Scale(this, 520);
+        var preferredHeight = _root.GetPreferredSize(new Size(minClientWidth, 0)).Height;
+        MinimumSize = SizeFromClientSize(new Size(minClientWidth, preferredHeight));
+    }
+
     private void AdjustLayoutForType()
     {
         var type = GetSelectedEntryType();
+        var singleLineHeight = UiScaleHelper.GetInputHeight(_pathBox, 30);
+        var multiLineHeight = UiScaleHelper.Scale(this, 120);
+
+        _pathBox.AcceptsReturn = false;
+        _pathBox.WordWrap = false;
+        _pathBox.ScrollBars = ScrollBars.None;
 
         switch (type)
         {
             case EntryType.Url:
                 _pathLabel.Text = "网址:";
                 _pathBox.Multiline = false;
-                _pathBox.Height = 23;  // default single-line height
-                _pathBox.Width = 380;
-                _pathBox.ScrollBars = ScrollBars.None;
+                _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 360), singleLineHeight);
                 _browseBtn.Visible = false;
-                ResetStandardLayout();
                 break;
 
             case EntryType.Text:
                 _pathLabel.Text = "内容:";
                 _pathBox.Multiline = true;
-                _pathBox.Height = TextBoxHeight;
-                _pathBox.Width = 380;
-                _pathBox.ScrollBars = ScrollBars.Vertical;
-                _pathBox.WordWrap = true;
                 _pathBox.AcceptsReturn = true;
+                _pathBox.WordWrap = true;
+                _pathBox.ScrollBars = ScrollBars.Vertical;
+                _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 360), multiLineHeight);
                 _browseBtn.Visible = false;
-                // Expand form and shift type row + buttons down
-                var typeLabel2 = Controls.OfType<Label>().FirstOrDefault(l => l.Text == "类型:");
-                var groupLabel2 = Controls.OfType<Label>().FirstOrDefault(l => l.Text == "分组:");
-                if (typeLabel2 != null) typeLabel2.Top = TextTypeRowY;
-                if (groupLabel2 != null) groupLabel2.Top = TextTypeRowY;
-                _typeBox.Top = TextTypeRowY - 3;
-                _groupBox.Top = TextTypeRowY - 3;
-                _okBtn.Top = TextButtonY;
-                _cancelBtn.Top = TextButtonY;
-                Size = new Size(500, TextFormHeight);
                 break;
 
-            default: // Folder or File
+            default:
                 _pathLabel.Text = "路径:";
                 _pathBox.Multiline = false;
-                _pathBox.Height = 23;
-                _pathBox.Width = 330;
-                _pathBox.ScrollBars = ScrollBars.None;
+                _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 360), singleLineHeight);
                 _browseBtn.Visible = true;
-                ResetStandardLayout();
                 break;
         }
-    }
 
-    private void ResetStandardLayout()
-    {
-        var typeLabel2 = Controls.OfType<Label>().FirstOrDefault(l => l.Text == "类型:");
-        var groupLabel2 = Controls.OfType<Label>().FirstOrDefault(l => l.Text == "分组:");
-        if (typeLabel2 != null) typeLabel2.Top = TypeRowY;
-        if (groupLabel2 != null) groupLabel2.Top = TypeRowY;
-        _typeBox.Top = TypeRowY - 3;
-        _groupBox.Top = TypeRowY - 3;
-        _okBtn.Top = ButtonY;
-        _cancelBtn.Top = ButtonY;
-        Size = new Size(500, FormHeight);
+        _pathInputLayout.PerformLayout();
+        _root.PerformLayout();
+        var minClientWidth = UiScaleHelper.Scale(this, 520);
+        var preferred = _root.GetPreferredSize(new Size(minClientWidth, 0));
+        MinimumSize = SizeFromClientSize(new Size(minClientWidth, preferred.Height));
     }
 
     private void OnBrowse(object? sender, EventArgs e)
     {
-        if (_typeBox.SelectedIndex == 0) // Folder
+        if (_typeBox.SelectedIndex == 0)
         {
             using var dlg = new FolderBrowserDialog();
             if (!string.IsNullOrEmpty(_pathBox.Text) && Directory.Exists(_pathBox.Text))
@@ -268,7 +339,7 @@ public sealed class EntryEditForm : Form
             if (dlg.ShowDialog(this) == DialogResult.OK)
                 _pathBox.Text = dlg.SelectedPath;
         }
-        else // File
+        else
         {
             using var dlg = new OpenFileDialog { Filter = "所有文件|*.*" };
             if (!string.IsNullOrEmpty(_pathBox.Text) && File.Exists(_pathBox.Text))

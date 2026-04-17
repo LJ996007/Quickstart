@@ -21,7 +21,6 @@ public sealed class SettingsForm : Form
 
         Text = "Quickstart 设置";
         ClientSize = new Size(580, 420);
-        MinimumSize = new Size(620, 460);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -50,13 +49,13 @@ public sealed class SettingsForm : Form
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
-        // TC Path
         var tcLabel = new Label
         {
             Text = "Total Commander 路径:",
             AutoSize = true,
             Margin = new Padding(0, 0, 0, 8)
         };
+
         _tcPathBox = new TextBox
         {
             Text = config.TotalCommanderPath,
@@ -64,10 +63,10 @@ public sealed class SettingsForm : Form
             Margin = new Padding(0),
             Anchor = AnchorStyles.Left | AnchorStyles.Right
         };
+
         var tcBrowseBtn = new Button
         {
             Text = "...",
-            Width = 44,
             Font = new Font("Segoe UI", 9f),
             Margin = new Padding(8, 0, 0, 0)
         };
@@ -90,14 +89,6 @@ public sealed class SettingsForm : Form
             Margin = new Padding(8, 0, 0, 0)
         };
         ButtonStyler.ApplySecondary(tcDetectBtn);
-
-        // Keep textbox and path action buttons visually aligned across DPI scales.
-        var pathRowHeight = Math.Max(_tcPathBox.PreferredHeight + 2, 30);
-        _tcPathBox.MinimumSize = new Size(0, pathRowHeight);
-        tcBrowseBtn.Size = new Size(44, pathRowHeight);
-        var detectTextWidth = TextRenderer.MeasureText(tcDetectBtn.Text, tcDetectBtn.Font).Width;
-        tcDetectBtn.Size = new Size(Math.Max(104, detectTextWidth + 24), pathRowHeight);
-
         tcDetectBtn.Click += (_, _) =>
         {
             var detected = TcDetector.Detect();
@@ -114,13 +105,13 @@ public sealed class SettingsForm : Form
             }
         };
 
-        // Directory Opus Path
         var doLabel = new Label
         {
             Text = "Directory Opus 路径:",
             AutoSize = true,
             Margin = new Padding(0, 8, 0, 8)
         };
+
         _dopusPathBox = new TextBox
         {
             Text = config.DirectoryOpusPath,
@@ -128,16 +119,14 @@ public sealed class SettingsForm : Form
             Margin = new Padding(0),
             Anchor = AnchorStyles.Left | AnchorStyles.Right
         };
+
         var doBrowseBtn = new Button
         {
             Text = "...",
-            Width = 44,
             Font = new Font("Segoe UI", 9f),
             Margin = new Padding(8, 0, 0, 0)
         };
         ButtonStyler.ApplySecondary(doBrowseBtn);
-        _dopusPathBox.MinimumSize = new Size(0, pathRowHeight);
-        doBrowseBtn.Size = new Size(44, pathRowHeight);
         doBrowseBtn.Click += (_, _) =>
         {
             using var dlg = new OpenFileDialog
@@ -156,7 +145,6 @@ public sealed class SettingsForm : Form
             Margin = new Padding(8, 0, 0, 0)
         };
         ButtonStyler.ApplySecondary(doDetectBtn);
-        doDetectBtn.Size = new Size(tcDetectBtn.Width, pathRowHeight);
         doDetectBtn.Click += (_, _) =>
         {
             var detected = DopusDetector.Detect();
@@ -173,32 +161,6 @@ public sealed class SettingsForm : Form
             }
         };
 
-        var doPathActions = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            WrapContents = false,
-            FlowDirection = FlowDirection.LeftToRight,
-            Dock = DockStyle.None,
-            Anchor = AnchorStyles.Left,
-            Margin = new Padding(0)
-        };
-        doPathActions.Controls.Add(doBrowseBtn);
-        doPathActions.Controls.Add(doDetectBtn);
-
-        var dopusPathRow = new TableLayoutPanel
-        {
-            Dock = DockStyle.Fill,
-            ColumnCount = 2,
-            AutoSize = true,
-            Margin = new Padding(0, 0, 0, 6)
-        };
-        dopusPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        dopusPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        dopusPathRow.Controls.Add(_dopusPathBox, 0, 0);
-        dopusPathRow.Controls.Add(doPathActions, 1, 0);
-
-        // Default open with
         var openLabel = new Label
         {
             Text = "默认打开方式:",
@@ -206,6 +168,7 @@ public sealed class SettingsForm : Form
             Anchor = AnchorStyles.Left,
             Margin = new Padding(0, 0, 8, 0)
         };
+
         _openWithBox = new ComboBox
         {
             Dock = DockStyle.Fill,
@@ -219,7 +182,6 @@ public sealed class SettingsForm : Form
             _ => 0
         };
 
-        // Start with Windows
         _startupCheck = new CheckBox
         {
             Text = "开机自动启动",
@@ -228,7 +190,6 @@ public sealed class SettingsForm : Form
             Margin = new Padding(0, 8, 0, 0)
         };
 
-        // Shell menu integration
         _shellMenuCheck = new CheckBox
         {
             Text = "在右键菜单中显示 \"添加到 Quickstart\"",
@@ -237,13 +198,9 @@ public sealed class SettingsForm : Form
             Margin = new Padding(0, 8, 0, 0)
         };
 
-        // Buttons
         var okBtn = new Button
         {
             Text = "保存",
-            Width = 84,
-            Height = 34,
-            Font = new Font("Segoe UI", 9f),
             Margin = new Padding(8, 0, 0, 0)
         };
         ButtonStyler.ApplyPrimary(okBtn);
@@ -253,9 +210,6 @@ public sealed class SettingsForm : Form
         {
             Text = "取消",
             DialogResult = DialogResult.Cancel,
-            Width = 84,
-            Height = 34,
-            Font = new Font("Segoe UI", 9f),
             Margin = new Padding(8, 0, 0, 0)
         };
         ButtonStyler.ApplySecondary(cancelBtn);
@@ -263,13 +217,12 @@ public sealed class SettingsForm : Form
         AcceptButton = okBtn;
         CancelButton = cancelBtn;
 
-        // Info label
+        var configPath = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Quickstart", "config.json");
         var infoLabel = new Label
         {
-            Text = $"配置文件位置: {Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Quickstart", "config.json")}",
+            Text = $"配置文件位置: {configPath}",
             AutoSize = false,
             Dock = DockStyle.Fill,
-            Height = 22,
             TextAlign = ContentAlignment.MiddleLeft,
             Font = new Font("Segoe UI", 8f),
             ForeColor = Color.Gray,
@@ -302,6 +255,31 @@ public sealed class SettingsForm : Form
         tcPathRow.Controls.Add(_tcPathBox, 0, 0);
         tcPathRow.Controls.Add(pathActions, 1, 0);
 
+        var doPathActions = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+            Dock = DockStyle.None,
+            Anchor = AnchorStyles.Left,
+            Margin = new Padding(0)
+        };
+        doPathActions.Controls.Add(doBrowseBtn);
+        doPathActions.Controls.Add(doDetectBtn);
+
+        var dopusPathRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            ColumnCount = 2,
+            AutoSize = true,
+            Margin = new Padding(0, 0, 0, 6)
+        };
+        dopusPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        dopusPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        dopusPathRow.Controls.Add(_dopusPathBox, 0, 0);
+        dopusPathRow.Controls.Add(doPathActions, 1, 0);
+
         var openRow = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -320,9 +298,7 @@ public sealed class SettingsForm : Form
             FlowDirection = FlowDirection.RightToLeft,
             WrapContents = false,
             AutoSize = false,
-            Height = 40,
-            Margin = new Padding(0, 14, 0, 0),
-            Padding = new Padding(0, 0, 10, 0)
+            Margin = new Padding(0, 14, 0, 0)
         };
         buttonsRow.Controls.Add(cancelBtn);
         buttonsRow.Controls.Add(okBtn);
@@ -338,6 +314,47 @@ public sealed class SettingsForm : Form
         root.Controls.Add(infoLabel, 0, 9);
 
         Controls.Add(root);
+
+        void ApplyScaledMetrics()
+        {
+            Padding = UiScaleHelper.ScalePadding(this, new Padding(14));
+
+            var inputHeight = UiScaleHelper.GetInputHeight(_tcPathBox, 30);
+            var browseButtonSize = UiScaleHelper.GetButtonSize(this, tcBrowseBtn.Text, tcBrowseBtn.Font, 44, 30, horizontalLogicalPadding: 10);
+            var detectButtonSize = UiScaleHelper.GetButtonSize(this, tcDetectBtn.Text, tcDetectBtn.Font, 96, 30, horizontalLogicalPadding: 12);
+            var dialogButtonSize = UiScaleHelper.GetButtonSize(this, okBtn.Text, okBtn.Font, 84, 34, horizontalLogicalPadding: 12);
+
+            _tcPathBox.MinimumSize = new Size(0, inputHeight);
+            _dopusPathBox.MinimumSize = new Size(0, inputHeight);
+            _openWithBox.MinimumSize = new Size(0, UiScaleHelper.GetInputHeight(_openWithBox, 32));
+
+            tcBrowseBtn.Size = new Size(browseButtonSize.Width, inputHeight);
+            doBrowseBtn.Size = new Size(browseButtonSize.Width, inputHeight);
+            tcDetectBtn.Size = new Size(detectButtonSize.Width, inputHeight);
+            doDetectBtn.Size = new Size(detectButtonSize.Width, inputHeight);
+
+            okBtn.Size = dialogButtonSize;
+            cancelBtn.Size = UiScaleHelper.GetButtonSize(this, cancelBtn.Text, cancelBtn.Font, 84, 34, horizontalLogicalPadding: 12);
+
+            buttonsRow.Padding = new Padding(0, 0, UiScaleHelper.Scale(this, 10), 0);
+            buttonsRow.Height = dialogButtonSize.Height + UiScaleHelper.Scale(this, 8);
+
+            infoLabel.Height = Math.Max(
+                UiScaleHelper.Scale(this, 24),
+                TextRenderer.MeasureText(infoLabel.Text, infoLabel.Font).Height + UiScaleHelper.Scale(this, 6));
+
+            root.PerformLayout();
+            var preferred = root.GetPreferredSize(new Size(Math.Max(ClientSize.Width, UiScaleHelper.Scale(this, 580)), 0));
+            var minClientWidth = Math.Max(UiScaleHelper.Scale(this, 620), preferred.Width);
+            var minClientHeight = Math.Max(UiScaleHelper.Scale(this, 460), preferred.Height + UiScaleHelper.Scale(this, 8));
+            MinimumSize = SizeFromClientSize(new Size(minClientWidth, minClientHeight));
+            ClientSize = new Size(
+                Math.Max(UiScaleHelper.Scale(this, 580), preferred.Width),
+                Math.Max(UiScaleHelper.Scale(this, 420), preferred.Height));
+        }
+
+        ApplyScaledMetrics();
+        DpiChanged += (_, _) => ApplyScaledMetrics();
 
         var exePath = Application.ExecutablePath;
         var buildTag = exePath.Contains("\\Debug\\", StringComparison.OrdinalIgnoreCase)
@@ -362,13 +379,11 @@ public sealed class SettingsForm : Form
             _ => OpenWith.TotalCommander
         };
 
-        // Handle startup
         var startupChanged = config.StartWithWindows != _startupCheck.Checked;
         config.StartWithWindows = _startupCheck.Checked;
         if (startupChanged)
             SetStartup(_startupCheck.Checked);
 
-        // Handle shell menu
         var shellChanged = config.ShellMenuEnabled != _shellMenuCheck.Checked;
         config.ShellMenuEnabled = _shellMenuCheck.Checked;
         if (shellChanged)
