@@ -2,6 +2,7 @@ namespace Quickstart.Core;
 
 using System.Diagnostics;
 using Quickstart.Models;
+using Quickstart.Utils;
 
 public sealed class ProcessLauncher(ConfigManager configManager)
 {
@@ -52,12 +53,15 @@ public sealed class ProcessLauncher(ConfigManager configManager)
     {
         try
         {
-            Process.Start(new ProcessStartInfo
+            WindowActivator.AllowAnyForeground();
+            var proc = Process.Start(new ProcessStartInfo
             {
                 FileName = tcPath,
                 Arguments = $"/O /T /L=\"{path}\"",
                 UseShellExecute = false
             });
+            // TC 直接启动，用 seed process 追踪主窗口
+            WindowActivator.BringToFrontAsync(proc, windowClass: null, procName: null);
         }
         catch
         {
@@ -72,12 +76,15 @@ public sealed class ProcessLauncher(ConfigManager configManager)
             // dopusrt.exe lives alongside dopus.exe
             var dopusrt = Path.Combine(Path.GetDirectoryName(dopusPath)!, "dopusrt.exe");
             var exe = File.Exists(dopusrt) ? dopusrt : dopusPath;
+            WindowActivator.AllowAnyForeground();
             Process.Start(new ProcessStartInfo
             {
                 FileName = exe,
                 Arguments = $"/open \"{path}\"",
                 UseShellExecute = false
             });
+            // dopusrt 是启动器会立即退出，通过进程名找真正的 dopus 主窗口
+            WindowActivator.BringToFrontAsync(seedProcess: null, windowClass: null, procName: "dopus");
         }
         catch
         {
@@ -91,21 +98,25 @@ public sealed class ProcessLauncher(ConfigManager configManager)
         {
             if (Directory.Exists(path))
             {
+                WindowActivator.AllowAnyForeground();
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "explorer.exe",
                     Arguments = $"\"{path}\"",
                     UseShellExecute = false
                 });
+                WindowActivator.BringToFrontAsync(seedProcess: null, windowClass: "CabinetWClass");
             }
             else if (File.Exists(path))
             {
+                WindowActivator.AllowAnyForeground();
                 Process.Start(new ProcessStartInfo
                 {
                     FileName = "explorer.exe",
                     Arguments = $"/select,\"{path}\"",
                     UseShellExecute = false
                 });
+                WindowActivator.BringToFrontAsync(seedProcess: null, windowClass: "CabinetWClass");
             }
         }
         catch { }

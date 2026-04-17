@@ -119,6 +119,29 @@ static class Program
             EnsureMainPopup().AddPathEntry(addPath);
         }
 
+        // Global right-drag gesture: hold right button, drag right to show popup
+        var mouseHook = new GlobalMouseHook();
+        mouseHook.GestureTriggered += pt =>
+        {
+            var popup = EnsureMainPopup();
+            popup.ShowAtGesturePoint(pt);
+        };
+        mouseHook.GestureMove += pt =>
+        {
+            if (mainPopup is { Visible: true })
+                mainPopup.HighlightAtScreenPoint(pt);
+        };
+        mouseHook.GestureReleased += pt =>
+        {
+            if (mainPopup is { Visible: true })
+                mainPopup.TryReleaseAtScreenPoint(pt);
+        };
+        mouseHook.GestureCancelled += () =>
+        {
+            if (mainPopup is { Visible: true }) mainPopup.Hide();
+        };
+        Application.ApplicationExit += (_, _) => mouseHook.Dispose();
+
         // Run without a main form — tray icon keeps the app alive
         Application.Run();
 

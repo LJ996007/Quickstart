@@ -97,8 +97,16 @@ public sealed class MainPopup : Form
             MultiSelect = false
         };
 
-        _listView.Columns.Add("名称", 170);
-        _listView.Columns.Add("路径", 230);
+        _listView.Columns.Add("名称", 395); // 铺满，路径列已移除
+        _listView.OwnerDraw = true;
+        _listView.DrawColumnHeader += (_, e) => e.DrawDefault = true;
+        _listView.DrawItem += (_, e) =>
+        {
+            // 只画选中背景，文字由 DrawSubItem 负责
+            using var bg = new SolidBrush(e.Item.Selected ? SystemColors.Highlight : _listView.BackColor);
+            e.Graphics.FillRectangle(bg, e.Bounds);
+        };
+        _listView.DrawSubItem += OnDrawSubItem;
 
         // Item context menu
         _itemMenu = BuildItemContextMenu();
@@ -404,9 +412,9 @@ public sealed class MainPopup : Form
 
             var item = new ListViewItem(entry.Name, iconKey)
             {
-                Tag = entry
+                Tag = entry,
+                ToolTipText = entry.Path  // 路径改为悬停提示
             };
-            item.SubItems.Add(entry.Path);
 
             if (!PathExists(entry))
             {
@@ -424,11 +432,137 @@ public sealed class MainPopup : Form
             countLabel.Text = $"{entries.Count} 项";
     }
 
+    private void OnDrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
+    {
+        var g = e.Graphics;
+        var item = e.Item!;
+        var bounds = e.Bounds;
+
+        // 图标（仅第 0 列）
+        int textX = bounds.X + 2;
+        if (e.ColumnIndex == 0 && _listView.SmallImageList is { } imgList)
+        {
+            var key = item.ImageKey;
+            if (!string.IsNullOrEmpty(key) && imgList.Images.ContainsKey(key))
+            {
+                var img = imgList.Images[key];
+                if (img != null)
+                {
+                    int iconY = bounds.Y + (bounds.Height - imgList.ImageSize.Height) / 2;
+                    g.DrawImage(img, textX, iconY, imgList.ImageSize.Width, imgList.ImageSize.Height);
+                }
+            }
+            textX += imgList.ImageSize.Width + 4;
+        }
+
+        // 文字颜色
+        var textColor = item.Selected ? SystemColors.HighlightText : item.ForeColor;
+
+        // 文字区域
+        var textBounds = new Rectangle(textX, bounds.Y, bounds.Right - textX - 2, bounds.Height);
+        var display = MidTruncate(item.Text, _listView.Font, textBounds.Width);
+
+        TextRenderer.DrawText(g, display, _listView.Font, textBounds, textColor,
+            TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+    }
+
+    private static string MidTruncate(string text, Font font, int maxPx)
+    {
+        if (string.IsNullOrEmpty(text) || maxPx <= 0) return text;
+        if (TextRenderer.MeasureText(text, font).Width <= maxPx) return text;
+
+        const string dots = "...";
+        int dotsW = TextRenderer.MeasureText(dots, font).Width;
+        int avail = maxPx - dotsW;
+        if (avail <= 0) return dots;
+
+        // 二分求起始段可放字符数（占一半空间）
+        int half = avail / 2;
+        int lo = 0, hi = text.Length / 2;
+        while (lo < hi)
+        {
+            int mid = (lo + hi + 1) / 2;
+            if (TextRenderer.MeasureText(text[..mid], font).Width <= half) lo = mid;
+            else hi = mid - 1;
+        }
+        int startLen = lo;
+        int usedStart = startLen > 0 ? TextRenderer.MeasureText(text[..startLen], font).Width : 0;
+
+        // 剩余空间给末尾段
+        int endAvail = avail - usedStart;
+        lo = 0; hi = text.Length - startLen;
+        while (lo < hi)
+        {
+            int mid = (lo + hi + 1) / 2;
+            if (TextRenderer.MeasureText(text[^mid..], font).Width <= endAvail) lo = mid;
+            else hi = mid - 1;
+        }
+        int endLen = lo;
+
+        return text[..startLen] + dots + (endLen > 0 ? text[^endLen..] : "");
+    }
+
     private static bool PathExists(QuickEntry entry)
     {
         return entry.Type == EntryType.Folder
             ? Directory.Exists(entry.Path)
             : File.Exists(entry.Path);
+    }
+
+    public void ShowAtGesturePoint(Point screenPt)
+    {
+        RefreshList();
+        _searchBox.Clear();
+
+        // Position so cursor lands in the list area (search panel is ~49px tall, add 8px margin)
+        var wa = Screen.FromPoint(screenPt).WorkingArea;
+        int x = Math.Max(wa.Left, Math.Min(screenPt.X - 8, wa.Right - Width));
+        int y = Math.Max(wa.Top, Math.Min(screenPt.Y - 57, wa.Bottom - Height));
+        Location = new Point(x, y);
+
+        Show(); // No Activate() — keep focus on drag source window
+    }
+
+    public void HighlightAtScreenPoint(Point screenPt)
+    {
+        var clientPt = _listView.PointToClient(screenPt);
+        var item = _listView.GetItemAt(clientPt.X, clientPt.Y);
+        if (item != null)
+        {
+            if (!item.Selected)
+            {
+                _listView.SelectedItems.Clear();
+                item.Selected = true;
+            }
+        }
+        else
+        {
+            if (_listView.SelectedItems.Count > 0)
+                _listView.SelectedItems.Clear();
+        }
+    }
+
+    public bool TryReleaseAtScreenPoint(Point screenPt)
+    {
+        if (!Bounds.Contains(screenPt))
+        {
+            Hide();
+            return false;
+        }
+
+        var clientPt = _listView.PointToClient(screenPt);
+        var item = _listView.GetItemAt(clientPt.X, clientPt.Y);
+        if (item?.Tag is QuickEntry entry)
+        {
+            _launcher.Open(entry);
+            Hide();
+            return true;
+        }
+
+        // Released in popup but not on an entry — activate so user can continue interacting
+        Activate();
+        _searchBox.Focus();
+        return false;
     }
 
     private void PositionNearTray()
@@ -463,7 +597,7 @@ public sealed class MainPopup : Form
         }
     }
 
-    protected override bool ShowWithoutActivation => false;
+    protected override bool ShowWithoutActivation => true;
 
     protected override CreateParams CreateParams
     {

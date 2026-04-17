@@ -279,3 +279,4 @@ C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Release\net10.0-windows\win-
 C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Release\net10.0-windows\win-x64\Quickstart.genruntimeconfig.cache
 C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Release\net10.0-windows\win-x64\ref\Quickstart.dll
 C:\Users\markl\Desktop\ai\Quickstart\Quickstart\bin\Release\net10.0-windows\win-x64\Quickstart.exe
+C:\Users\markl\Desktop\ai\Quickstart\Quickstart\obj\Release\net10.0-windows\win-x64\Quickstart.sourcelink.json
