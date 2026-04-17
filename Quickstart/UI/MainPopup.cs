@@ -6,13 +6,23 @@ using Quickstart.Utils;
 
 public sealed class MainPopup : Form
 {
+    // Which tab category is active
+    private enum TabKind { Files, Urls, Texts }
+
     private readonly ConfigManager _configManager;
     private readonly ProcessLauncher _launcher;
     private readonly TextBox _searchBox;
     private readonly ListView _listView;
     private readonly ImageList _imageList;
+    private readonly Image? _webEntryImage;
     private readonly System.Windows.Forms.Timer _debounceTimer;
-    private readonly ContextMenuStrip _itemMenu;
+    private readonly Label[] _tabLabels;
+    private readonly Panel _tabPanel;
+    private TabKind _activeTab = TabKind.Files;
+
+    // "Copied!" toast label (shown briefly after text copy)
+    private readonly Label _toastLabel;
+    private readonly System.Windows.Forms.Timer _toastTimer;
 
     public event Action? ShowSettings;
 
@@ -76,12 +86,55 @@ public sealed class MainPopup : Form
         // Toolbar
         var toolbar = CreateToolbar();
 
+        // ── Right-side vertical tab panel ──
+        _tabPanel = new Panel
+        {
+            Dock = DockStyle.Right,
+            Width = 36,
+            BackColor = Color.FromArgb(240, 240, 240)
+        };
+
+        string[] tabTexts = ["文\n件", "网\n页", "文\n本"];
+        TabKind[] tabKinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
+        _tabLabels = new Label[3];
+
+        for (int i = 0; i < 3; i++)
+        {
+            var kind = tabKinds[i];
+            var lbl = new Label
+            {
+                Text = tabTexts[i],
+                TextAlign = ContentAlignment.MiddleCenter,
+                Font = new Font("Microsoft YaHei UI", 9f),
+                Dock = DockStyle.Top,
+                Height = 56,
+                Cursor = Cursors.Hand
+            };
+            lbl.Click += (_, _) => SwitchTab(kind);
+            _tabLabels[i] = lbl;
+        }
+
+        // Add in reverse order so the first tab is on top (Dock=Top stacks)
+        for (int i = _tabLabels.Length - 1; i >= 0; i--)
+            _tabPanel.Controls.Add(_tabLabels[i]);
+
+        ApplyTabStyles();
+
+        // Separator between tabs and content
+        var tabSep = new Panel
+        {
+            Dock = DockStyle.Right,
+            Width = 1,
+            BackColor = Color.FromArgb(220, 220, 220)
+        };
+
         // Image list for icons
         _imageList = new ImageList
         {
             ImageSize = new Size(16, 16),
             ColorDepth = ColorDepth.Depth32Bit
         };
+        _webEntryImage = LoadWebEntryImage();
 
         // ListView
         _listView = new ListView
@@ -97,7 +150,7 @@ public sealed class MainPopup : Form
             MultiSelect = false
         };
 
-        _listView.Columns.Add("名称", 395); // 铺满，路径列已移除
+        _listView.Columns.Add("名称", 358);
         _listView.OwnerDraw = true;
         _listView.DrawColumnHeader += (_, e) => e.DrawDefault = true;
         _listView.DrawItem += (_, e) =>
@@ -108,13 +161,13 @@ public sealed class MainPopup : Form
         };
         _listView.DrawSubItem += OnDrawSubItem;
 
-        // Item context menu
-        _itemMenu = BuildItemContextMenu();
+        // Item context menu — built dynamically on each right-click
         _listView.MouseClick += (_, e) =>
         {
             if (e.Button == MouseButtons.Right && _listView.FocusedItem?.Bounds.Contains(e.Location) == true)
             {
-                _itemMenu.Show(_listView, e.Location);
+                var menu = BuildItemContextMenu();
+                menu.Show(_listView, e.Location);
             }
         };
 
@@ -178,7 +231,7 @@ public sealed class MainPopup : Form
             }
         };
 
-        // Enable drag-drop
+        // Enable drag-drop (file tab only — checked in OnDragEnter)
         AllowDrop = true;
         _listView.AllowDrop = true;
         DragEnter += OnDragEnter;
@@ -186,9 +239,31 @@ public sealed class MainPopup : Form
         _listView.DragEnter += OnDragEnter;
         _listView.DragDrop += OnDragDrop;
 
-        // Assembly: inner contains toolbar at bottom, listview fills, separator, searchpanel at top
+        // Toast label for "已复制" feedback
+        _toastLabel = new Label
+        {
+            Text = "已复制",
+            AutoSize = false,
+            Size = new Size(80, 28),
+            TextAlign = ContentAlignment.MiddleCenter,
+            Font = new Font("Microsoft YaHei UI", 9f),
+            ForeColor = Color.White,
+            BackColor = Color.FromArgb(60, 60, 60),
+            Visible = false
+        };
+        _toastTimer = new System.Windows.Forms.Timer { Interval = 1000 };
+        _toastTimer.Tick += (_, _) =>
+        {
+            _toastTimer.Stop();
+            _toastLabel.Visible = false;
+        };
+
+        // Assembly: inner contains toolbar at bottom, tab panel right, listview fills, separator, searchpanel at top
         inner.Controls.Add(_listView);      // Fill
+        inner.Controls.Add(_toastLabel);    // Overlay (positioned in RefreshList)
         inner.Controls.Add(toolbar);        // Bottom
+        inner.Controls.Add(tabSep);         // Right (separator)
+        inner.Controls.Add(_tabPanel);      // Right (tabs)
         inner.Controls.Add(separator);      // Top (below search)
         inner.Controls.Add(searchPanel);    // Top
 
@@ -199,6 +274,39 @@ public sealed class MainPopup : Form
         Deactivate += (_, _) =>
         {
             if (Visible) Hide();
+        };
+    }
+
+    // ── Tab switching ──
+
+    private void SwitchTab(TabKind kind)
+    {
+        if (_activeTab == kind) return;
+        _activeTab = kind;
+        ApplyTabStyles();
+        UpdateSearchPlaceholder();
+        RefreshList();
+    }
+
+    private void ApplyTabStyles()
+    {
+        TabKind[] kinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
+        for (int i = 0; i < _tabLabels.Length; i++)
+        {
+            bool active = kinds[i] == _activeTab;
+            _tabLabels[i].BackColor = active ? Color.FromArgb(60, 60, 60) : Color.FromArgb(240, 240, 240);
+            _tabLabels[i].ForeColor = active ? Color.White : Color.FromArgb(80, 80, 80);
+        }
+    }
+
+    private void UpdateSearchPlaceholder()
+    {
+        _searchBox.PlaceholderText = _activeTab switch
+        {
+            TabKind.Files => "搜索文件夹或文件... (拼音首字母也可)",
+            TabKind.Urls  => "搜索网页...",
+            TabKind.Texts => "搜索文本...",
+            _ => "搜索..."
         };
     }
 
@@ -252,51 +360,113 @@ public sealed class MainPopup : Form
 
     private ContextMenuStrip BuildItemContextMenu()
     {
+        var entry = GetSelectedEntry();
         var menu = new ContextMenuStrip();
 
-        var openDefault = new ToolStripMenuItem("打开");
-        openDefault.Font = new Font(openDefault.Font, FontStyle.Bold);
-        openDefault.Click += (_, _) => OpenSelectedEntry();
-        menu.Items.Add(openDefault);
+        if (entry == null) return menu;
 
-        var openTc = new ToolStripMenuItem("用 Total Commander 打开");
-        openTc.Click += (_, _) => OpenSelectedEntry(OpenWith.TotalCommander);
-        menu.Items.Add(openTc);
-
-        var openExplorer = new ToolStripMenuItem("用资源管理器打开");
-        openExplorer.Click += (_, _) => OpenSelectedEntry(OpenWith.Explorer);
-        menu.Items.Add(openExplorer);
-
-        var openDopus = new ToolStripMenuItem("用 Directory Opus 打开");
-        openDopus.Click += (_, _) => OpenSelectedEntry(OpenWith.DirectoryOpus);
-        menu.Items.Add(openDopus);
-
-        menu.Items.Add(new ToolStripSeparator());
-
-        var editItem = new ToolStripMenuItem("编辑(&E)");
-        editItem.Click += (_, _) => EditSelectedEntry();
-        menu.Items.Add(editItem);
-
-        var deleteItem = new ToolStripMenuItem("删除(&D)");
-        deleteItem.Click += (_, _) => DeleteSelectedEntry();
-        menu.Items.Add(deleteItem);
-
-        menu.Items.Add(new ToolStripSeparator());
-
-        var locateItem = new ToolStripMenuItem("在资源管理器中定位");
-        locateItem.Click += (_, _) =>
+        switch (entry.Type)
         {
-            var entry = GetSelectedEntry();
-            if (entry != null)
-                ProcessLauncher.OpenInExplorer(entry.Path);
-        };
-        menu.Items.Add(locateItem);
+            case EntryType.Folder:
+            case EntryType.File:
+            {
+                var openDefault = new ToolStripMenuItem("打开");
+                openDefault.Font = new Font(openDefault.Font, FontStyle.Bold);
+                openDefault.Click += (_, _) => OpenSelectedEntry();
+                menu.Items.Add(openDefault);
+
+                if (entry.Type == EntryType.Folder)
+                {
+                    var openTc = new ToolStripMenuItem("用 Total Commander 打开");
+                    openTc.Click += (_, _) => OpenSelectedEntry(OpenWith.TotalCommander);
+                    menu.Items.Add(openTc);
+
+                    var openExplorer = new ToolStripMenuItem("用资源管理器打开");
+                    openExplorer.Click += (_, _) => OpenSelectedEntry(OpenWith.Explorer);
+                    menu.Items.Add(openExplorer);
+
+                    var openDopus = new ToolStripMenuItem("用 Directory Opus 打开");
+                    openDopus.Click += (_, _) => OpenSelectedEntry(OpenWith.DirectoryOpus);
+                    menu.Items.Add(openDopus);
+                }
+
+                menu.Items.Add(new ToolStripSeparator());
+
+                var editItem = new ToolStripMenuItem("编辑(&E)");
+                editItem.Click += (_, _) => EditSelectedEntry();
+                menu.Items.Add(editItem);
+
+                var deleteItem = new ToolStripMenuItem("删除(&D)");
+                deleteItem.Click += (_, _) => DeleteSelectedEntry();
+                menu.Items.Add(deleteItem);
+
+                menu.Items.Add(new ToolStripSeparator());
+
+                var locateItem = new ToolStripMenuItem("在资源管理器中定位");
+                locateItem.Click += (_, _) =>
+                {
+                    var e2 = GetSelectedEntry();
+                    if (e2 != null) ProcessLauncher.OpenInExplorer(e2.Path);
+                };
+                menu.Items.Add(locateItem);
+                break;
+            }
+
+            case EntryType.Url:
+            {
+                var openUrl = new ToolStripMenuItem("在浏览器中打开");
+                openUrl.Font = new Font(openUrl.Font, FontStyle.Bold);
+                openUrl.Click += (_, _) => OpenSelectedEntry();
+                menu.Items.Add(openUrl);
+
+                var copyUrl = new ToolStripMenuItem("复制网址");
+                copyUrl.Click += (_, _) =>
+                {
+                    var e2 = GetSelectedEntry();
+                    if (e2 != null) CopyToClipboard(e2.Path);
+                };
+                menu.Items.Add(copyUrl);
+
+                menu.Items.Add(new ToolStripSeparator());
+
+                var editUrl = new ToolStripMenuItem("编辑(&E)");
+                editUrl.Click += (_, _) => EditSelectedEntry();
+                menu.Items.Add(editUrl);
+
+                var deleteUrl = new ToolStripMenuItem("删除(&D)");
+                deleteUrl.Click += (_, _) => DeleteSelectedEntry();
+                menu.Items.Add(deleteUrl);
+                break;
+            }
+
+            case EntryType.Text:
+            {
+                var copyText = new ToolStripMenuItem("复制文本");
+                copyText.Font = new Font(copyText.Font, FontStyle.Bold);
+                copyText.Click += (_, _) => OpenSelectedEntry();
+                menu.Items.Add(copyText);
+
+                menu.Items.Add(new ToolStripSeparator());
+
+                var editText = new ToolStripMenuItem("编辑(&E)");
+                editText.Click += (_, _) => EditSelectedEntry();
+                menu.Items.Add(editText);
+
+                var deleteText = new ToolStripMenuItem("删除(&D)");
+                deleteText.Click += (_, _) => DeleteSelectedEntry();
+                menu.Items.Add(deleteText);
+                break;
+            }
+        }
 
         return menu;
     }
 
     public void ShowPopup()
     {
+        _activeTab = TabKind.Files;
+        ApplyTabStyles();
+        UpdateSearchPlaceholder();
         RefreshList();
         PositionNearTray();
         _searchBox.Clear();
@@ -328,7 +498,15 @@ public sealed class MainPopup : Form
 
     private void AddNewEntry()
     {
-        var entry = new QuickEntry();
+        var entry = new QuickEntry
+        {
+            Type = _activeTab switch
+            {
+                TabKind.Urls  => EntryType.Url,
+                TabKind.Texts => EntryType.Text,
+                _ => EntryType.Folder
+            }
+        };
         using var form = new EntryEditForm(entry);
         if (form.ShowDialog(this) == DialogResult.OK)
         {
@@ -370,8 +548,46 @@ public sealed class MainPopup : Form
     {
         var entry = GetSelectedEntry();
         if (entry == null) return;
-        _launcher.Open(entry, overrideWith);
+        ExecuteEntry(entry, overrideWith);
         Hide();
+    }
+
+    /// <summary>Execute the action for an entry based on its type.</summary>
+    private void ExecuteEntry(QuickEntry entry, OpenWith? overrideWith = null)
+    {
+        switch (entry.Type)
+        {
+            case EntryType.Url:
+                _configManager.TouchEntry(entry.Id);
+                ProcessLauncher.OpenUrl(entry.Path);
+                break;
+            case EntryType.Text:
+                _configManager.TouchEntry(entry.Id);
+                CopyToClipboard(entry.Path);
+                break;
+            default:
+                _launcher.Open(entry, overrideWith);
+                break;
+        }
+    }
+
+    private void CopyToClipboard(string text)
+    {
+        if (!string.IsNullOrEmpty(text))
+            Clipboard.SetText(text);
+        ShowToast();
+    }
+
+    private void ShowToast()
+    {
+        // Position toast in center of the ListView
+        _toastLabel.Location = new Point(
+            _listView.Left + (_listView.Width - _toastLabel.Width) / 2,
+            _listView.Top + (_listView.Height - _toastLabel.Height) / 2);
+        _toastLabel.BringToFront();
+        _toastLabel.Visible = true;
+        _toastTimer.Stop();
+        _toastTimer.Start();
     }
 
     private QuickEntry? GetSelectedEntry()
@@ -384,6 +600,15 @@ public sealed class MainPopup : Form
     {
         var query = _searchBox.Text.Trim();
         var entries = _configManager.Config.Entries;
+
+        // Filter by active tab
+        entries = _activeTab switch
+        {
+            TabKind.Files => entries.Where(e => e.Type is EntryType.Folder or EntryType.File).ToList(),
+            TabKind.Urls  => entries.Where(e => e.Type == EntryType.Url).ToList(),
+            TabKind.Texts => entries.Where(e => e.Type == EntryType.Text).ToList(),
+            _ => entries
+        };
 
         if (!string.IsNullOrEmpty(query))
         {
@@ -400,23 +625,55 @@ public sealed class MainPopup : Form
 
         foreach (var entry in entries)
         {
-            var iconKey = entry.Type == EntryType.Folder ? "<DIR>" : Path.GetExtension(entry.Path).ToLowerInvariant();
-            if (string.IsNullOrEmpty(iconKey)) iconKey = "<NOEXT>";
-
-            if (!_imageList.Images.ContainsKey(iconKey))
+            string? iconKey;
+            if (entry.Type == EntryType.Url)
+                iconKey = _webEntryImage != null ? "<URL_CUSTOM>" : ".url";
+            else if (entry.Type == EntryType.Text)
+                iconKey = null;
+            else if (entry.Type == EntryType.Folder)
+                iconKey = "<DIR>";
+            else
             {
-                var icon = IconExtractor.GetIcon(entry.Path, entry.Type == EntryType.Folder);
-                if (icon != null)
-                    _imageList.Images.Add(iconKey, icon);
+                iconKey = Path.GetExtension(entry.Path).ToLowerInvariant();
+                if (string.IsNullOrEmpty(iconKey)) iconKey = "<NOEXT>";
             }
 
-            var item = new ListViewItem(entry.Name, iconKey)
+            if (!string.IsNullOrEmpty(iconKey) && !_imageList.Images.ContainsKey(iconKey))
             {
-                Tag = entry,
-                ToolTipText = entry.Path  // 路径改为悬停提示
-            };
+                if (entry.Type == EntryType.Url)
+                {
+                    if (_webEntryImage != null)
+                    {
+                        _imageList.Images.Add(iconKey, _webEntryImage);
+                    }
+                    else
+                    {
+                        var icon = IconExtractor.GetIcon(iconKey, isDirectory: false);
+                        if (icon != null)
+                            _imageList.Images.Add(iconKey, icon);
+                    }
+                }
+                else
+                {
+                    var icon = IconExtractor.GetIcon(entry.Path, entry.Type == EntryType.Folder);
+                    if (icon != null)
+                        _imageList.Images.Add(iconKey, icon);
+                }
+            }
 
-            if (!PathExists(entry))
+            var item = string.IsNullOrEmpty(iconKey)
+                ? new ListViewItem(entry.Name)
+                : new ListViewItem(entry.Name, iconKey)
+                {
+                    ImageKey = iconKey
+                };
+
+            item.Tag = entry;
+            item.ToolTipText = entry.Type == EntryType.Text
+                ? (entry.Path.Length > 200 ? entry.Path[..200] + "..." : entry.Path)
+                : entry.Path;
+
+            if (entry.Type is EntryType.Folder or EntryType.File && !PathExists(entry))
             {
                 item.ForeColor = Color.Red;
             }
@@ -432,6 +689,23 @@ public sealed class MainPopup : Form
             countLabel.Text = $"{entries.Count} 项";
     }
 
+    private static Image? LoadWebEntryImage()
+    {
+        try
+        {
+            var asm = typeof(MainPopup).Assembly;
+            using var stream = asm.GetManifestResourceStream("Quickstart.Resources.web-url.png");
+            if (stream == null) return null;
+
+            using var original = Image.FromStream(stream);
+            return new Bitmap(original, new Size(16, 16));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     private void OnDrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
     {
         var g = e.Graphics;
@@ -442,6 +716,7 @@ public sealed class MainPopup : Form
         int textX = bounds.X + 2;
         if (e.ColumnIndex == 0 && _listView.SmallImageList is { } imgList)
         {
+            bool drewIcon = false;
             var key = item.ImageKey;
             if (!string.IsNullOrEmpty(key) && imgList.Images.ContainsKey(key))
             {
@@ -450,9 +725,11 @@ public sealed class MainPopup : Form
                 {
                     int iconY = bounds.Y + (bounds.Height - imgList.ImageSize.Height) / 2;
                     g.DrawImage(img, textX, iconY, imgList.ImageSize.Width, imgList.ImageSize.Height);
+                    drewIcon = true;
                 }
             }
-            textX += imgList.ImageSize.Width + 4;
+            if (drewIcon)
+                textX += imgList.ImageSize.Width + 4;
         }
 
         // 文字颜色
@@ -511,6 +788,10 @@ public sealed class MainPopup : Form
 
     public void ShowAtGesturePoint(Point screenPt)
     {
+        // Reset to Files tab for gesture
+        _activeTab = TabKind.Files;
+        ApplyTabStyles();
+        UpdateSearchPlaceholder();
         RefreshList();
         _searchBox.Clear();
 
@@ -525,6 +806,27 @@ public sealed class MainPopup : Form
 
     public void HighlightAtScreenPoint(Point screenPt)
     {
+        // Check if mouse is over a tab label → auto-switch tab
+        var tabClientPt = _tabPanel.PointToClient(screenPt);
+        if (_tabPanel.ClientRectangle.Contains(tabClientPt))
+        {
+            TabKind[] kinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
+            for (int i = 0; i < _tabLabels.Length; i++)
+            {
+                if (_tabLabels[i].Bounds.Contains(tabClientPt))
+                {
+                    if (_activeTab != kinds[i])
+                        SwitchTab(kinds[i]);
+                    break;
+                }
+            }
+            // Clear list selection when over tabs
+            if (_listView.SelectedItems.Count > 0)
+                _listView.SelectedItems.Clear();
+            return;
+        }
+
+        // Otherwise highlight list item
         var clientPt = _listView.PointToClient(screenPt);
         var item = _listView.GetItemAt(clientPt.X, clientPt.Y);
         if (item != null)
@@ -554,7 +856,7 @@ public sealed class MainPopup : Form
         var item = _listView.GetItemAt(clientPt.X, clientPt.Y);
         if (item?.Tag is QuickEntry entry)
         {
-            _launcher.Open(entry);
+            ExecuteEntry(entry);
             Hide();
             return true;
         }
@@ -580,7 +882,7 @@ public sealed class MainPopup : Form
 
     private void OnDragEnter(object? sender, DragEventArgs e)
     {
-        if (e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+        if (_activeTab == TabKind.Files && e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
             e.Effect = DragDropEffects.Link;
         else
             e.Effect = DragDropEffects.None;

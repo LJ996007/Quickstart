@@ -30,6 +30,7 @@
 
   <ItemGroup>
     <EmbeddedResource Include="Resources\app.ico" />
+    <EmbeddedResource Include="Resources\web-url.png" />
   </ItemGroup>
 
 </Project>

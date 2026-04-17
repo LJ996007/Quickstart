@@ -25,10 +25,14 @@ public static class IconExtractor
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool DestroyIcon(IntPtr hIcon);
 
+    [DllImport("shell32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr ExtractIcon(IntPtr hInst, string lpszExeFileName, int nIconIndex);
+
     private const uint SHGFI_ICON = 0x100;
     private const uint SHGFI_SMALLICON = 0x1;
     private const uint SHGFI_USEFILEATTRIBUTES = 0x10;
     private const uint FILE_ATTRIBUTE_DIRECTORY = 0x10;
+    private const uint FILE_ATTRIBUTE_NORMAL = 0x80;
 
     private static readonly Dictionary<string, Icon> _cache = new(StringComparer.OrdinalIgnoreCase);
 
@@ -49,6 +53,11 @@ public static class IconExtractor
             flags |= SHGFI_USEFILEATTRIBUTES;
             attrs = FILE_ATTRIBUTE_DIRECTORY;
         }
+        else if (!File.Exists(path))
+        {
+            flags |= SHGFI_USEFILEATTRIBUTES;
+            attrs = FILE_ATTRIBUTE_NORMAL;
+        }
 
         var result = SHGetFileInfo(
             isDirectory ? "folder" : (File.Exists(path) ? path : $"x{cacheKey}"),
@@ -61,6 +70,24 @@ public static class IconExtractor
         var icon = (Icon)Icon.FromHandle(shfi.hIcon).Clone();
         DestroyIcon(shfi.hIcon);
 
+        _cache[cacheKey] = icon;
+        return icon;
+    }
+
+    /// <summary>Get an icon from shell32.dll by index.</summary>
+    public static Icon? GetShellIcon(int index)
+    {
+        var cacheKey = $"<SHELL:{index}>";
+        if (_cache.TryGetValue(cacheKey, out var cached))
+            return cached;
+
+        var shell32 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "shell32.dll");
+        var hIcon = ExtractIcon(IntPtr.Zero, shell32, index);
+        if (hIcon == IntPtr.Zero || hIcon == (IntPtr)1)
+            return null;
+
+        var icon = (Icon)Icon.FromHandle(hIcon).Clone();
+        DestroyIcon(hIcon);
         _cache[cacheKey] = icon;
         return icon;
     }

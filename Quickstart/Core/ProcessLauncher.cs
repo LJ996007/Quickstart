@@ -19,6 +19,18 @@ public sealed class ProcessLauncher(ConfigManager configManager)
             return;
         }
 
+        if (entry.Type == EntryType.Url)
+        {
+            OpenUrl(entry.Path);
+            return;
+        }
+
+        if (entry.Type == EntryType.Text)
+        {
+            // Text entries are handled by the UI (clipboard copy), nothing to do here
+            return;
+        }
+
         // Folder
         switch (openWith)
         {
@@ -118,6 +130,19 @@ public sealed class ProcessLauncher(ConfigManager configManager)
                 });
                 WindowActivator.BringToFrontAsync(seedProcess: null, windowClass: "CabinetWClass");
             }
+        }
+        catch { }
+    }
+
+    public static void OpenUrl(string url)
+    {
+        try
+        {
+            Process.Start(new ProcessStartInfo
+            {
+                FileName = url,
+                UseShellExecute = true
+            });
         }
         catch { }
     }

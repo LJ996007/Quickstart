@@ -10,6 +10,22 @@ public sealed class EntryEditForm : Form
     private readonly TextBox _pathBox;
     private readonly ComboBox _typeBox;
     private readonly TextBox _groupBox;
+    private readonly Button _browseBtn;
+    private readonly Label _pathLabel;
+    private readonly Button _okBtn;
+    private readonly Button _cancelBtn;
+
+    // Baseline positions for File/Folder mode
+    private const int PathLabelY = 56;
+    private const int TypeRowY = 92;
+    private const int ButtonY = 205;
+    private const int FormHeight = 310;
+
+    // Expanded positions for Text mode (multiline)
+    private const int TextBoxHeight = 120;
+    private const int TextTypeRowY = 56 + TextBoxHeight + 12; // pathBox top + height + gap
+    private const int TextButtonY = TextTypeRowY + 36;
+    private const int TextFormHeight = TextButtonY + 80;
 
     public EntryEditForm(QuickEntry entry)
     {
@@ -18,7 +34,7 @@ public sealed class EntryEditForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
 
         Text = string.IsNullOrEmpty(entry.Name) ? "添加条目" : "编辑条目";
-        Size = new Size(500, 310);
+        Size = new Size(500, FormHeight);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
@@ -33,7 +49,7 @@ public sealed class EntryEditForm : Form
             Width = 380
         };
 
-        var pathLabel = new Label { Text = "路径:", Location = new Point(16, 56), AutoSize = true };
+        _pathLabel = new Label { Text = "路径:", Location = new Point(16, PathLabelY), AutoSize = true };
         _pathBox = new TextBox
         {
             Text = entry.Path,
@@ -41,7 +57,7 @@ public sealed class EntryEditForm : Form
             Width = 330
         };
 
-        var browseBtn = new Button
+        _browseBtn = new Button
         {
             Text = "...",
             Location = new Point(418, 51),
@@ -49,72 +65,96 @@ public sealed class EntryEditForm : Form
             Height = 30,
             Font = new Font("Segoe UI", 9f)
         };
-        browseBtn.Click += OnBrowse;
-        ButtonStyler.ApplySecondary(browseBtn);
+        _browseBtn.Click += OnBrowse;
+        ButtonStyler.ApplySecondary(_browseBtn);
 
-        var typeLabel = new Label { Text = "类型:", Location = new Point(16, 92), AutoSize = true };
+        var typeLabel = new Label { Text = "类型:", Location = new Point(16, TypeRowY), AutoSize = true };
         _typeBox = new ComboBox
         {
-            Location = new Point(80, 89),
+            Location = new Point(80, TypeRowY - 3),
             Width = 120,
             DropDownStyle = ComboBoxStyle.DropDownList
         };
-        _typeBox.Items.AddRange(["文件夹", "文件"]);
-        _typeBox.SelectedIndex = entry.Type == EntryType.Folder ? 0 : 1;
+        _typeBox.Items.AddRange(["文件夹", "文件", "网页", "文本"]);
+        _typeBox.SelectedIndex = entry.Type switch
+        {
+            EntryType.Folder => 0,
+            EntryType.File   => 1,
+            EntryType.Url    => 2,
+            EntryType.Text   => 3,
+            _ => 0
+        };
 
-        var groupLabel = new Label { Text = "分组:", Location = new Point(220, 92), AutoSize = true };
+        var groupLabel = new Label { Text = "分组:", Location = new Point(220, TypeRowY), AutoSize = true };
         _groupBox = new TextBox
         {
             Text = entry.Group,
-            Location = new Point(270, 89),
+            Location = new Point(270, TypeRowY - 3),
             Width = 190
         };
 
-        var okBtn = new Button
+        _okBtn = new Button
         {
             Text = "确定",
             DialogResult = DialogResult.OK,
-            Location = new Point(278, 205),
+            Location = new Point(278, ButtonY),
             Width = 88,
             Height = 34,
             Font = new Font("Segoe UI", 9f)
         };
-        ButtonStyler.ApplyPrimary(okBtn);
+        ButtonStyler.ApplyPrimary(_okBtn);
 
-        var cancelBtn = new Button
+        _cancelBtn = new Button
         {
             Text = "取消",
             DialogResult = DialogResult.Cancel,
-            Location = new Point(372, 205),
+            Location = new Point(372, ButtonY),
             Width = 88,
             Height = 34,
             Font = new Font("Segoe UI", 9f)
         };
-        ButtonStyler.ApplySecondary(cancelBtn);
+        ButtonStyler.ApplySecondary(_cancelBtn);
 
-        AcceptButton = okBtn;
-        CancelButton = cancelBtn;
+        AcceptButton = _okBtn;
+        CancelButton = _cancelBtn;
 
-        okBtn.Click += (_, _) =>
+        _okBtn.Click += (_, _) =>
         {
-            if (string.IsNullOrWhiteSpace(_pathBox.Text))
+            var currentType = GetSelectedEntryType();
+            var pathText = _pathBox.Text.Trim();
+
+            if (string.IsNullOrWhiteSpace(pathText))
             {
-                MessageBox.Show("请输入路径。", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                var hint = currentType switch
+                {
+                    EntryType.Url  => "请输入网址。",
+                    EntryType.Text => "请输入内容。",
+                    _ => "请输入路径。"
+                };
+                MessageBox.Show(hint, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 DialogResult = DialogResult.None;
                 return;
             }
 
-            _entry.Path = _pathBox.Text.Trim();
+            _entry.Path = pathText;
             _entry.Name = string.IsNullOrWhiteSpace(_nameBox.Text)
-                ? Path.GetFileName(_entry.Path)
+                ? (currentType == EntryType.Url || currentType == EntryType.Text
+                    ? pathText[..Math.Min(pathText.Length, 30)]
+                    : Path.GetFileName(_entry.Path))
                 : _nameBox.Text.Trim();
-            _entry.Type = _typeBox.SelectedIndex == 0 ? EntryType.Folder : EntryType.File;
+            _entry.Type = currentType;
             _entry.Group = _groupBox.Text.Trim();
         };
 
-        // Auto-detect type when path changes
+        // Type change → adjust layout dynamically
+        _typeBox.SelectedIndexChanged += (_, _) => AdjustLayoutForType();
+
+        // Auto-detect type when path changes (only for file/folder types)
         _pathBox.TextChanged += (_, _) =>
         {
+            var currentType = GetSelectedEntryType();
+            if (currentType is EntryType.Url or EntryType.Text) return;
+
             var p = _pathBox.Text.Trim();
             if (Directory.Exists(p))
                 _typeBox.SelectedIndex = 0;
@@ -127,10 +167,10 @@ public sealed class EntryEditForm : Form
             }
         };
 
-        Controls.AddRange([nameLabel, _nameBox, pathLabel, _pathBox, browseBtn,
-            typeLabel, _typeBox, groupLabel, _groupBox, okBtn, cancelBtn]);
+        Controls.AddRange([nameLabel, _nameBox, _pathLabel, _pathBox, _browseBtn,
+            typeLabel, _typeBox, groupLabel, _groupBox, _okBtn, _cancelBtn]);
 
-        // Enable drag-drop on path box
+        // Enable drag-drop on path box (file/folder mode only)
         _pathBox.AllowDrop = true;
         _pathBox.DragEnter += (_, e) =>
         {
@@ -142,6 +182,80 @@ public sealed class EntryEditForm : Form
             if (e.Data?.GetData(DataFormats.FileDrop) is string[] files && files.Length > 0)
                 _pathBox.Text = files[0];
         };
+
+        // Apply initial layout for the current type
+        AdjustLayoutForType();
+    }
+
+    private EntryType GetSelectedEntryType() => _typeBox.SelectedIndex switch
+    {
+        0 => EntryType.Folder,
+        1 => EntryType.File,
+        2 => EntryType.Url,
+        3 => EntryType.Text,
+        _ => EntryType.Folder
+    };
+
+    private void AdjustLayoutForType()
+    {
+        var type = GetSelectedEntryType();
+
+        switch (type)
+        {
+            case EntryType.Url:
+                _pathLabel.Text = "网址:";
+                _pathBox.Multiline = false;
+                _pathBox.Height = 23;  // default single-line height
+                _pathBox.Width = 380;
+                _pathBox.ScrollBars = ScrollBars.None;
+                _browseBtn.Visible = false;
+                ResetStandardLayout();
+                break;
+
+            case EntryType.Text:
+                _pathLabel.Text = "内容:";
+                _pathBox.Multiline = true;
+                _pathBox.Height = TextBoxHeight;
+                _pathBox.Width = 380;
+                _pathBox.ScrollBars = ScrollBars.Vertical;
+                _pathBox.WordWrap = true;
+                _pathBox.AcceptsReturn = true;
+                _browseBtn.Visible = false;
+                // Expand form and shift type row + buttons down
+                var typeLabel2 = Controls.OfType<Label>().FirstOrDefault(l => l.Text == "类型:");
+                var groupLabel2 = Controls.OfType<Label>().FirstOrDefault(l => l.Text == "分组:");
+                if (typeLabel2 != null) typeLabel2.Top = TextTypeRowY;
+                if (groupLabel2 != null) groupLabel2.Top = TextTypeRowY;
+                _typeBox.Top = TextTypeRowY - 3;
+                _groupBox.Top = TextTypeRowY - 3;
+                _okBtn.Top = TextButtonY;
+                _cancelBtn.Top = TextButtonY;
+                Size = new Size(500, TextFormHeight);
+                break;
+
+            default: // Folder or File
+                _pathLabel.Text = "路径:";
+                _pathBox.Multiline = false;
+                _pathBox.Height = 23;
+                _pathBox.Width = 330;
+                _pathBox.ScrollBars = ScrollBars.None;
+                _browseBtn.Visible = true;
+                ResetStandardLayout();
+                break;
+        }
+    }
+
+    private void ResetStandardLayout()
+    {
+        var typeLabel2 = Controls.OfType<Label>().FirstOrDefault(l => l.Text == "类型:");
+        var groupLabel2 = Controls.OfType<Label>().FirstOrDefault(l => l.Text == "分组:");
+        if (typeLabel2 != null) typeLabel2.Top = TypeRowY;
+        if (groupLabel2 != null) groupLabel2.Top = TypeRowY;
+        _typeBox.Top = TypeRowY - 3;
+        _groupBox.Top = TypeRowY - 3;
+        _okBtn.Top = ButtonY;
+        _cancelBtn.Top = ButtonY;
+        Size = new Size(500, FormHeight);
     }
 
     private void OnBrowse(object? sender, EventArgs e)

@@ -3,7 +3,9 @@ namespace Quickstart.Models;
 public enum EntryType
 {
     Folder,
-    File
+    File,
+    Url,
+    Text
 }
 
 public sealed class QuickEntry
