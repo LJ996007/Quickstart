@@ -1,5 +1,6 @@
 namespace Quickstart.UI;
 
+using System.Globalization;
 using Quickstart.Core;
 using Quickstart.Models;
 using Quickstart.Utils;
@@ -475,11 +476,18 @@ public sealed class MainPopup : Form
         UpdateSearchIndicatorBounds();
         UpdateSearchPresentation();
 
-        _toolbarLayout.Padding = UiScaleHelper.ScalePadding(this, new Padding(8, 6, 8, 6));
+        var toolbarHorizontalPadding = UiScaleHelper.Scale(this, 8);
+        var toolbarVerticalPadding = UiScaleHelper.Scale(this, 3);
+        _toolbarLayout.Padding = new Padding(
+            toolbarHorizontalPadding,
+            toolbarVerticalPadding,
+            toolbarHorizontalPadding,
+            toolbarVerticalPadding);
         _addButton.Size = UiScaleHelper.GetButtonSize(this, _addButton.Text, _addButton.Font, 96, 34, horizontalLogicalPadding: 12);
         _settingsButton.Size = UiScaleHelper.GetButtonSize(this, _settingsButton.Text, _settingsButton.Font, 86, 34, horizontalLogicalPadding: 12);
         _countLabel.MinimumSize = new Size(UiScaleHelper.Scale(this, 80), Math.Max(_addButton.Height, _settingsButton.Height));
         _countLabel.Padding = UiScaleHelper.ScalePadding(this, new Padding(0, 0, 4, 0));
+        _toolbarLayout.MinimumSize = new Size(0, Math.Max(_addButton.Height, _settingsButton.Height) + toolbarVerticalPadding * 2);
 
         var tabWidth = 0;
         var tabHeight = 0;
@@ -617,16 +625,17 @@ public sealed class MainPopup : Form
 
     private int GetGroupColumnWidth()
     {
-        var minWidth = UiScaleHelper.Scale(this, 72);
-        var maxWidth = UiScaleHelper.Scale(this, 140);
-        var horizontalPadding = UiScaleHelper.Scale(this, 24);
-        var maxMeasuredWidth = TextRenderer.MeasureText(AllGroupsLabel, Font).Width + horizontalPadding;
+        var minWidth = UiScaleHelper.Scale(this, 36);
+        var maxWidth = UiScaleHelper.Scale(this, 56);
+        var horizontalPadding = UiScaleHelper.Scale(this, 12);
+        var font = _tabLabels[0].Font;
+        var maxMeasuredWidth = TextRenderer.MeasureText(GetVerticalLabelText(AllGroupsLabel), font).Width + horizontalPadding;
 
         foreach (var group in GetOrderedGroupNames(GetEntriesForActiveTab()))
         {
             maxMeasuredWidth = Math.Max(
                 maxMeasuredWidth,
-                TextRenderer.MeasureText(group, Font).Width + horizontalPadding);
+                TextRenderer.MeasureText(GetVerticalLabelText(group), font).Width + horizontalPadding);
         }
 
         return Math.Max(minWidth, Math.Min(maxWidth, maxMeasuredWidth));
@@ -637,13 +646,18 @@ public sealed class MainPopup : Form
         if (_groupLabels.Count == 0)
             return;
 
-        var labelWidth = Math.Max(UiScaleHelper.Scale(this, 72), _groupLayout.ClientSize.Width - UiScaleHelper.Scale(this, 1));
-        var labelHeight = UiScaleHelper.Scale(this, 36);
-        var font = new Font("Microsoft YaHei UI", 9f);
+        var labelWidth = Math.Max(UiScaleHelper.Scale(this, 36), _groupLayout.ClientSize.Width - UiScaleHelper.Scale(this, 1));
+        var font = _tabLabels[0].Font;
+        var verticalPadding = UiScaleHelper.Scale(this, 10);
+        var minLabelHeight = UiScaleHelper.Scale(this, 44);
 
         foreach (var label in _groupLabels)
         {
             label.Font = font;
+            var displayText = label.Text;
+            var lineCount = Math.Max(1, displayText.Count(c => c == '\n') + 1);
+            var singleLineHeight = TextRenderer.MeasureText("中", font).Height;
+            var labelHeight = Math.Max(minLabelHeight, lineCount * singleLineHeight + verticalPadding);
             label.Size = new Size(labelWidth, labelHeight);
             label.Margin = new Padding(0);
             label.AutoEllipsis = true;
@@ -1179,7 +1193,7 @@ public sealed class MainPopup : Form
     {
         var label = new Label
         {
-            Text = group,
+            Text = GetVerticalLabelText(group),
             Tag = group,
             TextAlign = ContentAlignment.MiddleCenter,
             Cursor = Cursors.Hand,
@@ -1222,6 +1236,24 @@ public sealed class MainPopup : Form
 
     private static string NormalizeGroupName(string? group)
         => string.IsNullOrWhiteSpace(group) ? string.Empty : group.Trim();
+
+    private static string GetVerticalLabelText(string text)
+    {
+        var normalized = string.IsNullOrWhiteSpace(text) ? AllGroupsLabel : text.Trim();
+        var indices = StringInfo.ParseCombiningCharacters(normalized);
+        if (indices.Length <= 1)
+            return normalized;
+
+        var parts = new List<string>(indices.Length);
+        for (int i = 0; i < indices.Length; i++)
+        {
+            int start = indices[i];
+            int length = (i + 1 < indices.Length ? indices[i + 1] : normalized.Length) - start;
+            parts.Add(normalized.Substring(start, length));
+        }
+
+        return string.Join("\n", parts);
+    }
 
     private static Image? LoadWebEntryImage(int size)
     {
