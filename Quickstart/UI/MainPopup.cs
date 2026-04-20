@@ -476,17 +476,17 @@ public sealed class MainPopup : Form
         UpdateSearchIndicatorBounds();
         UpdateSearchPresentation();
 
-        var toolbarHorizontalPadding = UiScaleHelper.Scale(this, 8);
-        var toolbarVerticalPadding = UiScaleHelper.Scale(this, 3);
+        var toolbarHorizontalPadding = UiScaleHelper.Scale(this, 4);
+        var toolbarVerticalPadding = UiScaleHelper.Scale(this, 1);
         _toolbarLayout.Padding = new Padding(
             toolbarHorizontalPadding,
             toolbarVerticalPadding,
             toolbarHorizontalPadding,
             toolbarVerticalPadding);
-        _addButton.Size = UiScaleHelper.GetButtonSize(this, _addButton.Text, _addButton.Font, 96, 34, horizontalLogicalPadding: 12);
-        _settingsButton.Size = UiScaleHelper.GetButtonSize(this, _settingsButton.Text, _settingsButton.Font, 86, 34, horizontalLogicalPadding: 12);
-        _countLabel.MinimumSize = new Size(UiScaleHelper.Scale(this, 80), Math.Max(_addButton.Height, _settingsButton.Height));
-        _countLabel.Padding = UiScaleHelper.ScalePadding(this, new Padding(0, 0, 4, 0));
+        _addButton.Size = UiScaleHelper.GetButtonSize(this, _addButton.Text, _addButton.Font, 88, 28, horizontalLogicalPadding: 9);
+        _settingsButton.Size = UiScaleHelper.GetButtonSize(this, _settingsButton.Text, _settingsButton.Font, 78, 28, horizontalLogicalPadding: 9);
+        _countLabel.MinimumSize = new Size(UiScaleHelper.Scale(this, 64), Math.Max(_addButton.Height, _settingsButton.Height));
+        _countLabel.Padding = new Padding(0);
         _toolbarLayout.MinimumSize = new Size(0, Math.Max(_addButton.Height, _settingsButton.Height) + toolbarVerticalPadding * 2);
 
         var tabWidth = 0;
