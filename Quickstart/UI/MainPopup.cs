@@ -11,6 +11,7 @@ public sealed class MainPopup : Form
     private static readonly Size ExpandedPopupLogicalSize = new(420, 500);
     private static readonly Size MinimumExpandedPopupLogicalSize = new(320, 380);
     private const int CollapsedPopupHeightDeltaLogical = 28;
+    private const string AllGroupsLabel = "全部";
 
     private readonly ConfigManager _configManager;
     private readonly ProcessLauncher _launcher;
@@ -21,6 +22,8 @@ public sealed class MainPopup : Form
     private readonly System.Windows.Forms.Timer _debounceTimer;
     private readonly Label[] _tabLabels;
     private readonly TableLayoutPanel _tabLayout;
+    private readonly FlowLayoutPanel _groupLayout;
+    private readonly List<Label> _groupLabels = [];
     private readonly Label _toastLabel;
     private readonly System.Windows.Forms.Timer _toastTimer;
     private readonly TableLayoutPanel _outerLayout;
@@ -34,7 +37,9 @@ public sealed class MainPopup : Form
     private readonly Label _countLabel;
     private readonly Panel _listHost;
     private readonly Panel _tabSeparator;
+    private readonly Panel _groupSeparator;
     private TabKind _activeTab = TabKind.Files;
+    private string _activeGroup = AllGroupsLabel;
     private bool _isSearchExpanded;
 
     public event Action? ShowSettings;
@@ -220,10 +225,30 @@ public sealed class MainPopup : Form
             Margin = new Padding(0)
         };
 
+        _groupSeparator = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Width = 1,
+            BackColor = Color.FromArgb(220, 220, 220),
+            Margin = new Padding(0)
+        };
+
+        _groupLayout = new FlowLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            AutoScroll = true,
+            Margin = new Padding(0),
+            Padding = new Padding(0),
+            BackColor = Color.FromArgb(240, 240, 240)
+        };
+        _groupLayout.Resize += (_, _) => UpdateGroupLabelMetrics();
+
         var contentLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 3,
+            ColumnCount = 5,
             RowCount = 1,
             Margin = new Padding(0),
             Padding = new Padding(0)
@@ -231,10 +256,14 @@ public sealed class MainPopup : Form
         contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
         contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
+        contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         contentLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         contentLayout.Controls.Add(_tabLayout, 0, 0);
         contentLayout.Controls.Add(_tabSeparator, 1, 0);
         contentLayout.Controls.Add(_listHost, 2, 0);
+        contentLayout.Controls.Add(_groupSeparator, 3, 0);
+        contentLayout.Controls.Add(_groupLayout, 4, 0);
 
         _addButton = new Button
         {
@@ -400,6 +429,7 @@ public sealed class MainPopup : Form
         Resize += (_, _) =>
         {
             UpdateListColumnWidth();
+            UpdateGroupLabelMetrics();
             CenterToast();
             UpdateSearchIndicatorBounds();
         };
@@ -420,6 +450,7 @@ public sealed class MainPopup : Form
         _separatorPanel.Height = separatorWidth;
         _separatorPanel.MinimumSize = new Size(0, separatorWidth);
         _tabSeparator.Width = separatorWidth;
+        _groupSeparator.Width = separatorWidth;
 
         var expandedPadding = UiScaleHelper.ScalePadding(this, new Padding(8, 4, 8, 4));
         var collapsedPadding = UiScaleHelper.ScalePadding(this, new Padding(0));
@@ -464,13 +495,19 @@ public sealed class MainPopup : Form
         _tabLayout.MinimumSize = new Size(tabWidth, tabHeight * _tabLabels.Length);
         _tabLayout.Width = tabWidth;
 
+        _groupLayout.Padding = UiScaleHelper.ScalePadding(this, new Padding(0));
+        _groupLayout.MinimumSize = new Size(GetGroupColumnWidth(), 0);
+        _groupLayout.Width = GetGroupColumnWidth();
+
         var toastSize = UiScaleHelper.GetButtonSize(this, _toastLabel.Text, _toastLabel.Font, 80, 28, horizontalLogicalPadding: 10, verticalLogicalPadding: 3);
         _toastLabel.Size = toastSize;
 
         UpdateImageList();
         UpdateListColumnWidth();
+        UpdateGroupLabelMetrics();
         CenterToast();
         ApplyTabStyles();
+        ApplyGroupStyles();
 
         if (Visible)
         {
@@ -578,10 +615,46 @@ public sealed class MainPopup : Form
         _toastLabel.BringToFront();
     }
 
+    private int GetGroupColumnWidth()
+    {
+        var minWidth = UiScaleHelper.Scale(this, 72);
+        var maxWidth = UiScaleHelper.Scale(this, 140);
+        var horizontalPadding = UiScaleHelper.Scale(this, 24);
+        var maxMeasuredWidth = TextRenderer.MeasureText(AllGroupsLabel, Font).Width + horizontalPadding;
+
+        foreach (var group in GetOrderedGroupNames(GetEntriesForActiveTab()))
+        {
+            maxMeasuredWidth = Math.Max(
+                maxMeasuredWidth,
+                TextRenderer.MeasureText(group, Font).Width + horizontalPadding);
+        }
+
+        return Math.Max(minWidth, Math.Min(maxWidth, maxMeasuredWidth));
+    }
+
+    private void UpdateGroupLabelMetrics()
+    {
+        if (_groupLabels.Count == 0)
+            return;
+
+        var labelWidth = Math.Max(UiScaleHelper.Scale(this, 72), _groupLayout.ClientSize.Width - UiScaleHelper.Scale(this, 1));
+        var labelHeight = UiScaleHelper.Scale(this, 36);
+        var font = new Font("Microsoft YaHei UI", 9f);
+
+        foreach (var label in _groupLabels)
+        {
+            label.Font = font;
+            label.Size = new Size(labelWidth, labelHeight);
+            label.Margin = new Padding(0);
+            label.AutoEllipsis = true;
+        }
+    }
+
     private void SwitchTab(TabKind kind)
     {
         if (_activeTab == kind) return;
         _activeTab = kind;
+        _activeGroup = AllGroupsLabel;
         ApplyTabStyles();
         UpdateSearchPlaceholder();
         RefreshList();
@@ -595,6 +668,17 @@ public sealed class MainPopup : Form
             bool active = kinds[i] == _activeTab;
             _tabLabels[i].BackColor = active ? Color.FromArgb(60, 60, 60) : Color.FromArgb(240, 240, 240);
             _tabLabels[i].ForeColor = active ? Color.White : Color.FromArgb(80, 80, 80);
+        }
+    }
+
+    private void ApplyGroupStyles()
+    {
+        foreach (var label in _groupLabels)
+        {
+            var group = label.Tag as string ?? AllGroupsLabel;
+            var active = string.Equals(group, _activeGroup, StringComparison.OrdinalIgnoreCase);
+            label.BackColor = active ? Color.FromArgb(60, 60, 60) : Color.FromArgb(240, 240, 240);
+            label.ForeColor = active ? Color.White : Color.FromArgb(80, 80, 80);
         }
     }
 
@@ -715,7 +799,13 @@ public sealed class MainPopup : Form
 
     public void ShowPopup()
     {
-        _activeTab = TabKind.Files;
+        ShowPopup(TabKind.Files);
+    }
+
+    private void ShowPopup(TabKind kind, bool focusList = true)
+    {
+        _activeTab = kind;
+        _activeGroup = AllGroupsLabel;
         _searchBox.Clear();
         SetSearchExpanded(false);
         ApplyTabStyles();
@@ -725,8 +815,29 @@ public sealed class MainPopup : Form
         PositionNearTray();
         Show();
         Activate();
-        if (_listView.Items.Count > 0)
+        if (focusList && _listView.Items.Count > 0)
             _listView.Focus();
+    }
+
+    public void HandleExternalRequest(string request)
+    {
+        if (QuickstartProtocol.IsProtocolUri(request))
+        {
+            if (!QuickstartProtocol.TryParseAddUrlRequest(request, out var addUrlRequest) || addUrlRequest == null)
+            {
+                MessageBox.Show(
+                    "无效的网站添加请求。",
+                    "Quickstart",
+                    MessageBoxButtons.OK,
+                    MessageBoxIcon.Warning);
+                return;
+            }
+
+            AddUrlEntry(addUrlRequest.Url, addUrlRequest.Title);
+            return;
+        }
+
+        AddPathEntry(request);
     }
 
     public void AddPathEntry(string path)
@@ -746,7 +857,32 @@ public sealed class MainPopup : Form
         if (form.ShowDialog(this) == DialogResult.OK)
         {
             _configManager.AddEntry(entry);
+            ReconcileActiveGroup();
             RefreshList();
+        }
+    }
+
+    public void AddUrlEntry(string url, string title)
+    {
+        if (TryFocusExistingUrl(url, showDuplicateToast: true))
+            return;
+
+        ShowPopup(TabKind.Urls, focusList: false);
+
+        var entry = new QuickEntry
+        {
+            Name = string.IsNullOrWhiteSpace(title) ? GetFallbackUrlName(url) : title.Trim(),
+            Path = url,
+            Type = EntryType.Url
+        };
+
+        using var form = new EntryEditForm(entry);
+        if (form.ShowDialog(this) == DialogResult.OK)
+        {
+            _configManager.AddEntry(entry);
+            ReconcileActiveGroup();
+            ShowPopup(TabKind.Urls);
+            SelectEntryById(entry.Id);
         }
     }
 
@@ -765,6 +901,7 @@ public sealed class MainPopup : Form
         if (form.ShowDialog(this) == DialogResult.OK)
         {
             _configManager.AddEntry(entry);
+            ReconcileActiveGroup();
             RefreshList();
         }
     }
@@ -778,6 +915,7 @@ public sealed class MainPopup : Form
         if (form.ShowDialog(this) == DialogResult.OK)
         {
             _configManager.UpdateEntry(entry);
+            ReconcileActiveGroup();
             RefreshList();
         }
     }
@@ -796,6 +934,7 @@ public sealed class MainPopup : Form
         if (result == DialogResult.Yes)
         {
             _configManager.RemoveEntry(entry.Id);
+            ReconcileActiveGroup();
             RefreshList();
         }
     }
@@ -833,12 +972,58 @@ public sealed class MainPopup : Form
         ShowToast();
     }
 
-    private void ShowToast()
+    private void ShowToast(string message = "已复制")
     {
+        _toastLabel.Text = message;
+        _toastLabel.Size = UiScaleHelper.GetButtonSize(this, message, _toastLabel.Font, 80, 28,
+            horizontalLogicalPadding: 10, verticalLogicalPadding: 3);
         CenterToast();
         _toastLabel.Visible = true;
         _toastTimer.Stop();
         _toastTimer.Start();
+    }
+
+    private bool TryFocusExistingUrl(string url, bool showDuplicateToast)
+    {
+        var existing = FindEntryByPath(url, EntryType.Url);
+        if (existing == null)
+            return false;
+
+        ShowPopup(TabKind.Urls);
+        SelectEntryById(existing.Id);
+        if (showDuplicateToast)
+            ShowToast("该网站已存在");
+        return true;
+    }
+
+    private QuickEntry? FindEntryByPath(string path, EntryType type)
+        => _configManager.Config.Entries.FirstOrDefault(e =>
+            e.Type == type && string.Equals(e.Path, path, StringComparison.OrdinalIgnoreCase));
+
+    private bool SelectEntryById(string id)
+    {
+        foreach (ListViewItem item in _listView.Items)
+        {
+            if (item.Tag is not QuickEntry entry || entry.Id != id)
+                continue;
+
+            _listView.SelectedItems.Clear();
+            item.Selected = true;
+            item.Focused = true;
+            item.EnsureVisible();
+            _listView.Focus();
+            return true;
+        }
+
+        return false;
+    }
+
+    private static string GetFallbackUrlName(string url)
+    {
+        if (Uri.TryCreate(url, UriKind.Absolute, out var uri) && !string.IsNullOrWhiteSpace(uri.Host))
+            return uri.Host;
+
+        return url;
     }
 
     private QuickEntry? GetSelectedEntry()
@@ -850,15 +1035,14 @@ public sealed class MainPopup : Form
     public void RefreshList()
     {
         var query = _searchBox.Text.Trim();
-        var entries = _configManager.Config.Entries;
+        var typeEntries = GetEntriesForActiveTab();
+        RebuildGroupLabels(typeEntries);
 
-        entries = _activeTab switch
-        {
-            TabKind.Files => entries.Where(e => e.Type is EntryType.Folder or EntryType.File).ToList(),
-            TabKind.Urls => entries.Where(e => e.Type == EntryType.Url).ToList(),
-            TabKind.Texts => entries.Where(e => e.Type == EntryType.Text).ToList(),
-            _ => entries
-        };
+        var entries = _activeGroup == AllGroupsLabel
+            ? typeEntries
+            : typeEntries
+                .Where(e => string.Equals(NormalizeGroupName(e.Group), _activeGroup, StringComparison.OrdinalIgnoreCase))
+                .ToList();
 
         if (!string.IsNullOrEmpty(query))
         {
@@ -933,6 +1117,111 @@ public sealed class MainPopup : Form
         _countLabel.Text = $"{entries.Count} 项";
         UpdateListColumnWidth();
     }
+
+    private List<QuickEntry> GetEntriesForActiveTab()
+    {
+        var entries = _configManager.Config.Entries;
+        return _activeTab switch
+        {
+            TabKind.Files => entries.Where(e => e.Type is EntryType.Folder or EntryType.File).ToList(),
+            TabKind.Urls => entries.Where(e => e.Type == EntryType.Url).ToList(),
+            TabKind.Texts => entries.Where(e => e.Type == EntryType.Text).ToList(),
+            _ => entries
+        };
+    }
+
+    private void RebuildGroupLabels(IEnumerable<QuickEntry> currentTypeEntries)
+    {
+        var groups = GetOrderedGroupNames(currentTypeEntries).ToList();
+        if (_activeGroup != AllGroupsLabel
+            && groups.All(group => !string.Equals(group, _activeGroup, StringComparison.OrdinalIgnoreCase)))
+        {
+            _activeGroup = AllGroupsLabel;
+        }
+
+        _groupLayout.SuspendLayout();
+        foreach (var label in _groupLabels)
+            label.Dispose();
+        _groupLabels.Clear();
+        _groupLayout.Controls.Clear();
+
+        AddGroupLabel(AllGroupsLabel);
+        foreach (var group in groups)
+            AddGroupLabel(group);
+
+        _groupLayout.ResumeLayout();
+        _groupLayout.PerformLayout();
+        _groupLayout.MinimumSize = new Size(GetGroupColumnWidth(), 0);
+        _groupLayout.Width = GetGroupColumnWidth();
+        UpdateGroupLabelMetrics();
+        ApplyGroupStyles();
+    }
+
+    private IEnumerable<string> GetOrderedGroupNames(IEnumerable<QuickEntry> entries)
+    {
+        var groups = entries
+            .Select(entry => NormalizeGroupName(entry.Group))
+            .Where(group => !string.IsNullOrEmpty(group))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Select(group =>
+            {
+                _configManager.Config.GroupLastUsedAt.TryGetValue(group, out var lastUsedAt);
+                return new { Name = group, LastUsedAt = lastUsedAt };
+            })
+            .OrderByDescending(item => item.LastUsedAt)
+            .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
+            .Select(item => item.Name);
+
+        return groups;
+    }
+
+    private void AddGroupLabel(string group)
+    {
+        var label = new Label
+        {
+            Text = group,
+            Tag = group,
+            TextAlign = ContentAlignment.MiddleCenter,
+            Cursor = Cursors.Hand,
+            Margin = new Padding(0),
+            AutoSize = false,
+            AutoEllipsis = true
+        };
+        label.Click += (_, _) => SwitchGroup(group);
+        _groupLabels.Add(label);
+        _groupLayout.Controls.Add(label);
+    }
+
+    private void SwitchGroup(string group, bool rememberUsage = true)
+    {
+        if (string.IsNullOrWhiteSpace(group))
+            group = AllGroupsLabel;
+
+        if (string.Equals(_activeGroup, group, StringComparison.OrdinalIgnoreCase))
+            return;
+
+        _activeGroup = group;
+        if (rememberUsage && !string.Equals(group, AllGroupsLabel, StringComparison.OrdinalIgnoreCase))
+            _configManager.TouchGroup(group);
+
+        RefreshList();
+    }
+
+    private void ReconcileActiveGroup()
+    {
+        if (_activeGroup == AllGroupsLabel)
+            return;
+
+        var groups = GetOrderedGroupNames(GetEntriesForActiveTab());
+        if (groups.All(group => !string.Equals(group, _activeGroup, StringComparison.OrdinalIgnoreCase)))
+            _activeGroup = AllGroupsLabel;
+    }
+
+    private Label? GetGroupLabelAtScreenPoint(Point screenPt)
+        => _groupLabels.FirstOrDefault(label => label.RectangleToScreen(label.ClientRectangle).Contains(screenPt));
+
+    private static string NormalizeGroupName(string? group)
+        => string.IsNullOrWhiteSpace(group) ? string.Empty : group.Trim();
 
     private static Image? LoadWebEntryImage(int size)
     {
@@ -1034,6 +1323,7 @@ public sealed class MainPopup : Form
     public void ShowAtGesturePoint(Point screenPt)
     {
         _activeTab = TabKind.Files;
+        _activeGroup = AllGroupsLabel;
         _searchBox.Clear();
         SetSearchExpanded(false);
         ApplyTabStyles();
@@ -1074,6 +1364,17 @@ public sealed class MainPopup : Form
             return;
         }
 
+        var groupLabel = GetGroupLabelAtScreenPoint(screenPt);
+        if (groupLabel?.Tag is string group)
+        {
+            if (!string.Equals(_activeGroup, group, StringComparison.OrdinalIgnoreCase))
+                SwitchGroup(group);
+
+            if (_listView.SelectedItems.Count > 0)
+                _listView.SelectedItems.Clear();
+            return;
+        }
+
         var clientPt = _listView.PointToClient(screenPt);
         var item = _listView.GetItemAt(clientPt.X, clientPt.Y);
         if (item != null)
@@ -1105,6 +1406,16 @@ public sealed class MainPopup : Form
             ExecuteEntry(entry);
             Hide();
             return true;
+        }
+
+        if (GetGroupLabelAtScreenPoint(screenPt) != null)
+        {
+            Activate();
+            if (_isSearchExpanded)
+                _searchBox.Focus();
+            else if (_listView.Items.Count > 0)
+                _listView.Focus();
+            return false;
         }
 
         Activate();

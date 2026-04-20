@@ -13,19 +13,23 @@ static class Program
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
         // Parse command line
-        string? addPath = null;
+        string? externalRequest = null;
         if (args.Length >= 2 && args[0] == "--add")
         {
-            addPath = args[1];
+            externalRequest = args[1];
+        }
+        else if (args.Length >= 1 && QuickstartProtocol.IsProtocolUri(args[0]))
+        {
+            externalRequest = args[0];
         }
 
         // Single instance check
         using var singleInstance = new SingleInstance();
         if (!singleInstance.TryAcquire())
         {
-            // Already running — send path via pipe
-            if (addPath != null)
-                SingleInstance.SendToRunningInstance(addPath);
+            // Already running — send request via pipe
+            if (externalRequest != null)
+                SingleInstance.SendToRunningInstance(externalRequest);
             else
                 SingleInstance.SendToRunningInstance("__SHOW__");
             return;
@@ -37,9 +41,12 @@ static class Program
         var configManager = new ConfigManager();
         configManager.Load();
 
+        var exePath = Application.ExecutablePath;
+        if (!ShellIntegration.IsProtocolRegistered(exePath))
+            ShellIntegration.RegisterProtocol(exePath);
+
         if (configManager.Config.ShellMenuEnabled)
         {
-            var exePath = Application.ExecutablePath;
             if (!ShellIntegration.IsRegistered(exePath))
                 ShellIntegration.Register(exePath);
         }
@@ -114,16 +121,15 @@ static class Program
                 }
                 else
                 {
-                    // It's a path to add
-                    popup.AddPathEntry(message);
+                    popup.HandleExternalRequest(message);
                 }
             });
         };
 
-        // Handle --add on first launch
-        if (addPath != null)
+        // Handle external request on first launch
+        if (externalRequest != null)
         {
-            EnsureMainPopup().AddPathEntry(addPath);
+            EnsureMainPopup().HandleExternalRequest(externalRequest);
         }
 
         // Global right-drag gesture: hold right button, drag right to show popup

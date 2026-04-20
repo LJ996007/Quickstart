@@ -38,6 +38,7 @@ public sealed class ConfigManager
             {
                 var json = File.ReadAllText(ConfigPath);
                 _config = JsonSerializer.Deserialize(json, AppConfigJsonContext.Default.AppConfig) ?? new AppConfig();
+                NormalizeConfig();
             }
             catch
             {
@@ -48,6 +49,7 @@ public sealed class ConfigManager
                     {
                         var json = File.ReadAllText(BackupPath);
                         _config = JsonSerializer.Deserialize(json, AppConfigJsonContext.Default.AppConfig) ?? new AppConfig();
+                        NormalizeConfig();
                     }
                     catch
                     {
@@ -131,5 +133,25 @@ public sealed class ConfigManager
                 Save();
             }
         }
+    }
+
+    public void TouchGroup(string group)
+    {
+        if (string.IsNullOrWhiteSpace(group))
+            return;
+
+        lock (_lock)
+        {
+            _config.GroupLastUsedAt[group.Trim()] = DateTime.Now;
+            Save();
+        }
+    }
+
+    private void NormalizeConfig()
+    {
+        _config.Entries ??= [];
+        _config.GroupLastUsedAt = _config.GroupLastUsedAt == null
+            ? new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase)
+            : new Dictionary<string, DateTime>(_config.GroupLastUsedAt, StringComparer.OrdinalIgnoreCase);
     }
 }

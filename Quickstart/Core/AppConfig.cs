@@ -13,6 +13,7 @@ public enum OpenWith
 public sealed class AppConfig
 {
     public List<QuickEntry> Entries { get; set; } = [];
+    public Dictionary<string, DateTime> GroupLastUsedAt { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string TotalCommanderPath { get; set; } = string.Empty;
     public string DirectoryOpusPath { get; set; } = string.Empty;
     public OpenWith DefaultOpenWith { get; set; } = OpenWith.TotalCommander;

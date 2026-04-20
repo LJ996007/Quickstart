@@ -11,6 +11,11 @@ public sealed class SettingsForm : Form
     private readonly ComboBox _openWithBox;
     private readonly CheckBox _startupCheck;
     private readonly CheckBox _shellMenuCheck;
+    private readonly GroupBox _websiteToolsGroup;
+    private readonly Label _websiteHintLabel;
+    private readonly Button _copyBookmarkletBtn;
+    private readonly Button _repairProtocolBtn;
+    private readonly FlowLayoutPanel _websiteActionsRow;
 
     public SettingsForm(ConfigManager configManager)
     {
@@ -32,12 +37,13 @@ public sealed class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 10,
+            RowCount = 11,
             AutoSize = false,
             Margin = new Padding(0),
             Padding = new Padding(0)
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -198,6 +204,82 @@ public sealed class SettingsForm : Form
             Margin = new Padding(0, 8, 0, 0)
         };
 
+        _websiteToolsGroup = new GroupBox
+        {
+            Text = "浏览器一键添加网站",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 12, 0, 0)
+        };
+
+        _websiteHintLabel = new Label
+        {
+            Text = "点击“复制一键添加书签”，把内容保存到浏览器收藏栏。以后在任意网页点一下这个书签，Quickstart 就会带着网页标题和网址弹出确认框。",
+            AutoSize = true,
+            Margin = new Padding(0)
+        };
+
+        _copyBookmarkletBtn = new Button
+        {
+            Text = "复制一键添加书签",
+            Margin = new Padding(0)
+        };
+        ButtonStyler.ApplyPrimary(_copyBookmarkletBtn);
+        _copyBookmarkletBtn.Click += (_, _) =>
+        {
+            Clipboard.SetText(QuickstartProtocol.Bookmarklet);
+            MessageBox.Show(
+                this,
+                "书签代码已复制。请在浏览器中新建书签，并把复制的内容粘贴到书签地址栏。",
+                "浏览器一键添加网站",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        };
+
+        _repairProtocolBtn = new Button
+        {
+            Text = "重新注册协议",
+            Margin = new Padding(8, 0, 0, 0)
+        };
+        ButtonStyler.ApplySecondary(_repairProtocolBtn);
+        _repairProtocolBtn.Click += (_, _) =>
+        {
+            ShellIntegration.RegisterProtocol(Application.ExecutablePath);
+            MessageBox.Show(
+                this,
+                "quickstart:// 协议已重新注册。",
+                "浏览器一键添加网站",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Information);
+        };
+
+        _websiteActionsRow = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            WrapContents = false,
+            FlowDirection = FlowDirection.LeftToRight,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0, 10, 0, 0)
+        };
+        _websiteActionsRow.Controls.Add(_copyBookmarkletBtn);
+        _websiteActionsRow.Controls.Add(_repairProtocolBtn);
+
+        var websiteLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(10, 10, 10, 10)
+        };
+        websiteLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        websiteLayout.Controls.Add(_websiteHintLabel, 0, 0);
+        websiteLayout.Controls.Add(_websiteActionsRow, 0, 1);
+        _websiteToolsGroup.Controls.Add(websiteLayout);
+
         var okBtn = new Button
         {
             Text = "保存",
@@ -310,8 +392,9 @@ public sealed class SettingsForm : Form
         root.Controls.Add(openRow, 0, 4);
         root.Controls.Add(_startupCheck, 0, 5);
         root.Controls.Add(_shellMenuCheck, 0, 6);
-        root.Controls.Add(buttonsRow, 0, 8);
-        root.Controls.Add(infoLabel, 0, 9);
+        root.Controls.Add(_websiteToolsGroup, 0, 7);
+        root.Controls.Add(buttonsRow, 0, 9);
+        root.Controls.Add(infoLabel, 0, 10);
 
         Controls.Add(root);
 
@@ -323,6 +406,8 @@ public sealed class SettingsForm : Form
             var browseButtonSize = UiScaleHelper.GetButtonSize(this, tcBrowseBtn.Text, tcBrowseBtn.Font, 44, 30, horizontalLogicalPadding: 10);
             var detectButtonSize = UiScaleHelper.GetButtonSize(this, tcDetectBtn.Text, tcDetectBtn.Font, 96, 30, horizontalLogicalPadding: 12);
             var dialogButtonSize = UiScaleHelper.GetButtonSize(this, okBtn.Text, okBtn.Font, 84, 34, horizontalLogicalPadding: 12);
+            var copyBookmarkletButtonSize = UiScaleHelper.GetButtonSize(this, _copyBookmarkletBtn.Text, _copyBookmarkletBtn.Font, 150, 34, horizontalLogicalPadding: 12);
+            var repairProtocolButtonSize = UiScaleHelper.GetButtonSize(this, _repairProtocolBtn.Text, _repairProtocolBtn.Font, 120, 34, horizontalLogicalPadding: 12);
 
             _tcPathBox.MinimumSize = new Size(0, inputHeight);
             _dopusPathBox.MinimumSize = new Size(0, inputHeight);
@@ -335,9 +420,14 @@ public sealed class SettingsForm : Form
 
             okBtn.Size = dialogButtonSize;
             cancelBtn.Size = UiScaleHelper.GetButtonSize(this, cancelBtn.Text, cancelBtn.Font, 84, 34, horizontalLogicalPadding: 12);
+            _copyBookmarkletBtn.Size = copyBookmarkletButtonSize;
+            _repairProtocolBtn.Size = repairProtocolButtonSize;
 
             buttonsRow.Padding = new Padding(0, 0, UiScaleHelper.Scale(this, 10), 0);
             buttonsRow.Height = dialogButtonSize.Height + UiScaleHelper.Scale(this, 8);
+
+            _websiteToolsGroup.Padding = UiScaleHelper.ScalePadding(this, new Padding(10, 12, 10, 10));
+            _websiteHintLabel.MaximumSize = new Size(UiScaleHelper.Scale(this, 520), 0);
 
             infoLabel.Height = Math.Max(
                 UiScaleHelper.Scale(this, 24),
@@ -388,6 +478,7 @@ public sealed class SettingsForm : Form
         config.ShellMenuEnabled = _shellMenuCheck.Checked;
 
         var exePath = Application.ExecutablePath;
+        ShellIntegration.RegisterProtocol(exePath);
         if (_shellMenuCheck.Checked)
         {
             ShellIntegration.Register(exePath);
