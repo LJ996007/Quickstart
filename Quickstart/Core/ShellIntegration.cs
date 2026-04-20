@@ -11,11 +11,12 @@ public static class ShellIntegration
 
     public static void Register(string exePath)
     {
-        var command = $"\"{exePath}\" --add \"%V\"";
+        if (string.IsNullOrWhiteSpace(exePath))
+            return;
 
-        RegisterKey(FileKeyPath, command, exePath);
-        RegisterKey(DirKeyPath, command, exePath);
-        RegisterKey(DirBgKeyPath, command, exePath);
+        RegisterKey(FileKeyPath, BuildCommand(exePath, "%1"), exePath);
+        RegisterKey(DirKeyPath, BuildCommand(exePath, "%1"), exePath);
+        RegisterKey(DirBgKeyPath, BuildCommand(exePath, "%V"), exePath);
     }
 
     public static void Unregister()
@@ -29,6 +30,26 @@ public static class ShellIntegration
     {
         using var key = Registry.CurrentUser.OpenSubKey(DirKeyPath);
         return key != null;
+    }
+
+    public static bool IsRegistered(string exePath)
+    {
+        if (string.IsNullOrWhiteSpace(exePath))
+            return false;
+
+        return IsKeyRegistered(FileKeyPath, BuildCommand(exePath, "%1"))
+            && IsKeyRegistered(DirKeyPath, BuildCommand(exePath, "%1"))
+            && IsKeyRegistered(DirBgKeyPath, BuildCommand(exePath, "%V"));
+    }
+
+    private static string BuildCommand(string exePath, string argumentPlaceholder)
+        => $"\"{exePath}\" --add \"{argumentPlaceholder}\"";
+
+    private static bool IsKeyRegistered(string keyPath, string expectedCommand)
+    {
+        using var key = Registry.CurrentUser.OpenSubKey($@"{keyPath}\command");
+        var actualCommand = key?.GetValue(null) as string;
+        return string.Equals(actualCommand, expectedCommand, StringComparison.OrdinalIgnoreCase);
     }
 
     private static void RegisterKey(string keyPath, string command, string iconPath)

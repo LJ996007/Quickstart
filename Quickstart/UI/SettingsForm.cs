@@ -386,17 +386,15 @@ public sealed class SettingsForm : Form
 
         var shellChanged = config.ShellMenuEnabled != _shellMenuCheck.Checked;
         config.ShellMenuEnabled = _shellMenuCheck.Checked;
-        if (shellChanged)
+
+        var exePath = Application.ExecutablePath;
+        if (_shellMenuCheck.Checked)
         {
-            if (_shellMenuCheck.Checked)
-            {
-                var exePath = Application.ExecutablePath;
-                ShellIntegration.Register(exePath);
-            }
-            else
-            {
-                ShellIntegration.Unregister();
-            }
+            ShellIntegration.Register(exePath);
+        }
+        else if (shellChanged || ShellIntegration.IsRegistered())
+        {
+            ShellIntegration.Unregister();
         }
 
         _configManager.Save();

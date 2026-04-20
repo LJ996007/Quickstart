@@ -8,8 +8,9 @@ public sealed class MainPopup : Form
 {
     private enum TabKind { Files, Urls, Texts }
 
-    private static readonly Size PreferredPopupLogicalSize = new(420, 500);
-    private static readonly Size MinimumPopupLogicalSize = new(320, 380);
+    private static readonly Size ExpandedPopupLogicalSize = new(420, 500);
+    private static readonly Size MinimumExpandedPopupLogicalSize = new(320, 380);
+    private const int CollapsedPopupHeightDeltaLogical = 28;
 
     private readonly ConfigManager _configManager;
     private readonly ProcessLauncher _launcher;
@@ -22,7 +23,10 @@ public sealed class MainPopup : Form
     private readonly TableLayoutPanel _tabLayout;
     private readonly Label _toastLabel;
     private readonly System.Windows.Forms.Timer _toastTimer;
+    private readonly TableLayoutPanel _outerLayout;
     private readonly Panel _searchPanel;
+    private readonly Panel _searchCollapsedPanel;
+    private readonly Panel _searchCollapsedIndicator;
     private readonly Panel _separatorPanel;
     private readonly TableLayoutPanel _toolbarLayout;
     private readonly Button _addButton;
@@ -31,6 +35,7 @@ public sealed class MainPopup : Form
     private readonly Panel _listHost;
     private readonly Panel _tabSeparator;
     private TabKind _activeTab = TabKind.Files;
+    private bool _isSearchExpanded;
 
     public event Action? ShowSettings;
 
@@ -44,7 +49,7 @@ public sealed class MainPopup : Form
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
-        Size = PreferredPopupLogicalSize;
+        Size = ExpandedPopupLogicalSize;
         BackColor = Color.FromArgb(250, 250, 250);
         TopMost = true;
 
@@ -61,7 +66,7 @@ public sealed class MainPopup : Form
             BackColor = Color.FromArgb(250, 250, 250)
         };
 
-        var outerLayout = new TableLayoutPanel
+        _outerLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
@@ -69,11 +74,11 @@ public sealed class MainPopup : Form
             Margin = new Padding(0),
             Padding = new Padding(0)
         };
-        outerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        outerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        outerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 1));
-        outerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        outerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _outerLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _outerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _outerLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 1));
+        _outerLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _outerLayout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
 
         _searchBox = new TextBox
         {
@@ -85,6 +90,21 @@ public sealed class MainPopup : Form
             BackColor = Color.White
         };
 
+        _searchCollapsedIndicator = new Panel
+        {
+            BackColor = Color.FromArgb(205, 205, 205),
+            Cursor = Cursors.Hand
+        };
+
+        _searchCollapsedPanel = new Panel
+        {
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0),
+            BackColor = Color.White,
+            Cursor = Cursors.Hand
+        };
+        _searchCollapsedPanel.Controls.Add(_searchCollapsedIndicator);
+
         _searchPanel = new Panel
         {
             Dock = DockStyle.Fill,
@@ -92,6 +112,7 @@ public sealed class MainPopup : Form
             Margin = new Padding(0)
         };
         _searchPanel.Controls.Add(_searchBox);
+        _searchPanel.Controls.Add(_searchCollapsedPanel);
 
         _separatorPanel = new Panel
         {
@@ -207,13 +228,13 @@ public sealed class MainPopup : Form
             Margin = new Padding(0),
             Padding = new Padding(0)
         };
-        contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
         contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
+        contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         contentLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        contentLayout.Controls.Add(_listHost, 0, 0);
+        contentLayout.Controls.Add(_tabLayout, 0, 0);
         contentLayout.Controls.Add(_tabSeparator, 1, 0);
-        contentLayout.Controls.Add(_tabLayout, 2, 0);
+        contentLayout.Controls.Add(_listHost, 2, 0);
 
         _addButton = new Button
         {
@@ -271,15 +292,16 @@ public sealed class MainPopup : Form
         _toolbarLayout.Controls.Add(new Panel { Dock = DockStyle.Fill, Margin = new Padding(0) }, 1, 0);
         _toolbarLayout.Controls.Add(_countLabel, 2, 0);
 
-        outerLayout.Controls.Add(_searchPanel, 0, 0);
-        outerLayout.Controls.Add(_separatorPanel, 0, 1);
-        outerLayout.Controls.Add(contentLayout, 0, 2);
-        outerLayout.Controls.Add(_toolbarLayout, 0, 3);
+        _outerLayout.Controls.Add(_searchPanel, 0, 0);
+        _outerLayout.Controls.Add(_separatorPanel, 0, 1);
+        _outerLayout.Controls.Add(contentLayout, 0, 2);
+        _outerLayout.Controls.Add(_toolbarLayout, 0, 3);
 
-        inner.Controls.Add(outerLayout);
+        inner.Controls.Add(_outerLayout);
         border.Controls.Add(inner);
         Controls.Add(border);
 
+        _isSearchExpanded = false;
         ApplyTabStyles();
         ApplyScaledMetrics();
 
@@ -330,6 +352,23 @@ public sealed class MainPopup : Form
             _debounceTimer.Start();
         };
 
+        void ExpandSearch()
+        {
+            SetSearchExpanded(true, focusSearch: true);
+        }
+
+        _searchCollapsedPanel.Click += (_, _) => ExpandSearch();
+        _searchCollapsedIndicator.Click += (_, _) => ExpandSearch();
+        _searchPanel.Click += (_, _) =>
+        {
+            if (_isSearchExpanded)
+                _searchBox.Focus();
+        };
+        _searchBox.Leave += (_, _) =>
+        {
+            BeginInvoke(() => CollapseSearchIfIdle());
+        };
+
         _searchBox.KeyDown += (_, e) =>
         {
             if (e.KeyCode == Keys.Down && _listView.Items.Count > 0)
@@ -362,8 +401,10 @@ public sealed class MainPopup : Form
         {
             UpdateListColumnWidth();
             CenterToast();
+            UpdateSearchIndicatorBounds();
         };
         _listView.Resize += (_, _) => UpdateListColumnWidth();
+        _searchCollapsedPanel.Resize += (_, _) => UpdateSearchIndicatorBounds();
 
         DpiChanged += (_, _) => ApplyScaledMetrics();
 
@@ -380,10 +421,28 @@ public sealed class MainPopup : Form
         _separatorPanel.MinimumSize = new Size(0, separatorWidth);
         _tabSeparator.Width = separatorWidth;
 
-        _searchPanel.Padding = UiScaleHelper.ScalePadding(this, new Padding(8, 4, 8, 4));
-        var searchHeight = Math.Max(UiScaleHelper.Scale(this, 24), _searchBox.PreferredHeight);
-        _searchBox.MinimumSize = new Size(0, searchHeight);
-        _searchPanel.MinimumSize = new Size(0, searchHeight + _searchPanel.Padding.Vertical);
+        var expandedPadding = UiScaleHelper.ScalePadding(this, new Padding(8, 4, 8, 4));
+        var collapsedPadding = UiScaleHelper.ScalePadding(this, new Padding(0));
+        var expandedSearchHeight = Math.Max(UiScaleHelper.Scale(this, 24), _searchBox.PreferredHeight);
+        var collapsedSearchHeight = Math.Max(UiScaleHelper.Scale(this, 8), UiScaleHelper.Scale(this, 6));
+        var expandedRowHeight = expandedSearchHeight + expandedPadding.Vertical;
+        var collapsedRowHeight = collapsedSearchHeight + collapsedPadding.Vertical;
+
+        _searchBox.MinimumSize = new Size(0, expandedSearchHeight);
+        _searchCollapsedPanel.MinimumSize = new Size(0, collapsedSearchHeight);
+        _searchCollapsedIndicator.Size = new Size(UiScaleHelper.Scale(this, 36), Math.Max(2, UiScaleHelper.Scale(this, 3)));
+
+        _searchPanel.Padding = _isSearchExpanded ? expandedPadding : collapsedPadding;
+        var activeRowHeight = _isSearchExpanded ? expandedRowHeight : collapsedRowHeight;
+        _searchPanel.MinimumSize = new Size(0, activeRowHeight);
+        _searchPanel.MaximumSize = new Size(0, activeRowHeight);
+        _searchPanel.Height = activeRowHeight;
+        _outerLayout.RowStyles[0].SizeType = SizeType.Absolute;
+        _outerLayout.RowStyles[0].Height = activeRowHeight;
+        _outerLayout.RowStyles[1].SizeType = SizeType.Absolute;
+        _outerLayout.RowStyles[1].Height = separatorWidth;
+        UpdateSearchIndicatorBounds();
+        UpdateSearchPresentation();
 
         _toolbarLayout.Padding = UiScaleHelper.ScalePadding(this, new Padding(8, 6, 8, 6));
         _addButton.Size = UiScaleHelper.GetButtonSize(this, _addButton.Text, _addButton.Font, 96, 34, horizontalLogicalPadding: 12);
@@ -412,6 +471,76 @@ public sealed class MainPopup : Form
         UpdateListColumnWidth();
         CenterToast();
         ApplyTabStyles();
+
+        if (Visible)
+        {
+            var screen = Screen.FromPoint(new Point(Math.Max(Left + 1, 0), Math.Max(Top + 1, 0)));
+            EnsurePopupSizeForScreen(screen);
+            ClampToWorkingArea(screen.WorkingArea);
+        }
+    }
+
+    private void UpdateSearchPresentation()
+    {
+        _searchBox.Visible = _isSearchExpanded;
+        _searchCollapsedPanel.Visible = !_isSearchExpanded;
+        _searchCollapsedIndicator.Visible = !_isSearchExpanded;
+        _outerLayout.PerformLayout();
+        _searchPanel.PerformLayout();
+        PerformLayout();
+    }
+
+    private void UpdateSearchIndicatorBounds()
+    {
+        if (_searchCollapsedPanel.Width <= 0 || _searchCollapsedPanel.Height <= 0)
+            return;
+
+        _searchCollapsedIndicator.Location = new Point(
+            Math.Max(0, (_searchCollapsedPanel.Width - _searchCollapsedIndicator.Width) / 2),
+            Math.Max(0, (_searchCollapsedPanel.Height - _searchCollapsedIndicator.Height) / 2));
+    }
+
+    private void SetSearchExpanded(bool expanded, bool focusSearch = false)
+    {
+        if (_isSearchExpanded == expanded)
+        {
+            if (expanded && focusSearch)
+                _searchBox.Focus();
+            return;
+        }
+
+        _isSearchExpanded = expanded;
+        ApplyScaledMetrics();
+
+        var screen = Visible
+            ? Screen.FromPoint(new Point(Math.Max(Left + 1, 0), Math.Max(Top + 1, 0)))
+            : Screen.FromPoint(Cursor.Position);
+        EnsurePopupSizeForScreen(screen);
+        ClampToWorkingArea(screen.WorkingArea);
+
+        if (expanded)
+        {
+            if (focusSearch)
+                _searchBox.Focus();
+        }
+        else if (Visible && _listView.Items.Count > 0)
+        {
+            _listView.Focus();
+        }
+    }
+
+    private void CollapseSearchIfIdle()
+    {
+        if (!_isSearchExpanded)
+            return;
+
+        if (!string.IsNullOrWhiteSpace(_searchBox.Text))
+            return;
+
+        if (_searchBox.Focused || _searchPanel.ContainsFocus)
+            return;
+
+        SetSearchExpanded(false);
     }
 
     private void UpdateImageList()
@@ -588,6 +717,7 @@ public sealed class MainPopup : Form
     {
         _activeTab = TabKind.Files;
         _searchBox.Clear();
+        SetSearchExpanded(false);
         ApplyTabStyles();
         UpdateSearchPlaceholder();
         EnsurePopupSizeForScreen(Screen.PrimaryScreen ?? Screen.FromPoint(Cursor.Position));
@@ -595,7 +725,8 @@ public sealed class MainPopup : Form
         PositionNearTray();
         Show();
         Activate();
-        _searchBox.Focus();
+        if (_listView.Items.Count > 0)
+            _listView.Focus();
     }
 
     public void AddPathEntry(string path)
@@ -904,6 +1035,7 @@ public sealed class MainPopup : Form
     {
         _activeTab = TabKind.Files;
         _searchBox.Clear();
+        SetSearchExpanded(false);
         ApplyTabStyles();
         UpdateSearchPlaceholder();
 
@@ -976,21 +1108,44 @@ public sealed class MainPopup : Form
         }
 
         Activate();
-        _searchBox.Focus();
+        if (_isSearchExpanded)
+            _searchBox.Focus();
+        else if (_listView.Items.Count > 0)
+            _listView.Focus();
         return false;
     }
 
     private void EnsurePopupSizeForScreen(Screen screen)
     {
         var margin = UiScaleHelper.Scale(this, 8);
-        var preferred = UiScaleHelper.ScaleSize(this, PreferredPopupLogicalSize);
-        var minimum = UiScaleHelper.ScaleSize(this, MinimumPopupLogicalSize);
+        var preferred = UiScaleHelper.ScaleSize(this, GetPreferredPopupLogicalSize());
+        var minimum = UiScaleHelper.ScaleSize(this, GetMinimumPopupLogicalSize());
         var maxWidth = Math.Max(minimum.Width, screen.WorkingArea.Width - margin * 2);
         var maxHeight = Math.Max(minimum.Height, screen.WorkingArea.Height - margin * 2);
 
         Size = new Size(
             Math.Min(preferred.Width, maxWidth),
             Math.Min(preferred.Height, maxHeight));
+    }
+
+    private Size GetPreferredPopupLogicalSize()
+        => _isSearchExpanded
+            ? ExpandedPopupLogicalSize
+            : new Size(ExpandedPopupLogicalSize.Width, ExpandedPopupLogicalSize.Height - CollapsedPopupHeightDeltaLogical);
+
+    private Size GetMinimumPopupLogicalSize()
+        => _isSearchExpanded
+            ? MinimumExpandedPopupLogicalSize
+            : new Size(
+                MinimumExpandedPopupLogicalSize.Width,
+                Math.Max(260, MinimumExpandedPopupLogicalSize.Height - CollapsedPopupHeightDeltaLogical));
+
+    private void ClampToWorkingArea(Rectangle workingArea)
+    {
+        var margin = UiScaleHelper.Scale(this, 8);
+        int x = Math.Max(workingArea.Left + margin, Math.Min(Left, workingArea.Right - Width - margin));
+        int y = Math.Max(workingArea.Top + margin, Math.Min(Top, workingArea.Bottom - Height - margin));
+        Location = new Point(x, y);
     }
 
     private void PositionNearTray()

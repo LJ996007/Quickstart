@@ -85,17 +85,30 @@ public sealed class ProcessLauncher(ConfigManager configManager)
     {
         try
         {
-            // dopusrt.exe lives alongside dopus.exe
             var dopusrt = Path.Combine(Path.GetDirectoryName(dopusPath)!, "dopusrt.exe");
-            var exe = File.Exists(dopusrt) ? dopusrt : dopusPath;
             WindowActivator.AllowAnyForeground();
-            Process.Start(new ProcessStartInfo
+
+            if (File.Exists(dopusrt))
             {
-                FileName = exe,
-                Arguments = $"/open \"{path}\"",
-                UseShellExecute = false
-            });
-            // dopusrt 是启动器会立即退出，通过进程名找真正的 dopus 主窗口
+                // Use the last-active Opus lister when one exists, otherwise open the
+                // default lister and create a tab there.
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = dopusrt,
+                    Arguments = $"/acmd Go \"{path}\" NEWTAB=deflister,findexisting,tofront",
+                    UseShellExecute = false
+                });
+            }
+            else
+            {
+                Process.Start(new ProcessStartInfo
+                {
+                    FileName = dopusPath,
+                    Arguments = $"\"{path}\"",
+                    UseShellExecute = false
+                });
+            }
+
             WindowActivator.BringToFrontAsync(seedProcess: null, windowClass: null, procName: "dopus");
         }
         catch

@@ -37,6 +37,13 @@ static class Program
         var configManager = new ConfigManager();
         configManager.Load();
 
+        if (configManager.Config.ShellMenuEnabled)
+        {
+            var exePath = Application.ExecutablePath;
+            if (!ShellIntegration.IsRegistered(exePath))
+                ShellIntegration.Register(exePath);
+        }
+
         // Auto-detect TC on first run
         if (string.IsNullOrEmpty(configManager.Config.TotalCommanderPath))
         {
