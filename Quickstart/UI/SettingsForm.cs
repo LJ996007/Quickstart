@@ -25,13 +25,14 @@ public sealed class SettingsForm : Form
         AutoScaleMode = AutoScaleMode.Dpi;
 
         Text = "Quickstart 设置";
-        ClientSize = new Size(580, 420);
+        ClientSize = new Size(540, 380);
         FormBorderStyle = FormBorderStyle.FixedDialog;
         MaximizeBox = false;
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterScreen;
         Font = new Font("Segoe UI", 9.5f);
-        Padding = new Padding(14);
+        Padding = new Padding(10);
+        FormStyler.ApplyRounded(this);
 
         var root = new TableLayoutPanel
         {
@@ -70,7 +71,7 @@ public sealed class SettingsForm : Form
             Anchor = AnchorStyles.Left | AnchorStyles.Right
         };
 
-        var tcBrowseBtn = new Button
+        var tcBrowseBtn = new RoundedButton
         {
             Text = "...",
             Font = new Font("Segoe UI", 9f),
@@ -88,7 +89,7 @@ public sealed class SettingsForm : Form
                 _tcPathBox.Text = dlg.FileName;
         };
 
-        var tcDetectBtn = new Button
+        var tcDetectBtn = new RoundedButton
         {
             Text = "自动检测",
             Font = new Font("Segoe UI", 9f),
@@ -115,7 +116,7 @@ public sealed class SettingsForm : Form
         {
             Text = "Directory Opus 路径:",
             AutoSize = true,
-            Margin = new Padding(0, 8, 0, 8)
+            Margin = new Padding(0, 6, 0, 6)
         };
 
         _dopusPathBox = new TextBox
@@ -126,7 +127,7 @@ public sealed class SettingsForm : Form
             Anchor = AnchorStyles.Left | AnchorStyles.Right
         };
 
-        var doBrowseBtn = new Button
+        var doBrowseBtn = new RoundedButton
         {
             Text = "...",
             Font = new Font("Segoe UI", 9f),
@@ -144,7 +145,7 @@ public sealed class SettingsForm : Form
                 _dopusPathBox.Text = dlg.FileName;
         };
 
-        var doDetectBtn = new Button
+        var doDetectBtn = new RoundedButton
         {
             Text = "自动检测",
             Font = new Font("Segoe UI", 9f),
@@ -210,7 +211,7 @@ public sealed class SettingsForm : Form
             Dock = DockStyle.Fill,
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
-            Margin = new Padding(0, 12, 0, 0)
+            Margin = new Padding(0, 8, 0, 0)
         };
 
         _websiteHintLabel = new Label
@@ -220,7 +221,7 @@ public sealed class SettingsForm : Form
             Margin = new Padding(0)
         };
 
-        _copyBookmarkletBtn = new Button
+        _copyBookmarkletBtn = new RoundedButton
         {
             Text = "复制一键添加书签",
             Margin = new Padding(0)
@@ -237,7 +238,7 @@ public sealed class SettingsForm : Form
                 MessageBoxIcon.Information);
         };
 
-        _repairProtocolBtn = new Button
+        _repairProtocolBtn = new RoundedButton
         {
             Text = "重新注册协议",
             Margin = new Padding(8, 0, 0, 0)
@@ -261,7 +262,7 @@ public sealed class SettingsForm : Form
             WrapContents = false,
             FlowDirection = FlowDirection.LeftToRight,
             Dock = DockStyle.Fill,
-            Margin = new Padding(0, 10, 0, 0)
+            Margin = new Padding(0, 6, 0, 0)
         };
         _websiteActionsRow.Controls.Add(_copyBookmarkletBtn);
         _websiteActionsRow.Controls.Add(_repairProtocolBtn);
@@ -280,7 +281,7 @@ public sealed class SettingsForm : Form
         websiteLayout.Controls.Add(_websiteActionsRow, 0, 1);
         _websiteToolsGroup.Controls.Add(websiteLayout);
 
-        var okBtn = new Button
+        var okBtn = new RoundedButton
         {
             Text = "保存",
             Margin = new Padding(8, 0, 0, 0)
@@ -288,7 +289,7 @@ public sealed class SettingsForm : Form
         ButtonStyler.ApplyPrimary(okBtn);
         okBtn.Click += OnSave;
 
-        var cancelBtn = new Button
+        var cancelBtn = new RoundedButton
         {
             Text = "取消",
             DialogResult = DialogResult.Cancel,
@@ -330,7 +331,7 @@ public sealed class SettingsForm : Form
             Dock = DockStyle.Fill,
             ColumnCount = 2,
             AutoSize = true,
-            Margin = new Padding(0, 0, 0, 6)
+            Margin = new Padding(0, 0, 0, 4)
         };
         tcPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         tcPathRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -380,7 +381,7 @@ public sealed class SettingsForm : Form
             FlowDirection = FlowDirection.RightToLeft,
             WrapContents = false,
             AutoSize = false,
-            Margin = new Padding(0, 14, 0, 0)
+            Margin = new Padding(0, 18, 0, 10)
         };
         buttonsRow.Controls.Add(cancelBtn);
         buttonsRow.Controls.Add(okBtn);
@@ -400,7 +401,7 @@ public sealed class SettingsForm : Form
 
         void ApplyScaledMetrics()
         {
-            Padding = UiScaleHelper.ScalePadding(this, new Padding(14));
+            Padding = UiScaleHelper.ScalePadding(this, new Padding(10));
 
             var inputHeight = UiScaleHelper.GetInputHeight(_tcPathBox, 30);
             var browseButtonSize = UiScaleHelper.GetButtonSize(this, tcBrowseBtn.Text, tcBrowseBtn.Font, 44, 30, horizontalLogicalPadding: 10);
@@ -426,21 +427,21 @@ public sealed class SettingsForm : Form
             buttonsRow.Padding = new Padding(0, 0, UiScaleHelper.Scale(this, 10), 0);
             buttonsRow.Height = dialogButtonSize.Height + UiScaleHelper.Scale(this, 8);
 
-            _websiteToolsGroup.Padding = UiScaleHelper.ScalePadding(this, new Padding(10, 12, 10, 10));
-            _websiteHintLabel.MaximumSize = new Size(UiScaleHelper.Scale(this, 520), 0);
+            _websiteToolsGroup.Padding = UiScaleHelper.ScalePadding(this, new Padding(8, 10, 8, 8));
+            _websiteHintLabel.MaximumSize = new Size(UiScaleHelper.Scale(this, 480), 0);
 
             infoLabel.Height = Math.Max(
                 UiScaleHelper.Scale(this, 24),
                 TextRenderer.MeasureText(infoLabel.Text, infoLabel.Font).Height + UiScaleHelper.Scale(this, 6));
 
             root.PerformLayout();
-            var preferred = root.GetPreferredSize(new Size(Math.Max(ClientSize.Width, UiScaleHelper.Scale(this, 580)), 0));
-            var minClientWidth = Math.Max(UiScaleHelper.Scale(this, 620), preferred.Width);
-            var minClientHeight = Math.Max(UiScaleHelper.Scale(this, 460), preferred.Height + UiScaleHelper.Scale(this, 8));
+            var preferred = root.GetPreferredSize(new Size(Math.Max(ClientSize.Width, UiScaleHelper.Scale(this, 540)), 0));
+            var minClientWidth = Math.Max(UiScaleHelper.Scale(this, 580), preferred.Width);
+            var minClientHeight = Math.Max(UiScaleHelper.Scale(this, 420), preferred.Height + UiScaleHelper.Scale(this, 8));
             MinimumSize = SizeFromClientSize(new Size(minClientWidth, minClientHeight));
             ClientSize = new Size(
-                Math.Max(UiScaleHelper.Scale(this, 580), preferred.Width),
-                Math.Max(UiScaleHelper.Scale(this, 420), preferred.Height));
+                Math.Max(UiScaleHelper.Scale(this, 540), preferred.Width),
+                Math.Max(UiScaleHelper.Scale(this, 380), preferred.Height));
         }
 
         ApplyScaledMetrics();

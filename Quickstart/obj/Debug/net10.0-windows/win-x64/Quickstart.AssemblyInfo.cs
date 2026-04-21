@@ -14,7 +14,7 @@ using System.Reflection;
 [assembly: System.Reflection.AssemblyConfigurationAttribute("Debug")]
 [assembly: System.Reflection.AssemblyDescriptionAttribute("Windows tray app for quick folder/file access")]
 [assembly: System.Reflection.AssemblyFileVersionAttribute("1.0.0.0")]
-[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+3bea054c1d12b49037ef521b13296e92e9e2cdec")]
+[assembly: System.Reflection.AssemblyInformationalVersionAttribute("1.0.0+bb63f2ae53166b7debff955d41653530578282e3")]
 [assembly: System.Reflection.AssemblyProductAttribute("Quickstart")]
 [assembly: System.Reflection.AssemblyTitleAttribute("Quickstart")]
 [assembly: System.Reflection.AssemblyVersionAttribute("1.0.0.0")]

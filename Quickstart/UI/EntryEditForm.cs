@@ -30,9 +30,10 @@ public sealed class EntryEditForm : Form
         MinimizeBox = false;
         StartPosition = FormStartPosition.CenterParent;
         Font = new Font("Segoe UI", 9.5f);
-        Padding = new Padding(14);
+        Padding = new Padding(10);
         AutoSize = true;
         AutoSizeMode = AutoSizeMode.GrowAndShrink;
+        FormStyler.ApplyRounded(this);
 
         _root = new TableLayoutPanel
         {
@@ -61,7 +62,7 @@ public sealed class EntryEditForm : Form
             Margin = new Padding(0)
         };
 
-        _browseBtn = new Button
+        _browseBtn = new RoundedButton
         {
             Text = "...",
             Font = new Font("Segoe UI", 9f),
@@ -108,7 +109,7 @@ public sealed class EntryEditForm : Form
             Margin = new Padding(0)
         };
 
-        _okBtn = new Button
+        _okBtn = new RoundedButton
         {
             Text = "确定",
             DialogResult = DialogResult.OK,
@@ -116,7 +117,7 @@ public sealed class EntryEditForm : Form
         };
         ButtonStyler.ApplyPrimary(_okBtn);
 
-        _cancelBtn = new Button
+        _cancelBtn = new RoundedButton
         {
             Text = "取消",
             DialogResult = DialogResult.Cancel,
@@ -190,7 +191,7 @@ public sealed class EntryEditForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 4,
-            Margin = new Padding(0, 10, 0, 0)
+            Margin = new Padding(0, 6, 0, 0)
         };
         metaRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         metaRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 44));
@@ -245,7 +246,7 @@ public sealed class EntryEditForm : Form
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             ColumnCount = 2,
-            Margin = new Padding(0, 0, 0, 10)
+            Margin = new Padding(0, 0, 0, 6)
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -265,15 +266,15 @@ public sealed class EntryEditForm : Form
 
     private void ApplyScaledMetrics()
     {
-        Padding = UiScaleHelper.ScalePadding(this, new Padding(14));
+        Padding = UiScaleHelper.ScalePadding(this, new Padding(10));
 
         var inputHeight = UiScaleHelper.GetInputHeight(_nameBox, 30);
         var comboHeight = UiScaleHelper.GetInputHeight(_typeBox, 32);
         var browseButtonSize = UiScaleHelper.GetButtonSize(this, _browseBtn.Text, _browseBtn.Font, 44, 30, horizontalLogicalPadding: 10);
 
-        _nameBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 360), inputHeight);
+        _nameBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 340), inputHeight);
         _groupBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 160), inputHeight);
-        _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 360), inputHeight);
+        _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 340), inputHeight);
         _typeBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 128), comboHeight);
         _browseBtn.Size = new Size(browseButtonSize.Width, inputHeight);
 
@@ -300,7 +301,7 @@ public sealed class EntryEditForm : Form
             case EntryType.Url:
                 _pathLabel.Text = "网址:";
                 _pathBox.Multiline = false;
-                _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 360), singleLineHeight);
+                _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 340), singleLineHeight);
                 _browseBtn.Visible = false;
                 break;
 
@@ -317,7 +318,7 @@ public sealed class EntryEditForm : Form
             default:
                 _pathLabel.Text = "路径:";
                 _pathBox.Multiline = false;
-                _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 360), singleLineHeight);
+                _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 340), singleLineHeight);
                 _browseBtn.Visible = true;
                 break;
         }

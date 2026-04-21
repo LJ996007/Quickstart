@@ -9,8 +9,8 @@ public sealed class MainPopup : Form
 {
     private enum TabKind { Files, Urls, Texts }
 
-    private static readonly Size ExpandedPopupLogicalSize = new(420, 500);
-    private static readonly Size MinimumExpandedPopupLogicalSize = new(320, 380);
+    private static readonly Size ExpandedPopupLogicalSize = new(380, 440);
+    private static readonly Size MinimumExpandedPopupLogicalSize = new(300, 340);
     private const int CollapsedPopupHeightDeltaLogical = 28;
     private const string AllGroupsLabel = "全部";
 
@@ -58,12 +58,13 @@ public sealed class MainPopup : Form
         Size = ExpandedPopupLogicalSize;
         BackColor = Color.FromArgb(250, 250, 250);
         TopMost = true;
+        FormStyler.ApplyRounded(this);
 
         var border = new Panel
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(1),
-            BackColor = Color.FromArgb(200, 200, 200)
+            BackColor = Color.FromArgb(220, 220, 220)
         };
 
         var inner = new Panel
@@ -152,7 +153,7 @@ public sealed class MainPopup : Form
         _listView.DrawColumnHeader += (_, e) => e.DrawDefault = true;
         _listView.DrawItem += (_, e) =>
         {
-            using var bg = new SolidBrush(e.Item.Selected ? SystemColors.Highlight : _listView.BackColor);
+            using var bg = new SolidBrush(e.Item.Selected ? Color.FromArgb(235, 245, 255) : _listView.BackColor);
             e.Graphics.FillRectangle(bg, e.Bounds);
         };
         _listView.DrawSubItem += OnDrawSubItem;
@@ -266,7 +267,7 @@ public sealed class MainPopup : Form
         contentLayout.Controls.Add(_groupSeparator, 3, 0);
         contentLayout.Controls.Add(_groupLayout, 4, 0);
 
-        _addButton = new Button
+        _addButton = new RoundedButton
         {
             Text = "+ 添加",
             Font = new Font("Segoe UI", 9f),
@@ -275,7 +276,7 @@ public sealed class MainPopup : Form
         ButtonStyler.ApplyPrimary(_addButton);
         _addButton.Click += (_, _) => AddNewEntry();
 
-        _settingsButton = new Button
+        _settingsButton = new RoundedButton
         {
             Text = "设置",
             Font = new Font("Segoe UI", 9f),
@@ -291,7 +292,7 @@ public sealed class MainPopup : Form
             Font = new Font("Segoe UI", 8.5f),
             ForeColor = Color.FromArgb(150, 150, 150),
             TextAlign = ContentAlignment.MiddleRight,
-            Margin = new Padding(0)
+            Margin = new Padding(8, 0, 0, 0)
         };
 
         var buttonFlow = new FlowLayoutPanel
@@ -300,7 +301,7 @@ public sealed class MainPopup : Form
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             WrapContents = false,
             FlowDirection = FlowDirection.LeftToRight,
-            Dock = DockStyle.Fill,
+            Anchor = AnchorStyles.Left | AnchorStyles.Top,
             Margin = new Padding(0)
         };
         buttonFlow.Controls.Add(_addButton);
@@ -309,18 +310,16 @@ public sealed class MainPopup : Form
         _toolbarLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            ColumnCount = 3,
+            ColumnCount = 2,
             AutoSize = true,
             Margin = new Padding(0),
-            Padding = new Padding(8, 6, 8, 6),
+            Padding = new Padding(8, 0, 8, 0),
             BackColor = Color.FromArgb(245, 245, 245)
         };
         _toolbarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _toolbarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _toolbarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _toolbarLayout.Controls.Add(buttonFlow, 0, 0);
-        _toolbarLayout.Controls.Add(new Panel { Dock = DockStyle.Fill, Margin = new Padding(0) }, 1, 0);
-        _toolbarLayout.Controls.Add(_countLabel, 2, 0);
+        _toolbarLayout.Controls.Add(_countLabel, 1, 0);
 
         _outerLayout.Controls.Add(_searchPanel, 0, 0);
         _outerLayout.Controls.Add(_separatorPanel, 0, 1);
@@ -453,7 +452,7 @@ public sealed class MainPopup : Form
         _tabSeparator.Width = separatorWidth;
         _groupSeparator.Width = separatorWidth;
 
-        var expandedPadding = UiScaleHelper.ScalePadding(this, new Padding(8, 4, 8, 4));
+        var expandedPadding = UiScaleHelper.ScalePadding(this, new Padding(6, 2, 6, 2));
         var collapsedPadding = UiScaleHelper.ScalePadding(this, new Padding(0));
         var expandedSearchHeight = Math.Max(UiScaleHelper.Scale(this, 24), _searchBox.PreferredHeight);
         var collapsedSearchHeight = Math.Max(UiScaleHelper.Scale(this, 8), UiScaleHelper.Scale(this, 6));
@@ -476,26 +475,27 @@ public sealed class MainPopup : Form
         UpdateSearchIndicatorBounds();
         UpdateSearchPresentation();
 
-        var toolbarHorizontalPadding = UiScaleHelper.Scale(this, 4);
-        var toolbarVerticalPadding = UiScaleHelper.Scale(this, 1);
+        var toolbarHorizontalPadding = UiScaleHelper.Scale(this, 3);
+        var toolbarVerticalPadding = 6;
         _toolbarLayout.Padding = new Padding(
             toolbarHorizontalPadding,
             toolbarVerticalPadding,
             toolbarHorizontalPadding,
             toolbarVerticalPadding);
-        _addButton.Size = UiScaleHelper.GetButtonSize(this, _addButton.Text, _addButton.Font, 88, 28, horizontalLogicalPadding: 9);
-        _settingsButton.Size = UiScaleHelper.GetButtonSize(this, _settingsButton.Text, _settingsButton.Font, 78, 28, horizontalLogicalPadding: 9);
+        _addButton.Size = UiScaleHelper.GetButtonSize(this, _addButton.Text, _addButton.Font, 84, 24, horizontalLogicalPadding: 8, verticalLogicalPadding: 3);
+        _settingsButton.Size = UiScaleHelper.GetButtonSize(this, _settingsButton.Text, _settingsButton.Font, 72, 24, horizontalLogicalPadding: 8, verticalLogicalPadding: 3);
         _countLabel.MinimumSize = new Size(UiScaleHelper.Scale(this, 64), Math.Max(_addButton.Height, _settingsButton.Height));
+        _countLabel.Margin = new Padding(UiScaleHelper.Scale(this, 8), 0, 0, 0);
         _countLabel.Padding = new Padding(0);
-        _toolbarLayout.MinimumSize = new Size(0, Math.Max(_addButton.Height, _settingsButton.Height) + toolbarVerticalPadding * 2);
+        _toolbarLayout.MinimumSize = new Size(0, Math.Max(_addButton.Height, _settingsButton.Height));
 
         var tabWidth = 0;
         var tabHeight = 0;
         foreach (var label in _tabLabels)
         {
             var measured = TextRenderer.MeasureText(label.Text, label.Font);
-            tabWidth = Math.Max(tabWidth, measured.Width + UiScaleHelper.Scale(this, 12));
-            tabHeight = Math.Max(tabHeight, measured.Height + UiScaleHelper.Scale(this, 12));
+            tabWidth = Math.Max(tabWidth, measured.Width + UiScaleHelper.Scale(this, 10));
+            tabHeight = Math.Max(tabHeight, measured.Height + UiScaleHelper.Scale(this, 8));
         }
 
         for (int i = 0; i < _tabLabels.Length; i++)
@@ -590,7 +590,7 @@ public sealed class MainPopup : Form
 
     private void UpdateImageList()
     {
-        var iconSize = UiScaleHelper.GetIconSize(this, 16);
+        var iconSize = UiScaleHelper.GetIconSize(this, 20);
         if (_imageList.ImageSize.Width == iconSize && _webEntryImage?.Width == iconSize)
             return;
 
@@ -625,9 +625,9 @@ public sealed class MainPopup : Form
 
     private int GetGroupColumnWidth()
     {
-        var minWidth = UiScaleHelper.Scale(this, 36);
-        var maxWidth = UiScaleHelper.Scale(this, 56);
-        var horizontalPadding = UiScaleHelper.Scale(this, 12);
+        var minWidth = UiScaleHelper.Scale(this, 32);
+        var maxWidth = UiScaleHelper.Scale(this, 48);
+        var horizontalPadding = UiScaleHelper.Scale(this, 10);
         var font = _tabLabels[0].Font;
         var maxMeasuredWidth = TextRenderer.MeasureText(GetVerticalLabelText(AllGroupsLabel), font).Width + horizontalPadding;
 
@@ -646,10 +646,10 @@ public sealed class MainPopup : Form
         if (_groupLabels.Count == 0)
             return;
 
-        var labelWidth = Math.Max(UiScaleHelper.Scale(this, 36), _groupLayout.ClientSize.Width - UiScaleHelper.Scale(this, 1));
+        var labelWidth = Math.Max(UiScaleHelper.Scale(this, 32), _groupLayout.ClientSize.Width - UiScaleHelper.Scale(this, 1));
         var font = _tabLabels[0].Font;
-        var verticalPadding = UiScaleHelper.Scale(this, 10);
-        var minLabelHeight = UiScaleHelper.Scale(this, 44);
+        var verticalPadding = UiScaleHelper.Scale(this, 8);
+        var minLabelHeight = UiScaleHelper.Scale(this, 40);
 
         foreach (var label in _groupLabels)
         {
@@ -1068,7 +1068,7 @@ public sealed class MainPopup : Form
 
         entries = entries.OrderBy(e => e.SortOrder).ToList();
 
-        var useLargeIcon = _imageList.ImageSize.Width > 16;
+        var useLargeIcon = _imageList.ImageSize.Width > 20;
 
         _listView.BeginUpdate();
         _listView.Items.Clear();
@@ -1298,7 +1298,7 @@ public sealed class MainPopup : Form
                 textX += imgList.ImageSize.Width + UiScaleHelper.Scale(this, 4);
         }
 
-        var textColor = item.Selected ? SystemColors.HighlightText : item.ForeColor;
+        var textColor = item.Selected ? Color.FromArgb(59, 130, 246) : item.ForeColor;
         var textBounds = new Rectangle(textX, bounds.Y, bounds.Right - textX - UiScaleHelper.Scale(this, 2), bounds.Height);
         var display = MidTruncate(item.Text, _listView.Font, textBounds.Width);
 
@@ -1537,7 +1537,7 @@ public sealed class MainPopup : Form
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         base.OnPaintBackground(e);
-        using var pen = new Pen(Color.FromArgb(200, 200, 200));
+        using var pen = new Pen(Color.FromArgb(220, 220, 220));
         e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
     }
 }
