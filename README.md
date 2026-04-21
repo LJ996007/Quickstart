@@ -1,6 +1,9 @@
 # Quickstart
 
-Quickstart 是一个 Windows 系统托盘快捷启动工具，适合把常用文件夹和文件集中收藏、快速检索并一键打开。
+Quickstart 是一个快捷启动工具仓库，目前包含：
+
+- `Quickstart/`：Windows WinForms 系统托盘版本
+- `macos/QuickstartMac/`：macOS AppKit 菜单栏 MVP 版本
 
 程序基于 WinForms 开发，常驻系统托盘，支持中文名称的子串搜索和拼音首字母搜索，并可与 Total Commander、Directory Opus、Windows 资源管理器以及右键菜单集成。
 
@@ -19,6 +22,20 @@ Quickstart 是一个 Windows 系统托盘快捷启动工具，适合把常用文
 
 - Windows
 - .NET 10.0 SDK（开发和本地构建时需要）
+
+## macOS MVP
+
+macOS 版本是新增的原生 AppKit 工程，入口位于：
+
+```text
+macos/QuickstartMac/QuickstartMac.xcodeproj
+```
+
+更多兼容策略、配置契约和当前阶段取舍见：
+
+```text
+docs/macos-port.md
+```
 
 ## 快速开始
 

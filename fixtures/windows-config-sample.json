@@ -1,0 +1,44 @@
+{
+  "entries": [
+    {
+      "id": "a1b2c3d4",
+      "name": "项目目录",
+      "path": "C:\\Work\\Quickstart",
+      "type": 0,
+      "group": "工作",
+      "sortOrder": 0,
+      "addedAt": "2026-04-21T09:30:00.1234567+08:00",
+      "lastUsedAt": "2026-04-21T11:45:12.1234567+08:00"
+    },
+    {
+      "id": "e5f6a7b8",
+      "name": "Quickstart 官网",
+      "path": "https://quickstart.example.com/docs",
+      "type": 2,
+      "group": "工作",
+      "sortOrder": 1,
+      "addedAt": "2026-04-21T09:45:30.0000000+08:00",
+      "lastUsedAt": "2026-04-21T11:46:30.0000000+08:00"
+    },
+    {
+      "id": "1122aabb",
+      "name": "灵感便签",
+      "path": "把发布流程再精简一点",
+      "type": 3,
+      "group": "灵感",
+      "sortOrder": 2,
+      "addedAt": "2026-04-21T10:00:00.0000000+08:00",
+      "lastUsedAt": "2026-04-21T10:05:00.0000000+08:00"
+    }
+  ],
+  "groupLastUsedAt": {
+    "工作": "2026-04-21T11:50:00.7654321+08:00",
+    "灵感": "2026-04-21T10:06:00.0000000+08:00"
+  },
+  "totalCommanderPath": "C:\\Tools\\TOTALCMD64.EXE",
+  "directoryOpusPath": "C:\\Program Files\\GPSoftware\\Directory Opus\\dopus.exe",
+  "defaultOpenWith": 1,
+  "startWithWindows": true,
+  "shellMenuEnabled": true,
+  "hotKey": "Ctrl+Shift+Space"
+}
