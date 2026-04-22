@@ -63,6 +63,85 @@ dotnet publish Quickstart/Quickstart.csproj -c Release -r win-x64
 Quickstart/bin/Release/net10.0-windows/win-x64/publish/Quickstart.exe
 ```
 
+这个 `Quickstart.exe` 已经是 `64` 位、自包含、单文件版本，可以直接发给别人双击运行，不需要额外安装 .NET。
+
+### 生成安装版 EXE
+
+如果你希望别人通过“下一步、下一步”的方式安装，并自动创建开始菜单、桌面快捷方式和卸载入口，可以使用仓库内置的 Inno Setup 脚本。
+
+1. 先安装 `Inno Setup 6`
+2. 执行：
+
+```powershell
+.\scripts\build-installer.ps1
+```
+
+生成后的安装包位于：
+
+```text
+artifacts/installer/Quickstart-Setup-x64.exe
+```
+
+说明：
+
+- 安装包为 `64` 位安装程序
+- 默认安装到当前用户目录 `%LOCALAPPDATA%\Programs\Quickstart`
+- 不需要管理员权限
+- 安装完成后可直接启动，并带卸载入口
+
+### 正式发布流程
+
+仓库现在提供了一个正式发布流程，会自动：
+
+- 从 `Quickstart.csproj` 读取版本号
+- 生成带版本号的发布目录
+- 同时产出便携版和安装版
+- 生成 `SHA256SUMS.txt` 和 `release-info.txt`
+- 支持双击 `release.cmd` 一键出包
+
+完整发布安装包前，仍然需要先安装 `Inno Setup 6`。
+
+命令行方式：
+
+```powershell
+.\scripts\build-release.ps1
+```
+
+双击方式：
+
+```text
+release.cmd
+```
+
+发布目录结构示例：
+
+```text
+artifacts/
+  releases/
+    v1.0.0/
+      win-x64/
+        Quickstart-v1.0.0-win-x64.exe
+        SHA256SUMS.txt
+        release-info.txt
+        publish/
+          Quickstart.exe
+        installer/
+          Quickstart-Setup-v1.0.0-win-x64.exe
+        symbols/
+          Quickstart-v1.0.0-win-x64.pdb
+```
+
+说明：
+
+- `publish/` 是原始发布目录，适合便携分发或排查问题
+- 根目录下的 `Quickstart-v<version>-win-x64.exe` 是便于直接分发的版本化副本
+- 安装包文件名也会自动带版本号
+- 如果只想验证便携版发布，不生成安装包，可以执行：
+
+```powershell
+.\scripts\build-release.ps1 -SkipInstaller
+```
+
 ## 使用说明
 
 ### 基本操作
