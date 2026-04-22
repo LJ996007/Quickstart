@@ -1,2 +1,0 @@
-C:\Users\markl\Desktop\ai\Quickstart\Quickstart\bin\Release\net10.0-windows\win-x64\publish-alt\Quickstart.pdb
-C:\Users\markl\Desktop\ai\Quickstart\Quickstart\bin\Release\net10.0-windows\win-x64\publish-alt\Quickstart.exe
