@@ -13,7 +13,7 @@ public sealed class ProcessLauncher(ConfigManager configManager)
 
         configManager.TouchEntry(entry.Id);
 
-        if (entry.Type == EntryType.File)
+        if (entry.Type is EntryType.File or EntryType.Document)
         {
             OpenFile(entry.Path);
             return;

@@ -5,7 +5,8 @@ public enum EntryType
     Folder,
     File,
     Url,
-    Text
+    Text,
+    Document
 }
 
 public sealed class QuickEntry

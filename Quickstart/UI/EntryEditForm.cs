@@ -1,5 +1,6 @@
 namespace Quickstart.UI;
 
+using Quickstart.Core;
 using Quickstart.Models;
 using Quickstart.Utils;
 
@@ -91,13 +92,14 @@ public sealed class EntryEditForm : Form
             DropDownStyle = ComboBoxStyle.DropDownList,
             Margin = new Padding(0)
         };
-        _typeBox.Items.AddRange(["文件夹", "文件", "网页", "文本"]);
+        _typeBox.Items.AddRange(["文件夹", "文件", "网页", "文本", "文档"]);
         _typeBox.SelectedIndex = entry.Type switch
         {
             EntryType.Folder => 0,
             EntryType.File => 1,
             EntryType.Url => 2,
             EntryType.Text => 3,
+            EntryType.Document => 4,
             _ => 0
         };
 
@@ -160,14 +162,8 @@ public sealed class EntryEditForm : Form
 
         _pathBox.TextChanged += (_, _) =>
         {
-            var currentType = GetSelectedEntryType();
-            if (currentType is EntryType.Url or EntryType.Text) return;
-
             var path = _pathBox.Text.Trim();
-            if (Directory.Exists(path))
-                _typeBox.SelectedIndex = 0;
-            else if (File.Exists(path))
-                _typeBox.SelectedIndex = 1;
+            UpdateTypeFromPath(path);
 
             if (string.IsNullOrWhiteSpace(_nameBox.Text) || _nameBox.Text == _entry.Name)
                 _nameBox.Text = Path.GetFileName(path);
@@ -261,8 +257,27 @@ public sealed class EntryEditForm : Form
         1 => EntryType.File,
         2 => EntryType.Url,
         3 => EntryType.Text,
+        4 => EntryType.Document,
         _ => EntryType.Folder
     };
+
+    private void UpdateTypeFromPath(string path)
+    {
+        var currentType = GetSelectedEntryType();
+        if (currentType is EntryType.Url or EntryType.Text)
+            return;
+
+        var targetIndex = _typeBox.SelectedIndex;
+        if (Directory.Exists(path))
+            targetIndex = 0;
+        else if (EntryClassifier.IsDocumentPath(path))
+            targetIndex = 4;
+        else if (!string.IsNullOrWhiteSpace(path))
+            targetIndex = 1;
+
+        if (_typeBox.SelectedIndex != targetIndex)
+            _typeBox.SelectedIndex = targetIndex;
+    }
 
     private void ApplyScaledMetrics()
     {
@@ -315,6 +330,7 @@ public sealed class EntryEditForm : Form
                 _browseBtn.Visible = false;
                 break;
 
+            case EntryType.Document:
             default:
                 _pathLabel.Text = "路径:";
                 _pathBox.Multiline = false;
@@ -332,7 +348,8 @@ public sealed class EntryEditForm : Form
 
     private void OnBrowse(object? sender, EventArgs e)
     {
-        if (_typeBox.SelectedIndex == 0)
+        var currentType = GetSelectedEntryType();
+        if (currentType == EntryType.Folder)
         {
             using var dlg = new FolderBrowserDialog();
             if (!string.IsNullOrEmpty(_pathBox.Text) && Directory.Exists(_pathBox.Text))
@@ -342,7 +359,12 @@ public sealed class EntryEditForm : Form
         }
         else
         {
-            using var dlg = new OpenFileDialog { Filter = "所有文件|*.*" };
+            using var dlg = new OpenFileDialog
+            {
+                Filter = currentType == EntryType.Document
+                    ? EntryClassifier.DocumentFileDialogFilter
+                    : "所有文件|*.*"
+            };
             if (!string.IsNullOrEmpty(_pathBox.Text) && File.Exists(_pathBox.Text))
                 dlg.FileName = _pathBox.Text;
             if (dlg.ShowDialog(this) == DialogResult.OK)

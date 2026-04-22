@@ -1,5 +1,7 @@
 namespace Quickstart.UI;
 
+using System.Collections.Specialized;
+using System.Drawing.Drawing2D;
 using System.Globalization;
 using Quickstart.Core;
 using Quickstart.Models;
@@ -7,10 +9,13 @@ using Quickstart.Utils;
 
 public sealed class MainPopup : Form
 {
-    private enum TabKind { Files, Urls, Texts }
+    private enum TabKind { Files, Urls, Texts, Documents }
+    private enum EntryActionTarget { None, Open, Copy }
+    private readonly record struct ListHitResult(ListViewItem? Item, QuickEntry? Entry, EntryActionTarget Target);
 
     private static readonly Size ExpandedPopupLogicalSize = new(380, 440);
     private static readonly Size MinimumExpandedPopupLogicalSize = new(300, 340);
+    private const int CopyButtonCornerRadiusLogical = 999;
     private const int CollapsedPopupHeightDeltaLogical = 28;
     private const string AllGroupsLabel = "全部";
 
@@ -39,6 +44,10 @@ public sealed class MainPopup : Form
     private readonly Panel _listHost;
     private readonly Panel _tabSeparator;
     private readonly Panel _groupSeparator;
+    private string? _hoveredDocumentEntryId;
+    private EntryActionTarget _hoveredActionTarget;
+    private string? _gestureDocumentEntryId;
+    private EntryActionTarget _gestureActionTarget;
     private TabKind _activeTab = TabKind.Files;
     private string _activeGroup = AllGroupsLabel;
     private bool _isSearchExpanded;
@@ -185,23 +194,23 @@ public sealed class MainPopup : Form
         _listHost.Controls.Add(_listView);
         _listHost.Controls.Add(_toastLabel);
 
-        _tabLabels = new Label[3];
+        _tabLabels = new Label[4];
         _tabLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Margin = new Padding(0),
             Padding = new Padding(0),
             BackColor = Color.FromArgb(240, 240, 240)
         };
         _tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 3; i++)
+        for (int i = 0; i < 4; i++)
             _tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
         _tabLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        string[] tabTexts = ["文\n件", "网\n页", "文\n本"];
-        TabKind[] tabKinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
+        string[] tabTexts = ["文\n件", "网\n页", "文\n本", "文\n档"];
+        TabKind[] tabKinds = [TabKind.Files, TabKind.Urls, TabKind.Texts, TabKind.Documents];
         for (int i = 0; i < tabTexts.Length; i++)
         {
             var kind = tabKinds[i];
@@ -336,18 +345,36 @@ public sealed class MainPopup : Form
 
         _listView.MouseClick += (_, e) =>
         {
-            if (e.Button == MouseButtons.Right && _listView.FocusedItem?.Bounds.Contains(e.Location) == true)
+            var hit = HitTestListAt(e.Location);
+            if (hit.Item != null)
+                SelectItem(hit.Item, focusList: false);
+
+            if (e.Button == MouseButtons.Left && hit.Entry != null && hit.Target == EntryActionTarget.Copy)
+            {
+                CopyDocumentEntry(hit.Entry, hideAfterSuccess: true);
+            }
+            else if (e.Button == MouseButtons.Right && hit.Item != null)
             {
                 var menu = BuildItemContextMenu();
                 menu.Show(_listView, e.Location);
             }
         };
 
-        _listView.MouseDoubleClick += (_, _) =>
+        _listView.MouseDoubleClick += (_, e) =>
         {
-            if (_listView.SelectedItems.Count > 0)
+            var hit = HitTestListAt(e.Location);
+            if (hit.Entry != null && hit.Target == EntryActionTarget.Open)
                 OpenSelectedEntry();
         };
+
+        _listView.MouseMove += (_, e) =>
+        {
+            var hit = HitTestListAt(e.Location);
+            UpdateHoveredDocumentEntry(
+                hit.Entry?.Type == EntryType.Document ? hit.Entry.Id : null,
+                hit.Entry?.Type == EntryType.Document ? hit.Target : EntryActionTarget.None);
+        };
+        _listView.MouseLeave += (_, _) => UpdateHoveredDocumentEntry(null, EntryActionTarget.None);
 
         _listView.KeyDown += (_, e) =>
         {
@@ -437,6 +464,11 @@ public sealed class MainPopup : Form
         _searchCollapsedPanel.Resize += (_, _) => UpdateSearchIndicatorBounds();
 
         DpiChanged += (_, _) => ApplyScaledMetrics();
+        VisibleChanged += (_, _) =>
+        {
+            if (!Visible)
+                ClearDocumentInteractionState();
+        };
 
         Deactivate += (_, _) =>
         {
@@ -676,7 +708,7 @@ public sealed class MainPopup : Form
 
     private void ApplyTabStyles()
     {
-        TabKind[] kinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
+        TabKind[] kinds = [TabKind.Files, TabKind.Urls, TabKind.Texts, TabKind.Documents];
         for (int i = 0; i < _tabLabels.Length; i++)
         {
             bool active = kinds[i] == _activeTab;
@@ -703,6 +735,7 @@ public sealed class MainPopup : Form
             TabKind.Files => "搜索文件夹或文件... (拼音首字母也可)",
             TabKind.Urls => "搜索网页...",
             TabKind.Texts => "搜索文本...",
+            TabKind.Documents => "搜索文档...",
             _ => "搜索..."
         };
     }
@@ -718,6 +751,7 @@ public sealed class MainPopup : Form
         {
             case EntryType.Folder:
             case EntryType.File:
+            case EntryType.Document:
             {
                 var openDefault = new ToolStripMenuItem("打开");
                 openDefault.Font = new Font(openDefault.Font, FontStyle.Bold);
@@ -737,6 +771,18 @@ public sealed class MainPopup : Form
                     var openDopus = new ToolStripMenuItem("用 Directory Opus 打开");
                     openDopus.Click += (_, _) => OpenSelectedEntry(OpenWith.DirectoryOpus);
                     menu.Items.Add(openDopus);
+                }
+
+                if (entry.Type == EntryType.Document)
+                {
+                    var copyDocument = new ToolStripMenuItem("复制文档");
+                    copyDocument.Click += (_, _) =>
+                    {
+                        var selected = GetSelectedEntry();
+                        if (selected != null)
+                            CopyDocumentEntry(selected);
+                    };
+                    menu.Items.Add(copyDocument);
                 }
 
                 menu.Items.Add(new ToolStripSeparator());
@@ -821,6 +867,7 @@ public sealed class MainPopup : Form
         _activeTab = kind;
         _activeGroup = AllGroupsLabel;
         _searchBox.Clear();
+        ClearDocumentInteractionState();
         SetSearchExpanded(false);
         ApplyTabStyles();
         UpdateSearchPlaceholder();
@@ -864,7 +911,7 @@ public sealed class MainPopup : Form
         {
             Name = Path.GetFileName(path),
             Path = path,
-            Type = isDir ? EntryType.Folder : EntryType.File
+            Type = EntryClassifier.ClassifyPath(path)
         };
 
         using var form = new EntryEditForm(entry);
@@ -908,6 +955,7 @@ public sealed class MainPopup : Form
             {
                 TabKind.Urls => EntryType.Url,
                 TabKind.Texts => EntryType.Text,
+                TabKind.Documents => EntryType.Document,
                 _ => EntryType.Folder
             }
         };
@@ -979,6 +1027,31 @@ public sealed class MainPopup : Form
         }
     }
 
+    private void CopyDocumentEntry(QuickEntry entry, bool hideAfterSuccess = false)
+    {
+        if (!File.Exists(entry.Path))
+        {
+            ShowToast("文档不存在");
+            return;
+        }
+
+        try
+        {
+            var files = new StringCollection();
+            files.Add(entry.Path);
+            Clipboard.SetFileDropList(files);
+            _configManager.TouchEntry(entry.Id);
+            ShowToast("已复制文档");
+
+            if (hideAfterSuccess)
+                Hide();
+        }
+        catch
+        {
+            ShowToast("复制失败");
+        }
+    }
+
     private void CopyToClipboard(string text)
     {
         if (!string.IsNullOrEmpty(text))
@@ -1044,6 +1117,91 @@ public sealed class MainPopup : Form
     {
         if (_listView.SelectedItems.Count == 0) return null;
         return _listView.SelectedItems[0].Tag as QuickEntry;
+    }
+
+    private void SelectItem(ListViewItem item, bool focusList = true)
+    {
+        if (!item.Selected)
+        {
+            _listView.SelectedItems.Clear();
+            item.Selected = true;
+        }
+
+        item.Focused = true;
+        if (focusList)
+            _listView.Focus();
+    }
+
+    private void ClearDocumentInteractionState()
+    {
+        UpdateHoveredDocumentEntry(null, EntryActionTarget.None);
+        UpdateGestureDocumentEntry(null, EntryActionTarget.None);
+    }
+
+    private void PruneDocumentInteractionState(IEnumerable<QuickEntry> entries)
+    {
+        var visibleDocumentIds = entries
+            .Where(entry => entry.Type == EntryType.Document)
+            .Select(entry => entry.Id)
+            .ToHashSet(StringComparer.Ordinal);
+
+        if (_hoveredDocumentEntryId != null && !visibleDocumentIds.Contains(_hoveredDocumentEntryId))
+            UpdateHoveredDocumentEntry(null, EntryActionTarget.None);
+
+        if (_gestureDocumentEntryId != null && !visibleDocumentIds.Contains(_gestureDocumentEntryId))
+            UpdateGestureDocumentEntry(null, EntryActionTarget.None);
+    }
+
+    private void UpdateHoveredDocumentEntry(string? entryId, EntryActionTarget target)
+    {
+        if (_hoveredDocumentEntryId == entryId && _hoveredActionTarget == target)
+            return;
+
+        var previousId = _hoveredDocumentEntryId;
+        _hoveredDocumentEntryId = entryId;
+        _hoveredActionTarget = target;
+        InvalidateDocumentEntry(previousId);
+        InvalidateDocumentEntry(_hoveredDocumentEntryId);
+    }
+
+    private void UpdateGestureDocumentEntry(string? entryId, EntryActionTarget target)
+    {
+        if (_gestureDocumentEntryId == entryId && _gestureActionTarget == target)
+            return;
+
+        var previousId = _gestureDocumentEntryId;
+        _gestureDocumentEntryId = entryId;
+        _gestureActionTarget = target;
+        InvalidateDocumentEntry(previousId);
+        InvalidateDocumentEntry(_gestureDocumentEntryId);
+    }
+
+    private void InvalidateDocumentEntry(string? entryId)
+    {
+        if (string.IsNullOrEmpty(entryId))
+            return;
+
+        foreach (ListViewItem item in _listView.Items)
+        {
+            if (item.Tag is QuickEntry entry && entry.Id == entryId)
+            {
+                _listView.Invalidate(item.Bounds);
+                break;
+            }
+        }
+    }
+
+    private ListHitResult HitTestListAt(Point clientPoint)
+    {
+        var item = _listView.GetItemAt(clientPoint.X, clientPoint.Y);
+        if (item?.Tag is not QuickEntry entry)
+            return new ListHitResult(null, null, EntryActionTarget.None);
+
+        var target = EntryActionTarget.Open;
+        if (entry.Type == EntryType.Document && GetDocumentCopyButtonBounds(item.Bounds).Contains(clientPoint))
+            target = EntryActionTarget.Copy;
+
+        return new ListHitResult(item, entry, target);
     }
 
     public void RefreshList()
@@ -1120,7 +1278,7 @@ public sealed class MainPopup : Form
                 ? (entry.Path.Length > 200 ? entry.Path[..200] + "..." : entry.Path)
                 : entry.Path;
 
-            if (entry.Type is EntryType.Folder or EntryType.File && !PathExists(entry))
+            if (entry.Type is EntryType.Folder or EntryType.File or EntryType.Document && !PathExists(entry))
                 item.ForeColor = Color.Red;
 
             _listView.Items.Add(item);
@@ -1128,6 +1286,7 @@ public sealed class MainPopup : Form
 
         _listView.EndUpdate();
 
+        PruneDocumentInteractionState(entries);
         _countLabel.Text = $"{entries.Count} 项";
         UpdateListColumnWidth();
     }
@@ -1140,6 +1299,7 @@ public sealed class MainPopup : Form
             TabKind.Files => entries.Where(e => e.Type is EntryType.Folder or EntryType.File).ToList(),
             TabKind.Urls => entries.Where(e => e.Type == EntryType.Url).ToList(),
             TabKind.Texts => entries.Where(e => e.Type == EntryType.Text).ToList(),
+            TabKind.Documents => entries.Where(e => e.Type == EntryType.Document).ToList(),
             _ => entries
         };
     }
@@ -1277,6 +1437,7 @@ public sealed class MainPopup : Form
         var g = e.Graphics;
         var item = e.Item!;
         var bounds = e.Bounds;
+        var entry = item.Tag as QuickEntry;
 
         int textX = bounds.X + UiScaleHelper.Scale(this, 2);
         if (e.ColumnIndex == 0 && _listView.SmallImageList is { } imgList)
@@ -1298,8 +1459,16 @@ public sealed class MainPopup : Form
                 textX += imgList.ImageSize.Width + UiScaleHelper.Scale(this, 4);
         }
 
+        var rightPadding = UiScaleHelper.Scale(this, 2);
+        if (entry?.Type == EntryType.Document && ShouldShowDocumentCopyButton(entry))
+        {
+            var buttonBounds = GetDocumentCopyButtonBounds(bounds);
+            DrawDocumentCopyButton(g, buttonBounds, ShouldHighlightDocumentCopyButton(entry));
+            rightPadding = bounds.Right - buttonBounds.Left + UiScaleHelper.Scale(this, 4);
+        }
+
         var textColor = item.Selected ? Color.FromArgb(59, 130, 246) : item.ForeColor;
-        var textBounds = new Rectangle(textX, bounds.Y, bounds.Right - textX - UiScaleHelper.Scale(this, 2), bounds.Height);
+        var textBounds = new Rectangle(textX, bounds.Y, Math.Max(0, bounds.Right - textX - rightPadding), bounds.Height);
         var display = MidTruncate(item.Text, _listView.Font, textBounds.Width);
 
         TextRenderer.DrawText(
@@ -1309,6 +1478,107 @@ public sealed class MainPopup : Form
             textBounds,
             textColor,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+    }
+
+    private bool ShouldShowDocumentCopyButton(QuickEntry entry)
+        => entry.Id == _hoveredDocumentEntryId || entry.Id == _gestureDocumentEntryId;
+
+    private bool ShouldHighlightDocumentCopyButton(QuickEntry entry)
+        => (entry.Id == _hoveredDocumentEntryId && _hoveredActionTarget == EntryActionTarget.Copy)
+            || (entry.Id == _gestureDocumentEntryId && _gestureActionTarget == EntryActionTarget.Copy);
+
+    private Rectangle GetDocumentCopyButtonBounds(Rectangle rowBounds)
+    {
+        var horizontalMargin = UiScaleHelper.Scale(this, 8);
+        var verticalMargin = UiScaleHelper.Scale(this, 3);
+        var buttonWidth = Math.Max(
+            UiScaleHelper.Scale(this, 44),
+            TextRenderer.MeasureText("复制", _listView.Font).Width + UiScaleHelper.Scale(this, 18));
+        var buttonHeight = Math.Max(
+            UiScaleHelper.Scale(this, 20),
+            Math.Min(rowBounds.Height - verticalMargin * 2, UiScaleHelper.Scale(this, 24)));
+
+        return new Rectangle(
+            rowBounds.Right - buttonWidth - horizontalMargin,
+            rowBounds.Y + Math.Max(0, (rowBounds.Height - buttonHeight) / 2),
+            buttonWidth,
+            buttonHeight);
+    }
+
+    private void DrawDocumentCopyButton(Graphics graphics, Rectangle bounds, bool highlighted)
+    {
+        if (bounds.Width <= 1 || bounds.Height <= 1)
+            return;
+
+        var backColor = highlighted
+            ? Color.FromArgb(96, 170, 255)
+            : Color.FromArgb(247, 247, 248);
+        var borderColor = highlighted
+            ? Color.FromArgb(42, 255, 255, 255)
+            : Color.FromArgb(120, 205, 209, 214);
+        var highlightColor = highlighted
+            ? Color.FromArgb(30, 255, 255, 255)
+            : Color.Transparent;
+        var textColor = highlighted
+            ? Color.White
+            : Color.FromArgb(55, 65, 81);
+
+        var paintBounds = new Rectangle(bounds.X, bounds.Y, bounds.Width - 1, bounds.Height - 1);
+        var oldSmoothingMode = graphics.SmoothingMode;
+        var oldPixelOffsetMode = graphics.PixelOffsetMode;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+
+        using var path = CreateRoundedButtonPath(paintBounds);
+        using var background = new SolidBrush(backColor);
+        graphics.FillPath(background, path);
+
+        if (highlightColor.A > 0)
+        {
+            using var highlightBrush = new LinearGradientBrush(
+                paintBounds,
+                highlightColor,
+                Color.FromArgb(0, highlightColor),
+                LinearGradientMode.Vertical);
+            graphics.FillPath(highlightBrush, path);
+        }
+
+        using var border = new Pen(borderColor);
+        graphics.DrawPath(border, path);
+
+        graphics.SmoothingMode = oldSmoothingMode;
+        graphics.PixelOffsetMode = oldPixelOffsetMode;
+
+        TextRenderer.DrawText(
+            graphics,
+            "复制",
+            _listView.Font,
+            bounds,
+            textColor,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+    }
+
+    private GraphicsPath CreateRoundedButtonPath(Rectangle rect)
+    {
+        int radius = Math.Min(
+            UiScaleHelper.Scale(this, CopyButtonCornerRadiusLogical),
+            Math.Min(rect.Width, rect.Height) / 2);
+        int diameter = radius * 2;
+        var path = new GraphicsPath();
+
+        if (diameter <= 0)
+        {
+            path.AddRectangle(rect);
+            path.CloseFigure();
+            return path;
+        }
+
+        path.AddArc(rect.X, rect.Y, diameter, diameter, 180, 90);
+        path.AddArc(rect.Right - diameter, rect.Y, diameter, diameter, 270, 90);
+        path.AddArc(rect.Right - diameter, rect.Bottom - diameter, diameter, diameter, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - diameter, diameter, diameter, 90, 90);
+        path.CloseFigure();
+        return path;
     }
 
     private static string MidTruncate(string text, Font font, int maxPx)
@@ -1357,6 +1627,7 @@ public sealed class MainPopup : Form
         _activeTab = TabKind.Files;
         _activeGroup = AllGroupsLabel;
         _searchBox.Clear();
+        ClearDocumentInteractionState();
         SetSearchExpanded(false);
         ApplyTabStyles();
         UpdateSearchPlaceholder();
@@ -1380,7 +1651,7 @@ public sealed class MainPopup : Form
         var tabClientPt = _tabLayout.PointToClient(screenPt);
         if (_tabLayout.ClientRectangle.Contains(tabClientPt))
         {
-            TabKind[] kinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
+            TabKind[] kinds = [TabKind.Files, TabKind.Urls, TabKind.Texts, TabKind.Documents];
             for (int i = 0; i < _tabLabels.Length; i++)
             {
                 if (_tabLabels[i].Bounds.Contains(tabClientPt))
@@ -1391,6 +1662,7 @@ public sealed class MainPopup : Form
                 }
             }
 
+            UpdateGestureDocumentEntry(null, EntryActionTarget.None);
             if (_listView.SelectedItems.Count > 0)
                 _listView.SelectedItems.Clear();
             return;
@@ -1402,24 +1674,28 @@ public sealed class MainPopup : Form
             if (!string.Equals(_activeGroup, group, StringComparison.OrdinalIgnoreCase))
                 SwitchGroup(group);
 
+            UpdateGestureDocumentEntry(null, EntryActionTarget.None);
             if (_listView.SelectedItems.Count > 0)
                 _listView.SelectedItems.Clear();
             return;
         }
 
-        var clientPt = _listView.PointToClient(screenPt);
-        var item = _listView.GetItemAt(clientPt.X, clientPt.Y);
-        if (item != null)
+        var hit = HitTestListAt(_listView.PointToClient(screenPt));
+        if (hit.Item != null)
         {
-            if (!item.Selected)
-            {
-                _listView.SelectedItems.Clear();
-                item.Selected = true;
-            }
+            SelectItem(hit.Item, focusList: false);
+            UpdateGestureDocumentEntry(
+                hit.Entry?.Type == EntryType.Document ? hit.Entry.Id : null,
+                hit.Entry?.Type == EntryType.Document ? hit.Target : EntryActionTarget.None);
         }
         else if (_listView.SelectedItems.Count > 0)
         {
             _listView.SelectedItems.Clear();
+            UpdateGestureDocumentEntry(null, EntryActionTarget.None);
+        }
+        else
+        {
+            UpdateGestureDocumentEntry(null, EntryActionTarget.None);
         }
     }
 
@@ -1431,11 +1707,17 @@ public sealed class MainPopup : Form
             return false;
         }
 
-        var clientPt = _listView.PointToClient(screenPt);
-        var item = _listView.GetItemAt(clientPt.X, clientPt.Y);
-        if (item?.Tag is QuickEntry entry)
+        var hit = HitTestListAt(_listView.PointToClient(screenPt));
+        if (hit.Entry != null)
         {
-            ExecuteEntry(entry);
+            if (hit.Target == EntryActionTarget.Copy)
+            {
+                var wasVisible = Visible;
+                CopyDocumentEntry(hit.Entry, hideAfterSuccess: true);
+                return wasVisible && !Visible;
+            }
+
+            ExecuteEntry(hit.Entry);
             Hide();
             return true;
         }
@@ -1507,7 +1789,7 @@ public sealed class MainPopup : Form
 
     private void OnDragEnter(object? sender, DragEventArgs e)
     {
-        if (_activeTab == TabKind.Files && e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+        if (_activeTab is TabKind.Files or TabKind.Documents && e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
             e.Effect = DragDropEffects.Link;
         else
             e.Effect = DragDropEffects.None;

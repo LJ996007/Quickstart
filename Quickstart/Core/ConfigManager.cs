@@ -26,6 +26,7 @@ public sealed class ConfigManager
     {
         lock (_lock)
         {
+            var shouldSave = false;
             if (!File.Exists(ConfigPath))
             {
                 Directory.CreateDirectory(AppDataDir);
@@ -38,7 +39,7 @@ public sealed class ConfigManager
             {
                 var json = File.ReadAllText(ConfigPath);
                 _config = JsonSerializer.Deserialize(json, AppConfigJsonContext.Default.AppConfig) ?? new AppConfig();
-                NormalizeConfig();
+                shouldSave = NormalizeConfig();
             }
             catch
             {
@@ -49,7 +50,7 @@ public sealed class ConfigManager
                     {
                         var json = File.ReadAllText(BackupPath);
                         _config = JsonSerializer.Deserialize(json, AppConfigJsonContext.Default.AppConfig) ?? new AppConfig();
-                        NormalizeConfig();
+                        shouldSave = NormalizeConfig();
                     }
                     catch
                     {
@@ -61,6 +62,9 @@ public sealed class ConfigManager
                     _config = new AppConfig();
                 }
             }
+
+            if (shouldSave)
+                Save();
         }
     }
 
@@ -147,11 +151,37 @@ public sealed class ConfigManager
         }
     }
 
-    private void NormalizeConfig()
+    private bool NormalizeConfig()
     {
+        var changed = false;
+
+        if (_config.Entries == null)
+        {
+            _config.Entries = [];
+            changed = true;
+        }
+
+        foreach (var entry in _config.Entries)
+        {
+            if (entry.Type == EntryType.File && EntryClassifier.IsDocumentPath(entry.Path))
+            {
+                entry.Type = EntryType.Document;
+                changed = true;
+            }
+        }
+
         _config.Entries ??= [];
-        _config.GroupLastUsedAt = _config.GroupLastUsedAt == null
-            ? new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase)
-            : new Dictionary<string, DateTime>(_config.GroupLastUsedAt, StringComparer.OrdinalIgnoreCase);
+        if (_config.GroupLastUsedAt == null)
+        {
+            _config.GroupLastUsedAt = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            changed = true;
+        }
+        else if (_config.GroupLastUsedAt.Comparer != StringComparer.OrdinalIgnoreCase)
+        {
+            _config.GroupLastUsedAt = new Dictionary<string, DateTime>(_config.GroupLastUsedAt, StringComparer.OrdinalIgnoreCase);
+            changed = true;
+        }
+
+        return changed;
     }
 }
