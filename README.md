@@ -1,4 +1,8 @@
 # Quickstart
+![Platform](https://img.shields.io/badge/platform-Windows-blue)
+![.NET](https://img.shields.io/badge/.NET-10.0-purple)
+![License](https://img.shields.io/github/license/LJ996007/Quickstart)
+![Release](https://img.shields.io/github/v/release/LJ996007/Quickstart)
 
 Quickstart 是一个常驻系统托盘的快捷启动工具，核心目标是把常用内容集中起来，通过尽量少的操作完成搜索、定位、打开和复用。
 
