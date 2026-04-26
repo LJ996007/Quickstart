@@ -125,7 +125,7 @@ final class ConfigStore {
 
             try fileManager.copyItem(at: configURL, to: backupURL)
 
-            _ = try fileManager.replaceItemAt(configURL, withItemAt: tempURL, backupItemName: nil, options: [], resultingItemURL: nil)
+            _ = try fileManager.replaceItemAt(configURL, withItemAt: tempURL)
         } else {
             try fileManager.moveItem(at: tempURL, to: configURL)
         }

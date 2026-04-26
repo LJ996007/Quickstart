@@ -22,6 +22,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
 
         configureStatusItem()
         configureMainPanel()
+        handleLaunchArguments()
+    }
+
+    func application(_ sender: NSApplication, openFile filename: String) -> Bool {
+        handleExternalFileURLs([URL(fileURLWithPath: filename)])
+        return true
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -89,7 +95,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
         }
 
         if event.type == .rightMouseUp {
-            statusItem.popUpMenu(statusMenu)
+            statusItem.menu = statusMenu
+            statusItem.button?.performClick(nil)
+            DispatchQueue.main.async { [weak self] in
+                self?.statusItem.menu = nil
+            }
         } else {
             togglePanel(nil)
         }
@@ -137,7 +147,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
         panel.orderOut(nil)
     }
 
+    private func handleLaunchArguments() {
+        let args = Array(ProcessInfo.processInfo.arguments.dropFirst())
+        guard !args.isEmpty else {
+            return
+        }
+
+        if args.count >= 2, args[0] == "--add" {
+            handleExternalFileURLs([URL(fileURLWithPath: args[1])])
+            return
+        }
+
+        if let first = args.first, let url = URL(string: first), url.scheme == "quickstart" {
+            handleExternalURL(url)
+        }
+    }
+
     private func handleExternalURL(_ url: URL) {
+        if url.isFileURL {
+            handleExternalFileURLs([url])
+            return
+        }
+
         do {
             let request = try urlHandler.parseAddURLRequest(from: url)
             showPanel(tab: .urls)
@@ -149,6 +180,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
             alert.informativeText = error.localizedDescription
             alert.beginSheetModal(for: panel)
         }
+    }
+
+    private func handleExternalFileURLs(_ urls: [URL]) {
+        showPanel(tab: .files)
+        mainViewController.addPathURLs(urls, showSummary: true)
     }
 
     private func positionPanel() {

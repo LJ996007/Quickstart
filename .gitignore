@@ -2,3 +2,4 @@ artifacts/
 qs-*.xml
 Quickstart/bin/
 Quickstart/obj/
+macos/QuickstartMac/build/

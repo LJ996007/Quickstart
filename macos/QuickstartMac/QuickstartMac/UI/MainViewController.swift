@@ -1,6 +1,6 @@
 import AppKit
 
-final class MainViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate {
+final class MainViewController: NSViewController, NSTableViewDataSource, NSTableViewDelegate, NSSearchFieldDelegate, NSDraggingDestination {
     private let configStore: ConfigStore
     private let searchService: EntrySearchService
     private let actionService: EntryActionService
@@ -41,6 +41,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     override func loadView() {
         view = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 460))
+        view.registerForDraggedTypes([.fileURL])
         configureView()
         reloadData()
     }
@@ -80,6 +81,75 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         )
 
         presentEditor(for: entry, isNew: true)
+    }
+
+    func addPathURLs(_ urls: [URL], showSummary: Bool = true) {
+        let fileURLs = urls.filter { $0.isFileURL }
+        guard !fileURLs.isEmpty else {
+            return
+        }
+
+        activeTab = .files
+        tabControl.selectedSegment = EntryTab.files.rawValue
+        activeGroup = EntrySearchService.allGroupsLabel
+        updateSearchPlaceholder()
+
+        var addedCount = 0
+        var duplicateCount = 0
+        var lastAddedID: String?
+        let baseSortOrder = configStore.currentConfig().entries.count
+
+        for (offset, url) in fileURLs.enumerated() {
+            var isDirectory: ObjCBool = false
+            FileManager.default.fileExists(atPath: url.path, isDirectory: &isDirectory)
+
+            let entry = QuickEntry(
+                name: url.lastPathComponent,
+                path: url.path,
+                type: isDirectory.boolValue ? .folder : .file,
+                group: "",
+                sortOrder: baseSortOrder + offset
+            )
+
+            do {
+                if try configStore.addEntry(entry) {
+                    addedCount += 1
+                    lastAddedID = entry.id
+                } else {
+                    duplicateCount += 1
+                }
+            } catch {
+                presentInfoAlert(title: "添加失败", message: error.localizedDescription)
+                break
+            }
+        }
+
+        reloadData(selectEntryID: lastAddedID)
+
+        guard showSummary else {
+            return
+        }
+
+        if addedCount > 0 || duplicateCount > 0 {
+            var message = "已添加 \(addedCount) 个条目。"
+            if duplicateCount > 0 {
+                message += "\n跳过 \(duplicateCount) 个重复条目。"
+            }
+            presentInfoAlert(title: "拖放添加完成", message: message)
+        }
+    }
+
+    func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+        sender.draggingPasteboard.canReadObject(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) ? .copy : []
+    }
+
+    func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+        guard let urls = sender.draggingPasteboard.readObjects(forClasses: [NSURL.self], options: [.urlReadingFileURLsOnly: true]) as? [URL], !urls.isEmpty else {
+            return false
+        }
+
+        addPathURLs(urls)
+        return true
     }
 
     func numberOfRows(in tableView: NSTableView) -> Int {
@@ -254,10 +324,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         bottomBar.alignment = .centerY
         bottomBar.translatesAutoresizingMaskIntoConstraints = false
 
-        if let spacer = bottomBar.views[6] as? NSView {
-            spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
-            spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
-        }
+        let spacer = bottomBar.views[6]
+        spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
+        spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
         view.addSubview(topBar)
         view.addSubview(splitView)
