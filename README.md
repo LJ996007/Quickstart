@@ -1,6 +1,7 @@
 # Quickstart
-![Platform](https://img.shields.io/badge/platform-Windows-blue)
+![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)
 ![.NET](https://img.shields.io/badge/.NET-10.0-purple)
+![Swift](https://img.shields.io/badge/Swift-macOS-orange)
 ![License](https://img.shields.io/github/license/LJ996007/Quickstart)
 ![Release](https://img.shields.io/github/v/release/LJ996007/Quickstart)
 
@@ -10,20 +11,34 @@ Quickstart 是一个常驻系统托盘的快捷启动工具，核心目标是把
 
 ## 快速开始
 
+### Windows
+
 1. 从 [Releases](https://github.com/LJ996007/Quickstart/releases) 页面下载最新的 `Quickstart.exe`（无需安装，单文件直接运行）。
 2. 双击运行，程序会出现在系统托盘。
 3. 左键点击托盘图标，即可打开主界面。
 
 > **环境要求**：Windows 10/11，.NET 10.0 Runtime（单文件发布版已自包含，无需额外安装）
 
+### macOS
+
+当前仓库已包含 macOS Swift/AppKit 版本。
+
+1. 下载或解压仓库内的 `macos/QuickstartMac/build/Release/Quickstart-macOS.zip`。
+2. 双击 `QuickstartMac.app` 运行。
+3. 程序会常驻在 macOS 顶部菜单栏，点击菜单栏图标即可打开主界面。
+
+> **环境要求**：macOS 14+。当前打包产物是 Universal 版本，支持 Apple Silicon（arm64）和 Intel（x86_64）。
+
+如果 macOS 首次运行提示“无法验证开发者”，可以在“系统设置 → 隐私与安全性”中允许打开，或在 Finder 中右键应用选择“打开”。当前包为本机 ad-hoc 签名，尚未做 Apple Developer ID 公证。
+
 ## 软件功能
 
 ### 1. 托盘常驻，随时呼出
 
-- 程序启动后常驻在系统托盘，不打断桌面工作流。
-- 左键点击托盘图标即可打开主弹窗。
-- 托盘右键菜单提供设置和退出入口。
-- 重复启动不会打开多个实例，而是直接唤起已经运行的程序。
+- Windows 版启动后常驻在系统托盘；macOS 版启动后常驻在顶部菜单栏。
+- 点击托盘/菜单栏图标即可打开主弹窗。
+- 右键菜单提供设置和退出入口。
+- Windows 版支持重复启动唤起已运行实例；macOS 版支持菜单栏常驻快速呼出。
 
 ### 2. 一个入口管理四类常用内容
 
@@ -64,22 +79,24 @@ Quickstart 可以收藏以下内容：
 
 ### 6. 文件夹支持多种打开方式
 
-针对文件夹条目，Quickstart 支持：
+针对文件夹条目，Quickstart 在 Windows 版支持：
 
 - 用 Total Commander 打开
 - 用 Windows 资源管理器打开
 - 用 Directory Opus 打开
 
-你可以在设置里指定默认方式，也可以在条目的右键菜单里临时选择本次使用哪种方式打开。
+macOS 版使用 Finder / 系统默认应用打开和定位文件。
+
+你可以在 Windows 版设置里指定默认方式，也可以在条目的右键菜单里临时选择本次使用哪种方式打开。
 
 ### 7. 支持多种添加方式，尽量减少录入成本
 
 Quickstart 不要求你手动一条条维护，常用内容可以从不同入口快速加入。
 
 - 在主界面中手动新增和编辑条目。
-- 直接把文件或文件夹拖到主界面中，快速加入收藏。
-- 通过资源管理器右键菜单“添加到 Quickstart”把文件或目录送入程序。
-- 通过命令行参数把外部路径添加进来。
+- 直接把文件或文件夹拖到主界面中，快速加入收藏（Windows/macOS 均支持）。
+- Windows 版可通过资源管理器右键菜单“添加到 Quickstart”把文件或目录送入程序。
+- 通过命令行参数把外部路径添加进来，macOS 版支持 `--add <path>`。
 - 对网页可通过浏览器书签脚本一键添加。
 
 新增条目时可以填写名称、类型和分组；对于文件和文件夹，程序也会尽量帮你推断类型并带出默认名称。
@@ -109,16 +126,16 @@ Quickstart 不要求你手动一条条维护，常用内容可以从不同入口
 
 ### 10. 右键拖拽手势可直接呼出弹窗
 
-除了点击托盘图标，Quickstart 还支持全局鼠标手势呼出：
+除了点击托盘图标，Windows 版还支持全局鼠标手势呼出：
 
 - 按住鼠标右键向右拖动，可以快速唤出主弹窗。
 - 松开时可以直接选中并执行目标条目。
 
-这个方式更接近“随手划出一个启动器”，适合希望尽量减少点击路径的使用习惯。
+这个方式更接近“随手划出一个启动器”，适合希望尽量减少点击路径的使用习惯。macOS 版当前以菜单栏点击呼出为主。
 
 ### 11. 设置项围绕“日常使用效率”展开
 
-设置界面主要提供这些能力：
+Windows 版设置界面主要提供这些能力：
 
 - 指定 Total Commander 路径
 - 指定 Directory Opus 路径
@@ -128,7 +145,13 @@ Quickstart 不要求你手动一条条维护，常用内容可以从不同入口
 - 复制网页一键添加书签脚本
 - 重新注册 Quickstart 自定义协议
 
-另外，程序会在首次运行时尝试自动检测 Total Commander 和 Directory Opus，减少手动配置成本。
+macOS 版设置界面当前提供：
+
+- 打开配置目录
+- 复制一键添加网页的书签脚本
+- 保留并兼容 Windows 配置字段
+
+另外，Windows 版会在首次运行时尝试自动检测 Total Commander 和 Directory Opus，减少手动配置成本。
 
 ### 12. 使用痕迹会被记录，用起来会越来越顺手
 
@@ -143,5 +166,68 @@ Quickstart 不要求你手动一条条维护，常用内容可以从不同入口
 - 把多个项目目录、脚本目录、交付目录收在一起，作为统一入口。
 - 收藏常开的系统后台、接口文档、测试地址、部署面板。
 - 保存经常复制的文本片段，比如命令、模板回复、路径、账号说明、提示词。
-- 在 Total Commander、Directory Opus 和资源管理器之间自由切换目录打开方式。
+- Windows 版可在 Total Commander、Directory Opus 和资源管理器之间自由切换目录打开方式；macOS 版可用 Finder / 默认应用打开和定位。
 - 从右键菜单、拖放和浏览器快速沉淀新条目，而不是事后集中整理。
+
+## macOS 版本说明
+
+macOS 版本位于：
+
+```bash
+macos/QuickstartMac/
+```
+
+已支持：
+
+- 原生 Swift/AppKit 菜单栏应用
+- 菜单栏常驻与搜索弹窗
+- 文件夹、文件、网页、文本四类条目
+- 收藏新增、编辑、删除
+- 中文搜索与拼音首字母搜索
+- 文件/文件夹拖放添加
+- `quickstart://add-url` 浏览器书签脚本添加网页
+- `--add <path>` 从命令行添加文件或文件夹
+- 与 Windows 版 `config.json` 字段兼容
+
+当前暂未包含：
+
+- Finder 右键菜单 / Quick Action
+- 开机启动
+- Apple Developer ID 正式签名与公证
+- DMG 安装包
+
+## 本地构建
+
+### Windows
+
+```bash
+dotnet build Quickstart.sln
+dotnet publish Quickstart/Quickstart.csproj -c Release -r win-x64
+```
+
+### macOS
+
+macOS Swift 版可以用仓库脚本直接构建：
+
+```bash
+scripts/build-macos.sh
+```
+
+默认构建当前机器架构。构建 Universal 包：
+
+```bash
+ARCHS="arm64 x86_64" scripts/build-macos.sh
+```
+
+构建产物：
+
+```bash
+macos/QuickstartMac/build/Release/QuickstartMac.app
+macos/QuickstartMac/build/Release/Quickstart-macOS.zip
+```
+
+如果安装了完整 Xcode，也可以打开工程：
+
+```bash
+open macos/QuickstartMac/QuickstartMac.xcodeproj
+```
