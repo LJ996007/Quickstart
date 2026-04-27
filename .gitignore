@@ -1,5 +1,7 @@
 artifacts/
+.DS_Store
 qs-*.xml
 Quickstart/bin/
 Quickstart/obj/
 macos/QuickstartMac/build/
+.omx/

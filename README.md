@@ -23,13 +23,13 @@ Quickstart 是一个常驻系统托盘的快捷启动工具，核心目标是把
 
 当前仓库已包含 macOS Swift/AppKit 版本。
 
-1. 下载或解压仓库内的 `macos/QuickstartMac/build/Release/Quickstart-macOS.zip`。
-2. 双击 `QuickstartMac.app` 运行。
-3. 程序会常驻在 macOS 顶部菜单栏，点击菜单栏图标即可打开主界面。
+1. 打开 `Quickstart-macOS.dmg`，将 `QuickstartMac.app` 拖到 Applications。
+2. 从 Applications 启动 `QuickstartMac.app`。
+3. 程序会显示 Dock 图标，并常驻在 macOS 顶部菜单栏；点击 Dock 图标或顶部菜单栏的 `Quickstart` 都会打开主界面。
 
 > **环境要求**：macOS 14+。当前打包产物是 Universal 版本，支持 Apple Silicon（arm64）和 Intel（x86_64）。
 
-如果 macOS 首次运行提示“无法验证开发者”，可以在“系统设置 → 隐私与安全性”中允许打开，或在 Finder 中右键应用选择“打开”。当前包为本机 ad-hoc 签名，尚未做 Apple Developer ID 公证。
+如果 macOS 首次运行提示“无法验证开发者”或“已损坏，无法打开”，说明当前包没有经过 Apple Developer ID 签名和公证。发布给其它 Mac 使用时，请按下方“macOS 发布包”流程构建签名/公证后的 DMG；本机测试包可以在 Finder 中右键应用选择“打开”，或在“系统设置 → 隐私与安全性”中允许打开。
 
 ## 软件功能
 
@@ -194,7 +194,6 @@ macos/QuickstartMac/
 - Finder 右键菜单 / Quick Action
 - 开机启动
 - Apple Developer ID 正式签名与公证
-- DMG 安装包
 
 ## 本地构建
 
@@ -225,6 +224,23 @@ ARCHS="arm64 x86_64" scripts/build-macos.sh
 macos/QuickstartMac/build/Release/QuickstartMac.app
 macos/QuickstartMac/build/Release/Quickstart-macOS.zip
 ```
+
+构建 DMG 安装包：
+
+```bash
+scripts/build-macos-dmg.sh
+```
+
+本地构建会使用 ad-hoc 签名，适合开发机验证，不适合直接分发给其它 Mac。正式发布需要 Developer ID 签名和 Apple 公证：
+
+```bash
+APP_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+DMG_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARY_PROFILE="notarytool-profile" \
+scripts/build-macos-dmg.sh
+```
+
+`NOTARY_PROFILE` 需要提前用 `xcrun notarytool store-credentials` 写入钥匙串。
 
 如果安装了完整 Xcode，也可以打开工程：
 

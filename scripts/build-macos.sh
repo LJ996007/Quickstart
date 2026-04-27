@@ -10,15 +10,17 @@ DISPLAY_NAME="Quickstart"
 BUNDLE_ID="ai.markl.QuickstartMac"
 DEPLOYMENT_TARGET="${MACOSX_DEPLOYMENT_TARGET:-14.0}"
 ARCHS="${ARCHS:-$(uname -m)}"
-SDK_PATH="$(xcrun --show-sdk-path)"
+SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
+SWIFTC="$(xcrun --sdk macosx --find swiftc)"
+MODULE_CACHE_DIR="$BUILD_DIR/module-cache"
 
-if ! command -v swiftc >/dev/null 2>&1; then
-  echo "error: swiftc not found. Install Xcode Command Line Tools or Xcode." >&2
+if [ -z "$SWIFTC" ] || [ ! -x "$SWIFTC" ]; then
+  echo "error: swiftc not found via xcrun. Install Xcode Command Line Tools or Xcode." >&2
   exit 1
 fi
 
 rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR/objects" "$BUILD_DIR/$APP_NAME.app/Contents/MacOS" "$BUILD_DIR/$APP_NAME.app/Contents/Resources"
+mkdir -p "$BUILD_DIR/objects" "$MODULE_CACHE_DIR" "$BUILD_DIR/$APP_NAME.app/Contents/MacOS" "$BUILD_DIR/$APP_NAME.app/Contents/Resources"
 
 SOURCES=()
 while IFS= read -r source_file; do
@@ -29,11 +31,11 @@ BINARIES=()
 for ARCH in $ARCHS; do
   OUT="$BUILD_DIR/objects/$APP_NAME-$ARCH"
   echo "Building $APP_NAME for $ARCH..."
-  swiftc \
-    -parse-as-library \
+  "$SWIFTC" \
     -O \
     -target "$ARCH-apple-macosx$DEPLOYMENT_TARGET" \
     -sdk "$SDK_PATH" \
+    -module-cache-path "$MODULE_CACHE_DIR/$ARCH" \
     -framework AppKit \
     "${SOURCES[@]}" \
     -o "$OUT"
@@ -62,9 +64,16 @@ cat > "$BUILD_DIR/$APP_NAME.app/Contents/PkgInfo" <<'EOF'
 APPL????
 EOF
 
-# Ad-hoc sign so Gatekeeper/quarantine checks and URL scheme registration behave better locally.
+# Use Developer ID signing for distributable builds, or ad-hoc signing for local builds.
+# Example: APP_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" scripts/build-macos.sh
 if command -v codesign >/dev/null 2>&1; then
-  codesign --force --deep --sign - "$BUILD_DIR/$APP_NAME.app" >/dev/null
+  if [ -n "${APP_SIGN_IDENTITY:-}" ]; then
+    codesign --force --deep --options runtime --timestamp --sign "$APP_SIGN_IDENTITY" "$BUILD_DIR/$APP_NAME.app"
+    codesign --verify --deep --strict --verbose=2 "$BUILD_DIR/$APP_NAME.app"
+  else
+    codesign --force --deep --sign - "$BUILD_DIR/$APP_NAME.app" >/dev/null
+    echo "warning: app was ad-hoc signed. Distribute with APP_SIGN_IDENTITY and notarization for Gatekeeper." >&2
+  fi
 fi
 
 ZIP_PATH="$BUILD_DIR/$DISPLAY_NAME-macOS.zip"

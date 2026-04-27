@@ -39,7 +39,7 @@
   Finder 右键 / Quick Action
   开机启动
   全局右键拖拽手势
-  签名、公证、DMG/ZIP 分发
+  自动签名身份管理
   第三方文件管理器集成
 
 ## 编译 macOS Swift 版
@@ -54,12 +54,32 @@ scripts/build-macos.sh
 - `.app`：`macos/QuickstartMac/build/Release/QuickstartMac.app`
 - zip：`macos/QuickstartMac/build/Release/Quickstart-macOS.zip`
 
-脚本会使用 `swiftc` 编译、生成 `.app` bundle、替换 `Info.plist` 变量，并做本机 ad-hoc codesign。默认编译当前架构；如需指定架构：
+脚本会通过 `xcrun` 使用同一套 macOS SDK 与 Swift 工具链编译、生成 `.app` bundle、替换 `Info.plist` 变量，并做本机 ad-hoc codesign。默认编译当前架构；如需指定架构：
 
 ```bash
 ARCHS="arm64" scripts/build-macos.sh
 ARCHS="arm64 x86_64" scripts/build-macos.sh
 ```
+
+## 构建 DMG
+
+```bash
+scripts/build-macos-dmg.sh
+```
+
+产物：
+- DMG：`macos/QuickstartMac/build/Release/Quickstart-macOS.dmg`
+
+默认 DMG 内的 `.app` 是 ad-hoc 签名，只适合本机开发验证。分发给其它 Mac 时需要 Developer ID 签名和 Apple 公证，否则 Gatekeeper 可能提示“无法验证开发者”或“已损坏，无法打开”：
+
+```bash
+APP_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+DMG_SIGN_IDENTITY="Developer ID Application: Your Name (TEAMID)" \
+NOTARY_PROFILE="notarytool-profile" \
+scripts/build-macos-dmg.sh
+```
+
+`NOTARY_PROFILE` 需要提前用 `xcrun notarytool store-credentials` 写入钥匙串。应用会显示 Dock 图标，并常驻在 macOS 顶部菜单栏；点击 Dock 图标或顶部菜单栏的 `Quickstart` 都会打开主界面。
 
 ## 在 Xcode 中打开
 ```bash

@@ -8,6 +8,7 @@
 
 /* Begin PBXBuildFile section */
 		200000000000000000000001 /* AppDelegate.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000001 /* AppDelegate.swift */; };
+		200000000000000000000013 /* main.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000011 /* main.swift */; };
 		200000000000000000000002 /* AppConfig.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000002 /* AppConfig.swift */; };
 		200000000000000000000003 /* QuickEntry.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000003 /* QuickEntry.swift */; };
 		200000000000000000000004 /* ConfigStore.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000004 /* ConfigStore.swift */; };
@@ -39,6 +40,7 @@
 
 /* Begin PBXFileReference section */
 		300000000000000000000001 /* AppDelegate.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppDelegate.swift; sourceTree = "<group>"; };
+		300000000000000000000011 /* main.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = main.swift; sourceTree = "<group>"; };
 		300000000000000000000002 /* AppConfig.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AppConfig.swift; sourceTree = "<group>"; };
 		300000000000000000000003 /* QuickEntry.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickEntry.swift; sourceTree = "<group>"; };
 		300000000000000000000004 /* ConfigStore.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigStore.swift; sourceTree = "<group>"; };
@@ -94,6 +96,7 @@
 		400000000000000000000002 /* QuickstartMac */ = {
 			isa = PBXGroup;
 			children = (
+				300000000000000000000011 /* main.swift */,
 				300000000000000000000001 /* AppDelegate.swift */,
 				30000000000000000000000D /* Info.plist */,
 				400000000000000000000003 /* Models */,
@@ -262,6 +265,7 @@
 			isa = PBXSourcesBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				200000000000000000000013 /* main.swift in Sources */,
 				200000000000000000000001 /* AppDelegate.swift in Sources */,
 				200000000000000000000002 /* AppConfig.swift in Sources */,
 				200000000000000000000003 /* QuickEntry.swift in Sources */,

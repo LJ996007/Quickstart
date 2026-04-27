@@ -1,6 +1,5 @@
 import AppKit
 
-@main
 final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecycleDelegate {
     private let configStore = ConfigStore()
     private let searchService = EntrySearchService()
@@ -10,10 +9,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
     private var statusItem: NSStatusItem!
     private var statusMenu: NSMenu!
     private var panel: QuickstartPanel!
+    private var mainWindowController: NSWindowController!
     private var mainViewController: MainViewController!
     private var settingsWindowController: SettingsWindowController?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
+        NSApp.setActivationPolicy(.regular)
+
         do {
             try configStore.load()
         } catch {
@@ -21,8 +23,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
         }
 
         configureStatusItem()
-        configureMainPanel()
-        handleLaunchArguments()
+        configureMainWindow()
+        if !handleLaunchArguments() {
+            DispatchQueue.main.async { [weak self] in
+                self?.showMainWindow(tab: .files)
+            }
+        }
     }
 
     func application(_ sender: NSApplication, openFile filename: String) -> Bool {
@@ -37,12 +43,22 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
-        showPanel(tab: .files)
+        showMainWindow(tab: .files)
         return true
     }
 
+    func applicationDidBecomeActive(_ notification: Notification) {
+        guard panel != nil,
+              panel.isVisible == false,
+              settingsWindowController?.window?.isVisible != true else {
+            return
+        }
+
+        showMainWindow(tab: .files)
+    }
+
     func quickstartPanelDidRequestHide(_ panel: QuickstartPanel) {
-        hidePanel()
+        hideMainWindow()
     }
 
     private func configureStatusItem() {
@@ -54,23 +70,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
         if let image = NSImage(systemSymbolName: "sparkles.square.fill", accessibilityDescription: "Quickstart") {
             image.isTemplate = true
             button.image = image
-        } else {
-            button.title = "QS"
         }
+        button.title = " Quickstart"
+        button.imagePosition = .imageLeading
 
         button.target = self
         button.action = #selector(handleStatusItemPress(_:))
         button.sendAction(on: [.leftMouseUp, .rightMouseUp])
 
         statusMenu = NSMenu()
-        statusMenu.addItem(NSMenuItem(title: "显示 Quickstart", action: #selector(togglePanel(_:)), keyEquivalent: ""))
+        statusMenu.addItem(NSMenuItem(title: "显示 Quickstart", action: #selector(showMainWindowFromMenu(_:)), keyEquivalent: ""))
         statusMenu.addItem(NSMenuItem(title: "设置", action: #selector(showSettingsWindow), keyEquivalent: ","))
         statusMenu.addItem(.separator())
         statusMenu.addItem(NSMenuItem(title: "退出", action: #selector(quitApp), keyEquivalent: "q"))
         statusMenu.items.forEach { $0.target = self }
     }
 
-    private func configureMainPanel() {
+    private func configureMainWindow() {
         mainViewController = MainViewController(
             configStore: configStore,
             searchService: searchService,
@@ -80,17 +96,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
             self?.showSettingsWindow()
         }
         mainViewController.onDismissRequested = { [weak self] in
-            self?.hidePanel()
+            self?.hideMainWindow()
         }
 
+        _ = mainViewController.view
         panel = QuickstartPanel(contentViewController: mainViewController)
         panel.panelLifecycleDelegate = self
+        mainWindowController = NSWindowController(window: panel)
     }
 
     @objc
     private func handleStatusItemPress(_ sender: Any?) {
         guard let event = NSApp.currentEvent else {
-            togglePanel(nil)
+            showMainWindow(tab: .files)
             return
         }
 
@@ -101,22 +119,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
                 self?.statusItem.menu = nil
             }
         } else {
-            togglePanel(nil)
+            showMainWindow(tab: .files)
         }
     }
 
     @objc
-    private func togglePanel(_ sender: Any?) {
-        if panel.isVisible {
-            hidePanel()
-        } else {
-            showPanel(tab: .files)
-        }
+    private func showMainWindowFromMenu(_ sender: Any?) {
+        showMainWindow(tab: .files)
     }
 
     @objc
     private func showSettingsWindow() {
-        hidePanel()
+        hideMainWindow()
 
         if settingsWindowController == nil {
             settingsWindowController = SettingsWindowController(
@@ -135,32 +149,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
         NSApp.terminate(nil)
     }
 
-    private func showPanel(tab: EntryTab) {
+    private func showMainWindow(tab: EntryTab) {
         mainViewController.prepareForPresentation(tab: tab)
-        positionPanel()
-        NSApp.activate(ignoringOtherApps: true)
+        positionMainWindow()
+        if panel.isMiniaturized {
+            panel.deminiaturize(nil)
+        }
+        mainWindowController.showWindow(nil)
         panel.makeKeyAndOrderFront(nil)
-        mainViewController.focusSearchField()
+        panel.orderFrontRegardless()
+        NSApp.activate(ignoringOtherApps: true)
+
+        DispatchQueue.main.async { [weak self] in
+            self?.mainViewController.focusSearchField()
+        }
     }
 
-    private func hidePanel() {
+    private func hideMainWindow() {
         panel.orderOut(nil)
     }
 
-    private func handleLaunchArguments() {
+    @discardableResult
+    private func handleLaunchArguments() -> Bool {
         let args = Array(ProcessInfo.processInfo.arguments.dropFirst())
         guard !args.isEmpty else {
-            return
+            return false
         }
 
         if args.count >= 2, args[0] == "--add" {
             handleExternalFileURLs([URL(fileURLWithPath: args[1])])
-            return
+            return true
         }
 
         if let first = args.first, let url = URL(string: first), url.scheme == "quickstart" {
             handleExternalURL(url)
+            return true
         }
+
+        return false
     }
 
     private func handleExternalURL(_ url: URL) {
@@ -171,7 +197,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
 
         do {
             let request = try urlHandler.parseAddURLRequest(from: url)
-            showPanel(tab: .urls)
+            showMainWindow(tab: .urls)
             mainViewController.handleAddURLRequest(request)
         } catch {
             let alert = NSAlert()
@@ -183,29 +209,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
     }
 
     private func handleExternalFileURLs(_ urls: [URL]) {
-        showPanel(tab: .files)
+        showMainWindow(tab: .files)
         mainViewController.addPathURLs(urls, showSummary: true)
     }
 
-    private func positionPanel() {
-        guard let button = statusItem.button,
-              let statusWindow = button.window else {
+    private func positionMainWindow() {
+        guard !panel.isVisible else {
+            return
+        }
+
+        guard let screenFrame = NSScreen.main?.visibleFrame ?? panel.screen?.visibleFrame else {
             panel.center()
             return
         }
 
-        let buttonFrame = statusWindow.convertToScreen(button.frame)
         let panelSize = panel.frame.size
-        let screenFrame = statusWindow.screen?.visibleFrame ?? NSScreen.main?.visibleFrame ?? .zero
-
-        var origin = NSPoint(
-            x: buttonFrame.midX - (panelSize.width / 2),
-            y: buttonFrame.minY - panelSize.height - 8
+        let origin = NSPoint(
+            x: screenFrame.midX - (panelSize.width / 2),
+            y: screenFrame.midY - (panelSize.height / 2)
         )
-
-        origin.x = max(screenFrame.minX + 12, min(origin.x, screenFrame.maxX - panelSize.width - 12))
-        origin.y = max(screenFrame.minY + 12, min(origin.y, screenFrame.maxY - panelSize.height - 12))
-
         panel.setFrameOrigin(origin)
     }
 }
