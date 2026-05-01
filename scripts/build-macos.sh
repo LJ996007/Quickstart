@@ -13,6 +13,8 @@ ARCHS="${ARCHS:-$(uname -m)}"
 SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 SWIFTC="$(xcrun --sdk macosx --find swiftc)"
 MODULE_CACHE_DIR="$BUILD_DIR/module-cache"
+RESOURCES_DIR="$BUILD_DIR/$APP_NAME.app/Contents/Resources"
+WINDOWS_RESOURCES_DIR="$ROOT_DIR/Quickstart/Resources"
 
 if [ -z "$SWIFTC" ] || [ ! -x "$SWIFTC" ]; then
   echo "error: swiftc not found via xcrun. Install Xcode Command Line Tools or Xcode." >&2
@@ -20,7 +22,7 @@ if [ -z "$SWIFTC" ] || [ ! -x "$SWIFTC" ]; then
 fi
 
 rm -rf "$BUILD_DIR"
-mkdir -p "$BUILD_DIR/objects" "$MODULE_CACHE_DIR" "$BUILD_DIR/$APP_NAME.app/Contents/MacOS" "$BUILD_DIR/$APP_NAME.app/Contents/Resources"
+mkdir -p "$BUILD_DIR/objects" "$MODULE_CACHE_DIR" "$BUILD_DIR/$APP_NAME.app/Contents/MacOS" "$RESOURCES_DIR"
 
 SOURCES=()
 while IFS= read -r source_file; do
@@ -59,6 +61,18 @@ text = text.replace('$(PRODUCT_BUNDLE_IDENTIFIER)', bundle_id)
 text = text.replace('$(PRODUCT_NAME)', executable)
 open(dst, 'w', encoding='utf-8').write(text)
 PY
+
+if [ -f "$WINDOWS_RESOURCES_DIR/web-url.png" ]; then
+  cp "$WINDOWS_RESOURCES_DIR/web-url.png" "$RESOURCES_DIR/web-url.png"
+fi
+
+if command -v sips >/dev/null 2>&1 && [ -f "$WINDOWS_RESOURCES_DIR/app.ico" ]; then
+  ICON_WORK_DIR="$BUILD_DIR/icon-work"
+  mkdir -p "$ICON_WORK_DIR"
+  sips -s format icns "$WINDOWS_RESOURCES_DIR/app.ico" --out "$RESOURCES_DIR/AppIcon.icns" >/dev/null
+else
+  echo "warning: unable to generate AppIcon.icns from Windows app.ico." >&2
+fi
 
 cat > "$BUILD_DIR/$APP_NAME.app/Contents/PkgInfo" <<'EOF'
 APPL????

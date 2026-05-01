@@ -16,9 +16,11 @@
 		200000000000000000000006 /* EntryActionService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000006 /* EntryActionService.swift */; };
 		200000000000000000000007 /* EntrySearchService.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000007 /* EntrySearchService.swift */; };
 		200000000000000000000008 /* QuickstartURLHandler.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000008 /* QuickstartURLHandler.swift */; };
+		200000000000000000000014 /* GlobalRightDragController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000012 /* GlobalRightDragController.swift */; };
 		200000000000000000000009 /* EntryEditorWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000009 /* EntryEditorWindowController.swift */; };
 		20000000000000000000000A /* MainViewController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30000000000000000000000A /* MainViewController.swift */; };
 		20000000000000000000000B /* QuickstartPanel.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30000000000000000000000B /* QuickstartPanel.swift */; };
+		200000000000000000000015 /* RoundedWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = 300000000000000000000013 /* RoundedWindow.swift */; };
 		20000000000000000000000C /* SettingsWindowController.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30000000000000000000000C /* SettingsWindowController.swift */; };
 		20000000000000000000000D /* Cocoa.framework in Frameworks */ = {isa = PBXBuildFile; fileRef = 300000000000000000000020 /* Cocoa.framework */; };
 		20000000000000000000000E /* ConfigCompatibilityTests.swift in Sources */ = {isa = PBXBuildFile; fileRef = 30000000000000000000000E /* ConfigCompatibilityTests.swift */; };
@@ -48,10 +50,12 @@
 		300000000000000000000006 /* EntryActionService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntryActionService.swift; sourceTree = "<group>"; };
 		300000000000000000000007 /* EntrySearchService.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntrySearchService.swift; sourceTree = "<group>"; };
 		300000000000000000000008 /* QuickstartURLHandler.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickstartURLHandler.swift; sourceTree = "<group>"; };
+		300000000000000000000012 /* GlobalRightDragController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalRightDragController.swift; sourceTree = "<group>"; };
 		300000000000000000000009 /* EntryEditorWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntryEditorWindowController.swift; sourceTree = "<group>"; };
 		30000000000000000000000A /* MainViewController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = MainViewController.swift; sourceTree = "<group>"; };
 		30000000000000000000000B /* QuickstartPanel.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickstartPanel.swift; sourceTree = "<group>"; };
 		30000000000000000000000C /* SettingsWindowController.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SettingsWindowController.swift; sourceTree = "<group>"; };
+		300000000000000000000013 /* RoundedWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = RoundedWindow.swift; sourceTree = "<group>"; };
 		30000000000000000000000D /* Info.plist */ = {isa = PBXFileReference; lastKnownFileType = text.plist.xml; path = Info.plist; sourceTree = "<group>"; };
 		30000000000000000000000E /* ConfigCompatibilityTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = ConfigCompatibilityTests.swift; sourceTree = "<group>"; };
 		30000000000000000000000F /* EntrySearchServiceTests.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = EntrySearchServiceTests.swift; sourceTree = "<group>"; };
@@ -122,6 +126,7 @@
 				300000000000000000000005 /* DotNetJSONCoding.swift */,
 				300000000000000000000006 /* EntryActionService.swift */,
 				300000000000000000000007 /* EntrySearchService.swift */,
+				300000000000000000000012 /* GlobalRightDragController.swift */,
 				300000000000000000000008 /* QuickstartURLHandler.swift */,
 			);
 			path = Services;
@@ -133,6 +138,7 @@
 				300000000000000000000009 /* EntryEditorWindowController.swift */,
 				30000000000000000000000A /* MainViewController.swift */,
 				30000000000000000000000B /* QuickstartPanel.swift */,
+				300000000000000000000013 /* RoundedWindow.swift */,
 				30000000000000000000000C /* SettingsWindowController.swift */,
 			);
 			path = UI;
@@ -273,10 +279,12 @@
 				200000000000000000000005 /* DotNetJSONCoding.swift in Sources */,
 				200000000000000000000006 /* EntryActionService.swift in Sources */,
 				200000000000000000000007 /* EntrySearchService.swift in Sources */,
+				200000000000000000000014 /* GlobalRightDragController.swift in Sources */,
 				200000000000000000000008 /* QuickstartURLHandler.swift in Sources */,
 				200000000000000000000009 /* EntryEditorWindowController.swift in Sources */,
 				20000000000000000000000A /* MainViewController.swift in Sources */,
 				20000000000000000000000B /* QuickstartPanel.swift in Sources */,
+				200000000000000000000015 /* RoundedWindow.swift in Sources */,
 				20000000000000000000000C /* SettingsWindowController.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;

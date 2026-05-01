@@ -66,7 +66,9 @@ final class EntryActionService {
                 }
             }
         case .url:
-            image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil) ?? NSImage()
+            image = Bundle.main.image(forResource: "web-url")
+                ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+                ?? NSImage()
         case .text:
             image = NSImage(systemSymbolName: "text.alignleft", accessibilityDescription: nil) ?? NSImage()
         }

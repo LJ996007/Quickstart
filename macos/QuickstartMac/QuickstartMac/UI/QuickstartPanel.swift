@@ -4,23 +4,18 @@ protocol QuickstartPanelLifecycleDelegate: AnyObject {
     func quickstartPanelDidRequestHide(_ panel: QuickstartPanel)
 }
 
-final class QuickstartPanel: NSWindow, NSWindowDelegate {
+final class QuickstartPanel: RoundedWindow, NSWindowDelegate {
     weak var panelLifecycleDelegate: QuickstartPanelLifecycleDelegate?
 
     init(contentViewController: NSViewController) {
-        super.init(
-            contentRect: NSRect(x: 0, y: 0, width: 700, height: 460),
-            styleMask: [.titled, .closable, .miniaturizable, .resizable],
-            backing: .buffered,
-            defer: false
-        )
+        super.init(contentRect: NSRect(x: 0, y: 0, width: 760, height: 500), title: "Quickstart")
 
         self.contentViewController = contentViewController
-        title = "Quickstart"
-        hasShadow = true
-        isReleasedWhenClosed = false
-        isRestorable = false
+        contentView?.wantsLayer = true
+        contentView?.layer?.cornerRadius = 14
+        contentView?.layer?.masksToBounds = true
         delegate = self
+        minSize = NSSize(width: 640, height: 420)
     }
 
     override func cancelOperation(_ sender: Any?) {

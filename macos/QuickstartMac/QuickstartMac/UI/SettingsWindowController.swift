@@ -8,15 +8,8 @@ final class SettingsWindowController: NSWindowController {
         self.configStore = configStore
         self.bookmarklet = bookmarklet
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 520, height: 260),
-            styleMask: [.titled, .closable, .miniaturizable],
-            backing: .buffered,
-            defer: false
-        )
-        window.title = "Quickstart 设置"
+        let window = RoundedWindow(contentRect: NSRect(x: 0, y: 0, width: 520, height: 280), title: "Quickstart 设置")
         window.center()
-        window.isReleasedWhenClosed = false
 
         super.init(window: window)
         configureWindow()
@@ -32,8 +25,17 @@ final class SettingsWindowController: NSWindowController {
             return
         }
 
-        let titleLabel = NSTextField(labelWithString: "macOS MVP 设置")
+        let titleLabel = NSTextField(labelWithString: "Quickstart 设置")
         titleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
+        let closeButton = NSButton.flatClose(target: self, action: #selector(closeSettings))
+
+        let titleRow = NSStackView(views: [titleLabel, NSView(), closeButton])
+        titleRow.orientation = .horizontal
+        titleRow.alignment = .centerY
+        titleRow.spacing = 8
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        closeButton.heightAnchor.constraint(equalToConstant: 24).isActive = true
 
         let configPathLabel = NSTextField(wrappingLabelWithString: configStore.configURL.path)
         configPathLabel.textColor = .secondaryLabelColor
@@ -41,22 +43,19 @@ final class SettingsWindowController: NSWindowController {
         let tipsLabel = NSTextField(wrappingLabelWithString: "当前版本会保留 Windows 配置字段，但不会在 macOS 界面里暴露 Total Commander / Directory Opus / 右键菜单等 Windows 专属设置。")
         tipsLabel.textColor = .secondaryLabelColor
 
-        let openConfigButton = NSButton(title: "打开配置目录", target: self, action: #selector(openConfigDirectory))
-        openConfigButton.bezelStyle = .rounded
+        let openConfigButton = NSButton.flatAction(title: "打开配置目录", target: self, action: #selector(openConfigDirectory))
 
-        let copyBookmarkletButton = NSButton(title: "复制一键添加书签", target: self, action: #selector(copyBookmarklet))
-        copyBookmarkletButton.bezelStyle = .rounded
+        let copyBookmarkletButton = NSButton.flatAction(title: "复制一键添加书签", target: self, action: #selector(copyBookmarklet))
 
-        let closeButton = NSButton(title: "关闭", target: self, action: #selector(closeSettings))
-        closeButton.bezelStyle = .rounded
+        let doneButton = NSButton.flatAction(title: "关闭", target: self, action: #selector(closeSettings))
 
-        let buttonRow = NSStackView(views: [openConfigButton, copyBookmarkletButton, closeButton])
+        let buttonRow = NSStackView(views: [openConfigButton, copyBookmarkletButton, doneButton])
         buttonRow.orientation = .horizontal
         buttonRow.spacing = 8
         buttonRow.alignment = .centerY
 
         let stack = NSStackView(views: [
-            titleLabel,
+            titleRow,
             NSTextField(labelWithString: "配置文件:"),
             configPathLabel,
             tipsLabel,

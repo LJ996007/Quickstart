@@ -8,7 +8,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     var onShowSettings: (() -> Void)?
     var onDismissRequested: (() -> Void)?
 
-    private let tabControl = NSSegmentedControl(labels: EntryTab.allCases.map(\.title), trackingMode: .selectOne, target: nil, action: nil)
     private let searchField = NSSearchField()
     private let groupTableView = NSTableView()
     private let entryTableView = ActionTableView()
@@ -19,6 +18,8 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     private let editButton = NSButton(title: "编辑", target: nil, action: nil)
     private let deleteButton = NSButton(title: "删除", target: nil, action: nil)
     private let settingsButton = NSButton(title: "设置", target: nil, action: nil)
+    private let closeButton = NSButton.flatClose(target: nil, action: nil)
+    private var tabButtons: [EntryTab: SideLabelButton] = [:]
 
     private var activeTab: EntryTab = .files
     private var activeGroup: String = EntrySearchService.allGroupsLabel
@@ -40,7 +41,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     override func loadView() {
-        view = NSView(frame: NSRect(x: 0, y: 0, width: 700, height: 460))
+        view = NSView(frame: NSRect(x: 0, y: 0, width: 760, height: 500))
+        view.wantsLayer = true
+        view.layer?.backgroundColor = NSColor.windowBackgroundColor.cgColor
         view.registerForDraggedTypes([.fileURL])
         configureView()
         reloadData()
@@ -48,8 +51,13 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
 
     func prepareForPresentation(tab: EntryTab) {
         activeTab = tab
-        tabControl.selectedSegment = tab.rawValue
         activeGroup = EntrySearchService.allGroupsLabel
+        searchField.stringValue = ""
+        updateSearchPlaceholder()
+        reloadData()
+    }
+
+    func prepareForGesturePresentation() {
         searchField.stringValue = ""
         updateSearchPlaceholder()
         reloadData()
@@ -90,7 +98,6 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         }
 
         activeTab = .files
-        tabControl.selectedSegment = EntryTab.files.rawValue
         activeGroup = EntrySearchService.allGroupsLabel
         updateSearchPlaceholder()
 
@@ -178,7 +185,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         let cell = (tableView.makeView(withIdentifier: identifier, owner: self) as? EntryTableCellView) ?? EntryTableCellView()
         cell.identifier = identifier
         let entry = displayedEntries[row]
-        cell.configure(entry: entry, icon: actionService.icon(for: entry))
+        cell.configure(entry: entry, icon: actionService.icon(for: entry), isActive: tableView.selectedRow == row)
         cell.toolTip = entry.path
         return cell
     }
@@ -191,6 +198,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         if tableView == groupTableView {
             handleGroupSelectionChanged()
         } else if tableView == entryTableView {
+            entryTableView.reloadData()
             updateButtonState()
         }
     }
@@ -223,19 +231,80 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         }
     }
 
+    func highlightAtScreenPoint(_ screenPoint: NSPoint) {
+        guard let window = view.window else {
+            return
+        }
+
+        let windowPoint = window.convertPoint(fromScreen: screenPoint)
+        if let tab = tab(at: windowPoint) {
+            switchTab(tab)
+            entryTableView.deselectAll(nil)
+            return
+        }
+
+        let groupPoint = groupTableView.convert(windowPoint, from: nil)
+        if groupTableView.bounds.contains(groupPoint) {
+            let row = groupTableView.row(at: groupPoint)
+            if row >= 0, row < displayedGroups.count {
+                switchGroup(displayedGroups[row])
+                entryTableView.deselectAll(nil)
+                return
+            }
+        }
+
+        let entryPoint = entryTableView.convert(windowPoint, from: nil)
+        if entryTableView.bounds.contains(entryPoint) {
+            let row = entryTableView.row(at: entryPoint)
+            if row >= 0, row < displayedEntries.count {
+                entryTableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                entryTableView.scrollRowToVisible(row)
+                return
+            }
+        }
+
+        entryTableView.deselectAll(nil)
+        updateButtonState()
+    }
+
+    @discardableResult
+    func tryReleaseAtScreenPoint(_ screenPoint: NSPoint) -> Bool {
+        guard let window = view.window else {
+            return false
+        }
+
+        guard window.frame.contains(screenPoint) else {
+            onDismissRequested?()
+            return false
+        }
+
+        let windowPoint = window.convertPoint(fromScreen: screenPoint)
+        let entryPoint = entryTableView.convert(windowPoint, from: nil)
+        if entryTableView.bounds.contains(entryPoint) {
+            let row = entryTableView.row(at: entryPoint)
+            if row >= 0, row < displayedEntries.count {
+                entryTableView.selectRowIndexes(IndexSet(integer: row), byExtendingSelection: false)
+                openSelectedEntry(nil)
+                return true
+            }
+        }
+
+        if isPointInSideLabels(windowPoint) {
+            focusSearchField()
+            return false
+        }
+
+        focusSearchField()
+        return false
+    }
+
     private func configureView() {
-        let contentInsets: CGFloat = 14
-
-        tabControl.selectedSegment = activeTab.rawValue
-        tabControl.target = self
-        tabControl.action = #selector(changeTab(_:))
-
         searchField.delegate = self
         updateSearchPlaceholder()
 
         let groupColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("group"))
         groupColumn.resizingMask = .autoresizingMask
-        groupTableView.frame = NSRect(x: 0, y: 0, width: 116, height: 320)
+        groupTableView.frame = NSRect(x: 0, y: 0, width: 120, height: 320)
         groupTableView.autoresizingMask = [.width, .height]
         groupTableView.addTableColumn(groupColumn)
         groupTableView.headerView = nil
@@ -243,8 +312,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         groupTableView.intercellSpacing = .zero
         groupTableView.delegate = self
         groupTableView.dataSource = self
-        groupTableView.selectionHighlightStyle = .regular
+        groupTableView.selectionHighlightStyle = .none
         groupTableView.focusRingType = .none
+        groupTableView.backgroundColor = .clear
 
         let entryColumn = NSTableColumn(identifier: NSUserInterfaceItemIdentifier("entry"))
         entryColumn.resizingMask = .autoresizingMask
@@ -256,8 +326,9 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         entryTableView.intercellSpacing = .zero
         entryTableView.delegate = self
         entryTableView.dataSource = self
-        entryTableView.selectionHighlightStyle = .regular
+        entryTableView.selectionHighlightStyle = .none
         entryTableView.focusRingType = .none
+        entryTableView.backgroundColor = .clear
         entryTableView.target = self
         entryTableView.doubleAction = #selector(openSelectedEntry(_:))
         entryTableView.onOpen = { [weak self] in self?.openSelectedEntry(nil) }
@@ -265,9 +336,18 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         entryTableView.onCancel = { [weak self] in self?.onDismissRequested?() }
         entryTableView.onSecondary = { [weak self] in self?.performSecondaryAction(nil) }
 
-        let topBar = NSStackView(views: [tabControl, searchField])
+        let titleLabel = NSTextField(labelWithString: "Quickstart")
+        titleLabel.font = .systemFont(ofSize: 16, weight: .semibold)
+        titleLabel.textColor = .labelColor
+
+        closeButton.target = self
+        closeButton.action = #selector(closeWindow(_:))
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+
+        let topBar = NSStackView(views: [titleLabel, searchField, closeButton])
         topBar.orientation = .horizontal
-        topBar.spacing = 10
+        topBar.spacing = 12
+        topBar.alignment = .centerY
         topBar.translatesAutoresizingMaskIntoConstraints = false
 
         let groupScrollView = NSScrollView()
@@ -282,15 +362,11 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         entryScrollView.documentView = entryTableView
         entryScrollView.translatesAutoresizingMaskIntoConstraints = false
 
-        let splitView = NSSplitView()
-        splitView.isVertical = true
-        splitView.dividerStyle = .thin
-        splitView.translatesAutoresizingMaskIntoConstraints = false
-        splitView.addArrangedSubview(groupScrollView)
-        splitView.addArrangedSubview(entryScrollView)
-
         for button in [openButton, secondaryActionButton, addButton, editButton, deleteButton, settingsButton] {
-            button.bezelStyle = .rounded
+            button.isBordered = false
+            button.wantsLayer = true
+            button.layer?.cornerRadius = 7
+            button.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.16).cgColor
             button.translatesAutoresizingMaskIntoConstraints = false
         }
 
@@ -328,28 +404,84 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         spacer.setContentHuggingPriority(.defaultLow, for: .horizontal)
         spacer.setContentCompressionResistancePriority(.defaultLow, for: .horizontal)
 
+        let typeStack = NSStackView()
+        typeStack.orientation = .vertical
+        typeStack.spacing = 8
+        typeStack.alignment = .centerX
+        typeStack.translatesAutoresizingMaskIntoConstraints = false
+
+        for tab in EntryTab.allCases {
+            let button = SideLabelButton(title: tab.title)
+            button.target = self
+            button.action = #selector(changeTabButton(_:))
+            button.tag = tab.rawValue
+            button.translatesAutoresizingMaskIntoConstraints = false
+            tabButtons[tab] = button
+            typeStack.addArrangedSubview(button)
+            NSLayoutConstraint.activate([
+                button.widthAnchor.constraint(equalToConstant: 48),
+                button.heightAnchor.constraint(equalToConstant: 68)
+            ])
+        }
+
+        let leftRail = NSView()
+        leftRail.wantsLayer = true
+        leftRail.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.72).cgColor
+        leftRail.layer?.cornerRadius = 12
+        leftRail.translatesAutoresizingMaskIntoConstraints = false
+        leftRail.addSubview(typeStack)
+
+        let contentStack = NSStackView(views: [entryScrollView])
+        contentStack.orientation = .vertical
+        contentStack.translatesAutoresizingMaskIntoConstraints = false
+
+        let rightRail = NSView()
+        rightRail.wantsLayer = true
+        rightRail.layer?.backgroundColor = NSColor.controlBackgroundColor.withAlphaComponent(0.72).cgColor
+        rightRail.layer?.cornerRadius = 12
+        rightRail.translatesAutoresizingMaskIntoConstraints = false
+        rightRail.addSubview(groupScrollView)
+
+        let mainRow = NSStackView(views: [leftRail, contentStack, rightRail])
+        mainRow.orientation = .horizontal
+        mainRow.spacing = 12
+        mainRow.translatesAutoresizingMaskIntoConstraints = false
+
         view.addSubview(topBar)
-        view.addSubview(splitView)
+        view.addSubview(mainRow)
         view.addSubview(bottomBar)
 
         NSLayoutConstraint.activate([
-            topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: contentInsets),
-            topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -contentInsets),
-            topBar.topAnchor.constraint(equalTo: view.topAnchor, constant: contentInsets),
+            topBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            topBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            topBar.topAnchor.constraint(equalTo: view.topAnchor, constant: 14),
             searchField.widthAnchor.constraint(greaterThanOrEqualToConstant: 280),
+            closeButton.widthAnchor.constraint(equalToConstant: 24),
+            closeButton.heightAnchor.constraint(equalToConstant: 24),
 
-            splitView.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: contentInsets),
-            splitView.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -contentInsets),
-            splitView.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 12),
-            splitView.bottomAnchor.constraint(equalTo: bottomBar.topAnchor, constant: -12),
-            groupScrollView.widthAnchor.constraint(equalToConstant: 116),
+            mainRow.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            mainRow.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            mainRow.topAnchor.constraint(equalTo: topBar.bottomAnchor, constant: 14),
+            mainRow.bottomAnchor.constraint(equalTo: bottomBar.topAnchor, constant: -14),
 
-            bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: contentInsets),
-            bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -contentInsets),
-            bottomBar.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -contentInsets)
+            leftRail.widthAnchor.constraint(equalToConstant: 64),
+            rightRail.widthAnchor.constraint(equalToConstant: 132),
+            typeStack.topAnchor.constraint(equalTo: leftRail.topAnchor, constant: 12),
+            typeStack.centerXAnchor.constraint(equalTo: leftRail.centerXAnchor),
+            typeStack.bottomAnchor.constraint(lessThanOrEqualTo: leftRail.bottomAnchor, constant: -12),
+
+            groupScrollView.leadingAnchor.constraint(equalTo: rightRail.leadingAnchor, constant: 6),
+            groupScrollView.trailingAnchor.constraint(equalTo: rightRail.trailingAnchor, constant: -6),
+            groupScrollView.topAnchor.constraint(equalTo: rightRail.topAnchor, constant: 8),
+            groupScrollView.bottomAnchor.constraint(equalTo: rightRail.bottomAnchor, constant: -8),
+
+            bottomBar.leadingAnchor.constraint(equalTo: view.leadingAnchor, constant: 16),
+            bottomBar.trailingAnchor.constraint(equalTo: view.trailingAnchor, constant: -16),
+            bottomBar.bottomAnchor.constraint(equalTo: view.bottomAnchor, constant: -14)
         ])
 
         view.window?.makeFirstResponder(searchField)
+        applyTabButtonStyles()
         updateButtonState()
     }
 
@@ -381,6 +513,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
         isSyncingSelection = false
 
         countLabel.stringValue = "\(displayedEntries.count) 项"
+        applyTabButtonStyles()
         updateButtonState()
     }
 
@@ -425,11 +558,7 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
             return
         }
 
-        activeGroup = group
-        if group.caseInsensitiveCompare(EntrySearchService.allGroupsLabel) != .orderedSame {
-            try? configStore.touchGroup(group)
-        }
-        reloadData()
+        switchGroup(group)
     }
 
     private var selectedEntry: QuickEntry? {
@@ -463,11 +592,68 @@ final class MainViewController: NSViewController, NSTableViewDataSource, NSTable
     }
 
     @objc
-    private func changeTab(_ sender: NSSegmentedControl) {
-        activeTab = EntryTab(rawValue: sender.selectedSegment) ?? .files
+    private func changeTabButton(_ sender: NSButton) {
+        guard let tab = EntryTab(rawValue: sender.tag) else {
+            return
+        }
+
+        switchTab(tab)
+    }
+
+    @objc
+    private func closeWindow(_ sender: Any?) {
+        onDismissRequested?()
+    }
+
+    private func switchTab(_ tab: EntryTab) {
+        guard activeTab != tab else {
+            return
+        }
+
+        activeTab = tab
         activeGroup = EntrySearchService.allGroupsLabel
         updateSearchPlaceholder()
         reloadData()
+    }
+
+    private func switchGroup(_ group: String) {
+        let normalized = group.trimmingCharacters(in: .whitespacesAndNewlines)
+        let targetGroup = normalized.isEmpty ? EntrySearchService.allGroupsLabel : normalized
+        guard targetGroup.caseInsensitiveCompare(activeGroup) != .orderedSame else {
+            return
+        }
+
+        activeGroup = targetGroup
+        if targetGroup.caseInsensitiveCompare(EntrySearchService.allGroupsLabel) != .orderedSame {
+            try? configStore.touchGroup(targetGroup)
+        }
+        reloadData()
+    }
+
+    private func applyTabButtonStyles() {
+        for (tab, button) in tabButtons {
+            button.setActive(tab == activeTab)
+        }
+    }
+
+    private func tab(at windowPoint: NSPoint) -> EntryTab? {
+        for (tab, button) in tabButtons {
+            let point = button.convert(windowPoint, from: nil)
+            if button.bounds.contains(point) {
+                return tab
+            }
+        }
+
+        return nil
+    }
+
+    private func isPointInSideLabels(_ windowPoint: NSPoint) -> Bool {
+        if tab(at: windowPoint) != nil {
+            return true
+        }
+
+        let groupPoint = groupTableView.convert(windowPoint, from: nil)
+        return groupTableView.bounds.contains(groupPoint)
     }
 
     @objc
@@ -632,15 +818,50 @@ private final class ActionTableView: NSTableView {
     }
 }
 
+private final class SideLabelButton: NSButton {
+    init(title: String) {
+        super.init(frame: .zero)
+        self.title = title
+        isBordered = false
+        font = .systemFont(ofSize: 14, weight: .semibold)
+        wantsLayer = true
+        layer?.cornerRadius = 11
+        setButtonType(.momentaryChange)
+        setActive(false)
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) {
+        fatalError("init(coder:) has not been implemented")
+    }
+
+    func setActive(_ active: Bool) {
+        layer?.backgroundColor = active
+            ? NSColor.controlAccentColor.withAlphaComponent(0.22).cgColor
+            : NSColor.clear.cgColor
+        contentTintColor = active ? .controlAccentColor : .secondaryLabelColor
+    }
+}
+
 private final class GroupTableCellView: NSTableCellView {
+    private let backgroundView = NSView()
     private let label = NSTextField(labelWithString: "")
 
     override init(frame frameRect: NSRect) {
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
+        backgroundView.translatesAutoresizingMaskIntoConstraints = false
+        backgroundView.wantsLayer = true
+        backgroundView.layer?.cornerRadius = 8
         label.translatesAutoresizingMaskIntoConstraints = false
+        addSubview(backgroundView)
         addSubview(label)
         NSLayoutConstraint.activate([
+            backgroundView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 4),
+            backgroundView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -4),
+            backgroundView.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            backgroundView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+
             label.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
             label.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -8),
             label.centerYAnchor.constraint(equalTo: centerYAnchor)
@@ -655,11 +876,15 @@ private final class GroupTableCellView: NSTableCellView {
     func configure(title: String, isActive: Bool) {
         label.stringValue = title
         label.font = isActive ? .systemFont(ofSize: 12, weight: .semibold) : .systemFont(ofSize: 12)
-        label.textColor = isActive ? .labelColor : .secondaryLabelColor
+        label.textColor = isActive ? .controlAccentColor : .secondaryLabelColor
+        backgroundView.layer?.backgroundColor = isActive
+            ? NSColor.controlAccentColor.withAlphaComponent(0.14).cgColor
+            : NSColor.clear.cgColor
     }
 }
 
 private final class EntryTableCellView: NSTableCellView {
+    private let backgroundView = NSView()
     private let iconView = NSImageView()
     private let titleField = NSTextField(labelWithString: "")
     private let subtitleField = NSTextField(labelWithString: "")
@@ -668,6 +893,9 @@ private final class EntryTableCellView: NSTableCellView {
         super.init(frame: frameRect)
         translatesAutoresizingMaskIntoConstraints = false
 
+        backgroundView.translatesAutoresizingMaskIntoConstraints = false
+        backgroundView.wantsLayer = true
+        backgroundView.layer?.cornerRadius = 9
         iconView.translatesAutoresizingMaskIntoConstraints = false
         titleField.translatesAutoresizingMaskIntoConstraints = false
         subtitleField.translatesAutoresizingMaskIntoConstraints = false
@@ -681,11 +909,17 @@ private final class EntryTableCellView: NSTableCellView {
         textStack.alignment = .leading
         textStack.translatesAutoresizingMaskIntoConstraints = false
 
+        addSubview(backgroundView)
         addSubview(iconView)
         addSubview(textStack)
 
         NSLayoutConstraint.activate([
-            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 8),
+            backgroundView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 2),
+            backgroundView.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -2),
+            backgroundView.topAnchor.constraint(equalTo: topAnchor, constant: 2),
+            backgroundView.bottomAnchor.constraint(equalTo: bottomAnchor, constant: -2),
+
+            iconView.leadingAnchor.constraint(equalTo: leadingAnchor, constant: 10),
             iconView.centerYAnchor.constraint(equalTo: centerYAnchor),
             iconView.widthAnchor.constraint(equalToConstant: 18),
             iconView.heightAnchor.constraint(equalToConstant: 18),
@@ -701,11 +935,14 @@ private final class EntryTableCellView: NSTableCellView {
         fatalError("init(coder:) has not been implemented")
     }
 
-    func configure(entry: QuickEntry, icon: NSImage) {
+    func configure(entry: QuickEntry, icon: NSImage, isActive: Bool) {
         iconView.image = icon
         titleField.stringValue = entry.name
         titleField.font = .systemFont(ofSize: 13, weight: .medium)
         subtitleField.stringValue = entry.path
         titleField.textColor = entry.type == .folder || entry.type == .file ? .labelColor : .labelColor
+        backgroundView.layer?.backgroundColor = isActive
+            ? NSColor.selectedContentBackgroundColor.withAlphaComponent(0.18).cgColor
+            : NSColor.clear.cgColor
     }
 }

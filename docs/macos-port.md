@@ -3,7 +3,7 @@
 ## 目标
 - Windows 版继续保留在 `Quickstart/`，不改现有 `dotnet` 构建链。
 - macOS 新增原生 AppKit 菜单栏客户端，工程位于 `macos/QuickstartMac/QuickstartMac.xcodeproj`。
-- 当前阶段覆盖：菜单栏常驻、搜索弹窗、收藏 CRUD、中文/拼音搜索、文件/文件夹/URL/文本操作、文件/文件夹拖放添加、`--add <path>` 启动参数、`quickstart://add-url` 协议、与 Windows `config.json` 兼容。
+- 当前阶段覆盖：Dock 图标、菜单栏常驻、扁平圆角无边框搜索弹窗、左右标签筛选、全局右键拖拽呼出、收藏 CRUD、中文/拼音搜索、文件/文件夹/URL/文本操作、文件/文件夹拖放添加、`--add <path>` 启动参数、`quickstart://add-url` 协议、与 Windows `config.json` 兼容。
 
 ## 目录
 - `macos/QuickstartMac/QuickstartMac/`
@@ -31,16 +31,22 @@
 ## 当前取舍
 - 已做：
   `NSStatusItem` 菜单栏入口
-  `NSPanel` 搜索弹窗
+  标准前台 Dock App
+  无边框圆角 `NSWindow` 搜索弹窗
+  设置与编辑窗口圆角无边框化
+  左侧文件 / 网页 / 文本类型标签
+  右侧当前类型分组标签
+  `CGEventTap` 全局右键向右拖拽呼出与松开执行
   `NSWorkspace` 打开/定位
   `NSPasteboard` 复制文本和网址
   `CFStringTransform` 拼音搜索
 - 暂不做：
   Finder 右键 / Quick Action
   开机启动
-  全局右键拖拽手势
   自动签名身份管理
   第三方文件管理器集成
+
+全局右键拖拽依赖 macOS 辅助功能 / 输入监控权限。权限不足时应用不会退出，菜单栏菜单会保留“启用右键拖拽权限”入口，用户授权后仍可通过 Dock 或菜单栏正常呼出主窗口。
 
 ## 编译 macOS Swift 版
 

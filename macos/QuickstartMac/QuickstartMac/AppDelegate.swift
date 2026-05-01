@@ -12,6 +12,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
     private var mainWindowController: NSWindowController!
     private var mainViewController: MainViewController!
     private var settingsWindowController: SettingsWindowController?
+    private var rightDragController: GlobalRightDragController?
+    private var rightDragPermissionItem: NSMenuItem?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.regular)
@@ -24,6 +26,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
 
         configureStatusItem()
         configureMainWindow()
+        configureRightDragGesture()
         if !handleLaunchArguments() {
             DispatchQueue.main.async { [weak self] in
                 self?.showMainWindow(tab: .files)
@@ -57,6 +60,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
         showMainWindow(tab: .files)
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        rightDragController?.stop()
+    }
+
     func quickstartPanelDidRequestHide(_ panel: QuickstartPanel) {
         hideMainWindow()
     }
@@ -81,6 +88,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
         statusMenu = NSMenu()
         statusMenu.addItem(NSMenuItem(title: "显示 Quickstart", action: #selector(showMainWindowFromMenu(_:)), keyEquivalent: ""))
         statusMenu.addItem(NSMenuItem(title: "设置", action: #selector(showSettingsWindow), keyEquivalent: ","))
+        rightDragPermissionItem = NSMenuItem(title: "启用右键拖拽权限", action: #selector(openRightDragPrivacySettings), keyEquivalent: "")
+        statusMenu.addItem(rightDragPermissionItem!)
         statusMenu.addItem(.separator())
         statusMenu.addItem(NSMenuItem(title: "退出", action: #selector(quitApp), keyEquivalent: "q"))
         statusMenu.items.forEach { $0.target = self }
@@ -103,6 +112,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
         panel = QuickstartPanel(contentViewController: mainViewController)
         panel.panelLifecycleDelegate = self
         mainWindowController = NSWindowController(window: panel)
+    }
+
+    private func configureRightDragGesture() {
+        let controller = GlobalRightDragController()
+        controller.onTriggered = { [weak self] screenPoint in
+            self?.showMainWindowForGesture(at: screenPoint)
+        }
+        controller.onMoved = { [weak self] screenPoint in
+            self?.mainViewController.highlightAtScreenPoint(screenPoint)
+        }
+        controller.onReleased = { [weak self] screenPoint in
+            _ = self?.mainViewController.tryReleaseAtScreenPoint(screenPoint)
+        }
+        controller.onCancelled = { [weak self] in
+            self?.hideMainWindow()
+        }
+
+        rightDragController = controller
+        updateRightDragPermissionMenu(enabled: controller.start())
     }
 
     @objc
@@ -129,6 +157,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
     }
 
     @objc
+    private func openRightDragPrivacySettings() {
+        GlobalRightDragController.openPrivacySettings()
+        updateRightDragPermissionMenu(enabled: rightDragController?.start() == true)
+    }
+
+    @objc
     private func showSettingsWindow() {
         hideMainWindow()
 
@@ -151,7 +185,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
 
     private func showMainWindow(tab: EntryTab) {
         mainViewController.prepareForPresentation(tab: tab)
-        positionMainWindow()
+        showPreparedMainWindow(near: nil)
+
+        DispatchQueue.main.async { [weak self] in
+            self?.mainViewController.focusSearchField()
+        }
+    }
+
+    private func showMainWindowForGesture(at screenPoint: NSPoint) {
+        mainViewController.prepareForGesturePresentation()
+        showPreparedMainWindow(near: screenPoint)
+        mainViewController.highlightAtScreenPoint(screenPoint)
+    }
+
+    private func showPreparedMainWindow(near screenPoint: NSPoint?) {
+        positionMainWindow(near: screenPoint)
         if panel.isMiniaturized {
             panel.deminiaturize(nil)
         }
@@ -159,10 +207,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
         panel.makeKeyAndOrderFront(nil)
         panel.orderFrontRegardless()
         NSApp.activate(ignoringOtherApps: true)
-
-        DispatchQueue.main.async { [weak self] in
-            self?.mainViewController.focusSearchField()
-        }
     }
 
     private func hideMainWindow() {
@@ -213,21 +257,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, QuickstartPanelLifecyc
         mainViewController.addPathURLs(urls, showSummary: true)
     }
 
-    private func positionMainWindow() {
+    private func positionMainWindow(near screenPoint: NSPoint?) {
         guard !panel.isVisible else {
             return
         }
 
-        guard let screenFrame = NSScreen.main?.visibleFrame ?? panel.screen?.visibleFrame else {
+        let screen = screenPoint.flatMap { point in
+            NSScreen.screens.first { $0.visibleFrame.contains(point) }
+        } ?? NSScreen.main ?? panel.screen
+
+        guard let screenFrame = screen?.visibleFrame else {
             panel.center()
             return
         }
 
         let panelSize = panel.frame.size
+        let preferredOrigin = screenPoint.map {
+            NSPoint(x: $0.x - 18, y: $0.y - panelSize.height + 36)
+        } ?? NSPoint(
+            x: screenFrame.midX - panelSize.width / 2,
+            y: screenFrame.midY - panelSize.height / 2
+        )
+
         let origin = NSPoint(
-            x: screenFrame.midX - (panelSize.width / 2),
-            y: screenFrame.midY - (panelSize.height / 2)
+            x: max(screenFrame.minX + 8, min(preferredOrigin.x, screenFrame.maxX - panelSize.width - 8)),
+            y: max(screenFrame.minY + 8, min(preferredOrigin.y, screenFrame.maxY - panelSize.height - 8))
         )
         panel.setFrameOrigin(origin)
+    }
+
+    private func updateRightDragPermissionMenu(enabled: Bool) {
+        rightDragPermissionItem?.isHidden = enabled
     }
 }

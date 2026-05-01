@@ -17,15 +17,11 @@ final class EntryEditorWindowController: NSWindowController {
         originalEntry = entry
         self.isNewEntry = isNewEntry
 
-        let window = NSWindow(
-            contentRect: NSRect(x: 0, y: 0, width: 460, height: 250),
-            styleMask: [.titled, .closable],
-            backing: .buffered,
-            defer: false
+        let window = RoundedWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 480, height: 280),
+            title: isNewEntry ? "添加条目" : "编辑条目"
         )
-        window.title = isNewEntry ? "添加条目" : "编辑条目"
         window.center()
-        window.isReleasedWhenClosed = false
 
         super.init(window: window)
         configureWindow()
@@ -60,6 +56,18 @@ final class EntryEditorWindowController: NSWindowController {
         contentStack.spacing = 12
         contentStack.translatesAutoresizingMaskIntoConstraints = false
 
+        let titleLabel = NSTextField(labelWithString: isNewEntry ? "添加条目" : "编辑条目")
+        titleLabel.font = .systemFont(ofSize: 18, weight: .semibold)
+        let closeButton = NSButton.flatClose(target: self, action: #selector(cancelEditing(_:)))
+        closeButton.translatesAutoresizingMaskIntoConstraints = false
+        closeButton.widthAnchor.constraint(equalToConstant: 24).isActive = true
+        closeButton.heightAnchor.constraint(equalToConstant: 24).isActive = true
+
+        let titleRow = NSStackView(views: [titleLabel, NSView(), closeButton])
+        titleRow.orientation = .horizontal
+        titleRow.spacing = 8
+        titleRow.alignment = .centerY
+
         nameField.placeholderString = "条目名称"
         pathField.placeholderString = "路径 / 网址 / 文本"
         groupField.placeholderString = "可选"
@@ -68,7 +76,10 @@ final class EntryEditorWindowController: NSWindowController {
         typePopUp.target = self
         typePopUp.action = #selector(typeDidChange(_:))
 
-        browseButton.bezelStyle = .rounded
+        browseButton.isBordered = false
+        browseButton.wantsLayer = true
+        browseButton.layer?.cornerRadius = 7
+        browseButton.layer?.backgroundColor = NSColor.separatorColor.withAlphaComponent(0.16).cgColor
         browseButton.target = self
         browseButton.action = #selector(browsePath(_:))
 
@@ -90,6 +101,7 @@ final class EntryEditorWindowController: NSWindowController {
         pathInputStack.spacing = 8
         pathInputStack.alignment = .centerY
 
+        contentStack.addArrangedSubview(titleRow)
         contentStack.addArrangedSubview(makeRow(label: "名称", control: nameField))
         contentStack.addArrangedSubview(makeRow(label: "内容", control: pathInputStack))
         contentStack.addArrangedSubview(pathHintLabel)
@@ -131,9 +143,7 @@ final class EntryEditorWindowController: NSWindowController {
     }
 
     private func makeActionButton(title: String, action: Selector) -> NSButton {
-        let button = NSButton(title: title, target: self, action: action)
-        button.bezelStyle = .rounded
-        return button
+        NSButton.flatAction(title: title, target: self, action: action)
     }
 
     @objc
