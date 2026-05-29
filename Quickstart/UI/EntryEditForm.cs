@@ -6,10 +6,11 @@ using Quickstart.Utils;
 public sealed class EntryEditForm : Form
 {
     private readonly QuickEntry _entry;
+    private readonly IReadOnlyDictionary<EntryType, List<string>>? _groupSuggestions;
     private readonly TextBox _nameBox;
     private readonly TextBox _pathBox;
     private readonly ComboBox _typeBox;
-    private readonly TextBox _groupBox;
+    private readonly ComboBox _groupBox;
     private readonly Button _browseBtn;
     private readonly Label _pathLabel;
     private readonly Button _okBtn;
@@ -18,9 +19,10 @@ public sealed class EntryEditForm : Form
     private readonly TableLayoutPanel _pathInputLayout;
     private readonly FlowLayoutPanel _buttonRow;
 
-    public EntryEditForm(QuickEntry entry)
+    public EntryEditForm(QuickEntry entry, IReadOnlyDictionary<EntryType, List<string>>? groupSuggestions = null)
     {
         _entry = entry;
+        _groupSuggestions = groupSuggestions;
 
         AutoScaleMode = AutoScaleMode.Dpi;
 
@@ -102,10 +104,13 @@ public sealed class EntryEditForm : Form
         };
 
         var groupLabel = CreateFieldLabel("分组:");
-        _groupBox = new TextBox
+        _groupBox = new ComboBox
         {
             Text = entry.Group,
             Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDown,
+            AutoCompleteMode = AutoCompleteMode.SuggestAppend,
+            AutoCompleteSource = AutoCompleteSource.ListItems,
             Margin = new Padding(0)
         };
 
@@ -141,7 +146,7 @@ public sealed class EntryEditForm : Form
                     EntryType.Text => "请输入内容。",
                     _ => "请输入路径。"
                 };
-                MessageBox.Show(hint, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                DialogPresenter.ShowMessage(this, hint, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 DialogResult = DialogResult.None;
                 return;
             }
@@ -156,7 +161,11 @@ public sealed class EntryEditForm : Form
             _entry.Group = _groupBox.Text.Trim();
         };
 
-        _typeBox.SelectedIndexChanged += (_, _) => AdjustLayoutForType();
+        _typeBox.SelectedIndexChanged += (_, _) =>
+        {
+            AdjustLayoutForType();
+            UpdateGroupSuggestions();
+        };
 
         _pathBox.TextChanged += (_, _) =>
         {
@@ -223,11 +232,28 @@ public sealed class EntryEditForm : Form
 
         ApplyScaledMetrics();
         AdjustLayoutForType();
+        UpdateGroupSuggestions();
         DpiChanged += (_, _) =>
         {
             ApplyScaledMetrics();
             AdjustLayoutForType();
         };
+    }
+
+    // 用当前选中类型下已有的分组名填充下拉项，保留用户当前输入/选择的文本
+    private void UpdateGroupSuggestions()
+    {
+        var current = _groupBox.Text;
+        _groupBox.BeginUpdate();
+        _groupBox.Items.Clear();
+        if (_groupSuggestions != null
+            && _groupSuggestions.TryGetValue(GetSelectedEntryType(), out var groups))
+        {
+            foreach (var group in groups)
+                _groupBox.Items.Add(group);
+        }
+        _groupBox.EndUpdate();
+        _groupBox.Text = current;
     }
 
     private Label CreateFieldLabel(string text) => new()
@@ -273,7 +299,7 @@ public sealed class EntryEditForm : Form
         var browseButtonSize = UiScaleHelper.GetButtonSize(this, _browseBtn.Text, _browseBtn.Font, 44, 30, horizontalLogicalPadding: 10);
 
         _nameBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 340), inputHeight);
-        _groupBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 160), inputHeight);
+        _groupBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 160), comboHeight);
         _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 340), inputHeight);
         _typeBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 128), comboHeight);
         _browseBtn.Size = new Size(browseButtonSize.Width, inputHeight);

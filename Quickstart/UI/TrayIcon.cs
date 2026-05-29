@@ -6,6 +6,7 @@ public sealed class TrayIcon : IDisposable
 
     public event Action? ShowMainWindow;
     public event Action? ShowSettings;
+    public event Action? ShowAiSettings;
     public event Action? ExitRequested;
 
     public TrayIcon()
@@ -33,6 +34,10 @@ public sealed class TrayIcon : IDisposable
         settingsItem.Click += (_, _) => ShowSettings?.Invoke();
         menu.Items.Add(settingsItem);
 
+        var aiSettingsItem = new ToolStripMenuItem("AI 设置(&A)");
+        aiSettingsItem.Click += (_, _) => ShowAiSettings?.Invoke();
+        menu.Items.Add(aiSettingsItem);
+
         menu.Items.Add(new ToolStripSeparator());
 
         var exitItem = new ToolStripMenuItem("退出(&X)");
@@ -53,20 +58,35 @@ public sealed class TrayIcon : IDisposable
         using var source = new Icon(stream, new Size(64, 64));
         using var bmp = source.ToBitmap();
 
-        // Find non-transparent content bounds
+        // Find non-transparent content bounds（LockBits 一次性扫描，避免 GetPixel 的逐像素开销）
         int minX = bmp.Width, minY = bmp.Height, maxX = 0, maxY = 0;
-        for (int y = 0; y < bmp.Height; y++)
+        var bounds = new Rectangle(0, 0, bmp.Width, bmp.Height);
+        var data = bmp.LockBits(bounds, System.Drawing.Imaging.ImageLockMode.ReadOnly, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
+        try
         {
-            for (int x = 0; x < bmp.Width; x++)
+            unsafe
             {
-                if (bmp.GetPixel(x, y).A > 10)
+                var scan0 = (byte*)data.Scan0;
+                for (int y = 0; y < bmp.Height; y++)
                 {
-                    if (x < minX) minX = x;
-                    if (y < minY) minY = y;
-                    if (x > maxX) maxX = x;
-                    if (y > maxY) maxY = y;
+                    var row = scan0 + (long)y * data.Stride;
+                    for (int x = 0; x < bmp.Width; x++)
+                    {
+                        // 32bppArgb 内存布局为 BGRA，alpha 在每像素第 4 字节
+                        if (row[x * 4 + 3] > 10)
+                        {
+                            if (x < minX) minX = x;
+                            if (y < minY) minY = y;
+                            if (x > maxX) maxX = x;
+                            if (y > maxY) maxY = y;
+                        }
+                    }
                 }
             }
+        }
+        finally
+        {
+            bmp.UnlockBits(data);
         }
 
         if (maxX <= minX || maxY <= minY)
