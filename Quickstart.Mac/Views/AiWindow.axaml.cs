@@ -40,6 +40,9 @@ public partial class AiWindow : Window
         RefreshActions();
     }
 
+    /// <summary>由左滑手势捕获选区后预填输入。</summary>
+    public void SetInput(string text) => InputBox.Text = text;
+
     private void RefreshActions()
     {
         var ai = _config.Config.Ai;
