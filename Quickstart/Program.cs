@@ -200,7 +200,15 @@ static class Program
             {
                 var selection = aiActionPicker.TryReleaseAtScreenPoint(pt);
                 if (selection != null)
-                    EnsureAiPopup().ShowForSelectedAction(pt, aiGestureSourceWindow, selection, autoRun: true);
+                {
+                    var webPrompt = selection.IsPrompt
+                        ? configManager.Config.Ai.PromptPresets.FirstOrDefault(p => p.Id == selection.Id)
+                        : null;
+                    if (webPrompt is { Target: AiPromptTarget.Web })
+                        _ = SendPromptToWebAsync(webPrompt, aiGestureSourceWindow);
+                    else
+                        EnsureAiPopup().ShowForSelectedAction(pt, aiGestureSourceWindow, selection, autoRun: true);
+                }
             }
         };
         mouseHook.GestureCancelled += () =>
@@ -231,6 +239,39 @@ static class Program
 
         // Run without a main form — tray icon keeps the app alive
         Application.Run();
+
+        async Task SendPromptToWebAsync(AiPromptPreset prompt, IntPtr sourceWindow)
+        {
+            try
+            {
+                using var cts = new CancellationTokenSource(TimeSpan.FromSeconds(30));
+                // 不恢复原始剪贴板：随后要写入渲染后的文本，少一次写操作可避免 OLE 剪贴板冲突
+                var captured = await aiInputCapture.CaptureFromSourceAsync(sourceWindow, cts.Token, restoreClipboard: false);
+
+                var input = captured.Kind == AiCapturedInputKind.Files
+                    ? aiFileReader.ReadFiles(captured.FilePaths, configManager.Config.Ai.MaxFileBytes).Text
+                    : captured.Text;
+
+                if (string.IsNullOrWhiteSpace(input))
+                {
+                    trayIcon.ShowBalloon("Quickstart", "未捕获到选中文字，已取消发送。", ToolTipIcon.Warning);
+                    return;
+                }
+
+                var rendered = PromptRenderer.Render(prompt.Template, input);
+                var url = string.IsNullOrWhiteSpace(configManager.Config.Ai.WebChatUrl)
+                    ? "https://chat.deepseek.com/"
+                    : configManager.Config.Ai.WebChatUrl;
+                await WebPromptSender.SendAsync(rendered, url, autoPaste: true, cts.Token);
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                trayIcon.ShowBalloon("Quickstart", $"发送到网页失败：{ex.Message}", ToolTipIcon.Error);
+            }
+        }
 
         void ShowSettings()
         {

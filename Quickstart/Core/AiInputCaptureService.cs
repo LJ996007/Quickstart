@@ -25,16 +25,56 @@ public sealed class AiInputCaptureService
     private const int ClipboardRetryCount = 5;
     private const int ClipboardRetryDelayMs = 80;
 
+    // 激活来源窗口并捕获其选中内容（供左滑等场景复用，无需弹出 AI 面板）。在 UI 线程调用。
+    public async Task<AiCapturedInput> CaptureFromSourceAsync(IntPtr sourceWindow, CancellationToken token, bool restoreClipboard = true)
+    {
+        await WaitForRightButtonReleaseAsync(token);
+        token.ThrowIfCancellationRequested();
+        await ActivateWindowAsync(sourceWindow, token);
+        token.ThrowIfCancellationRequested();
+        return await CaptureSelectionAsync(token, restoreClipboard);
+    }
+
+    private static async Task WaitForRightButtonReleaseAsync(CancellationToken token)
+    {
+        const int maxWaitMs = 500;
+        const int stepMs = 20;
+        for (var waited = 0; waited < maxWaitMs; waited += stepMs)
+        {
+            if ((Control.MouseButtons & MouseButtons.Right) == 0)
+                return;
+            await Task.Delay(stepMs, token);
+        }
+    }
+
+    private static async Task ActivateWindowAsync(IntPtr sourceWindow, CancellationToken token)
+    {
+        if (sourceWindow == IntPtr.Zero || !IsWindow(sourceWindow))
+            return;
+
+        SetForegroundWindow(sourceWindow);
+        await Task.Delay(80, token);
+    }
+
+    [DllImport("user32.dll")]
+    private static extern bool SetForegroundWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
+
     // 在 UI 线程（STA）上调用：用 await Task.Delay 让出消息泵，避免冻结弹窗。
-    public async Task<AiCapturedInput> CaptureSelectionAsync(CancellationToken token)
+    public async Task<AiCapturedInput> CaptureSelectionAsync(CancellationToken token, bool restoreClipboard = true)
     {
         IDataObject? original = null;
-        var restoreClipboard = false;
+        var shouldRestore = false;
 
         try
         {
-            original = TryGetClipboardDataObject();
-            restoreClipboard = original != null;
+            if (restoreClipboard)
+            {
+                original = TryGetClipboardDataObject();
+                shouldRestore = original != null;
+            }
 
             Clipboard.Clear();
             SendKeys.SendWait("^c");
@@ -63,7 +103,7 @@ public sealed class AiInputCaptureService
         }
         finally
         {
-            if (restoreClipboard && original != null)
+            if (shouldRestore && original != null)
                 TryRestoreClipboard(original);
         }
     }

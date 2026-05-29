@@ -343,6 +343,12 @@ public sealed class ConfigManager : IDisposable
             changed = true;
         }
 
+        if (string.IsNullOrWhiteSpace(_config.Ai.WebChatUrl))
+        {
+            _config.Ai.WebChatUrl = defaults.WebChatUrl;
+            changed = true;
+        }
+
         if (string.IsNullOrWhiteSpace(_config.Ai.CurrentProviderId)
             || _config.Ai.Providers.All(provider => provider.Id != _config.Ai.CurrentProviderId))
         {
