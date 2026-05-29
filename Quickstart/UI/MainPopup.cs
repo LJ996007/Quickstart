@@ -21,6 +21,11 @@ public sealed class MainPopup : Form
     private readonly ListView _listView;
     private readonly ImageList _imageList;
     private Image? _webEntryImage;
+    private readonly FaviconService _faviconService = new();
+    // 统一存放高分辨率原图，自绘时再用高质量插值缩放到统一尺寸，保证图标大小/清晰度一致
+    private readonly Dictionary<string, Image> _iconImages = new(StringComparer.OrdinalIgnoreCase);
+    private int _iconRenderSize;
+    private const int IconSourceSize = 48;
     private readonly System.Windows.Forms.Timer _debounceTimer;
     private readonly Label[] _tabLabels;
     private readonly TableLayoutPanel _tabLayout;
@@ -616,13 +621,16 @@ public sealed class MainPopup : Form
     private void UpdateImageList()
     {
         var iconSize = UiScaleHelper.GetIconSize(this, 20);
-        if (_imageList.ImageSize.Width == iconSize && _webEntryImage?.Width == iconSize)
+        _iconRenderSize = iconSize;
+        if (_imageList.ImageSize.Width == iconSize)
             return;
 
+        // ImageList 仅用于撑起行高；实际绘制用 _iconImages 的高分原图
         _imageList.ImageSize = new Size(iconSize, iconSize);
         _imageList.Images.Clear();
-        _webEntryImage?.Dispose();
-        _webEntryImage = LoadWebEntryImage(iconSize);
+        _iconImages.Clear();
+        // 通用网页占位图按固定高分辨率生成一次，缩放交给自绘
+        _webEntryImage ??= LoadWebEntryImage(IconSourceSize);
 
         if (IsHandleCreated)
             RefreshList();
@@ -986,6 +994,7 @@ public sealed class MainPopup : Form
         if (ShowChildDialog(form) == DialogResult.OK)
         {
             _configManager.UpdateEntry(entry);
+            RemoveCachedIcon(CustomIconKey(entry.Id)); // 图标可能已更改，丢弃旧缓存
             ReconcileActiveGroup();
             RefreshList();
             SelectEntryById(entry.Id);
@@ -1017,6 +1026,8 @@ public sealed class MainPopup : Form
         if (result == DialogResult.Yes)
         {
             _configManager.RemoveEntry(entry.Id);
+            CustomIconStore.Remove(entry.Id);
+            RemoveCachedIcon(CustomIconKey(entry.Id));
             ReconcileActiveGroup();
             RefreshList();
         }
@@ -1203,7 +1214,7 @@ public sealed class MainPopup : Form
             entries = entries.OrderBy(e => e.SortOrder).ToList();
         }
 
-        var useLargeIcon = _imageList.ImageSize.Width > 20;
+        var faviconsToLoad = new List<string>();
 
         _listView.BeginUpdate();
         _listView.Items.Clear();
@@ -1212,38 +1223,52 @@ public sealed class MainPopup : Form
         {
             string? iconKey;
             if (entry.Type == EntryType.Url)
-                iconKey = _webEntryImage != null ? "<URL_CUSTOM>" : ".url";
+            {
+                var customKey = CustomIconKey(entry.Id);
+                if (!string.IsNullOrEmpty(entry.CustomIconPath) && EnsureCustomIcon(customKey, entry.CustomIconPath))
+                {
+                    // 用户自定义图标优先
+                    iconKey = customKey;
+                }
+                else
+                {
+                    // 否则使用已缓存的网站图标，未命中则用通用图标占位并触发后台加载
+                    var host = FaviconService.GetHost(entry.Path);
+                    var favicon = host != null ? _faviconService.TryGetCached(entry.Path) : null;
+                    if (favicon != null && host != null)
+                    {
+                        iconKey = FaviconKey(host);
+                        RegisterIcon(iconKey, favicon);
+                    }
+                    else if (_webEntryImage != null)
+                    {
+                        iconKey = "<URL_CUSTOM>";
+                        RegisterIcon(iconKey, _webEntryImage);
+                        if (host != null) faviconsToLoad.Add(entry.Path);
+                    }
+                    else
+                    {
+                        iconKey = ".url";
+                        if (!_iconImages.ContainsKey(iconKey))
+                            RegisterIcon(iconKey, IconExtractor.GetIcon(".url", isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                        if (host != null) faviconsToLoad.Add(entry.Path);
+                    }
+                }
+            }
             else if (entry.Type == EntryType.Text)
                 iconKey = null;
             else if (entry.Type == EntryType.Folder)
+            {
                 iconKey = "<DIR>";
+                if (!_iconImages.ContainsKey(iconKey))
+                    RegisterIcon(iconKey, IconExtractor.GetIcon(entry.Path, isDirectory: true, useLargeIcon: true)?.ToBitmap());
+            }
             else
             {
                 iconKey = Path.GetExtension(entry.Path).ToLowerInvariant();
                 if (string.IsNullOrEmpty(iconKey)) iconKey = "<NOEXT>";
-            }
-
-            if (!string.IsNullOrEmpty(iconKey) && !_imageList.Images.ContainsKey(iconKey))
-            {
-                if (entry.Type == EntryType.Url)
-                {
-                    if (_webEntryImage != null)
-                    {
-                        _imageList.Images.Add(iconKey, _webEntryImage);
-                    }
-                    else
-                    {
-                        var icon = IconExtractor.GetIcon(iconKey, isDirectory: false, useLargeIcon);
-                        if (icon != null)
-                            _imageList.Images.Add(iconKey, icon);
-                    }
-                }
-                else
-                {
-                    var icon = IconExtractor.GetIcon(entry.Path, entry.Type == EntryType.Folder, useLargeIcon);
-                    if (icon != null)
-                        _imageList.Images.Add(iconKey, icon);
-                }
+                if (!_iconImages.ContainsKey(iconKey))
+                    RegisterIcon(iconKey, IconExtractor.GetIcon(entry.Path, isDirectory: false, useLargeIcon: true)?.ToBitmap());
             }
 
             var item = string.IsNullOrEmpty(iconKey)
@@ -1265,6 +1290,95 @@ public sealed class MainPopup : Form
 
         _countLabel.Text = $"{entries.Count} 项";
         UpdateListColumnWidth();
+
+        foreach (var url in faviconsToLoad.Distinct(StringComparer.OrdinalIgnoreCase))
+            _ = LoadFaviconAsync(url);
+    }
+
+    private static string FaviconKey(string host) => "<FAV:" + host + ">";
+
+    // 登记一张原图：_iconImages 供自绘高质量缩放，_imageList 仅用于撑行高
+    private void RegisterIcon(string key, Image? image)
+    {
+        if (image == null || _iconImages.ContainsKey(key))
+            return;
+
+        _iconImages[key] = image;
+        if (!_imageList.Images.ContainsKey(key))
+            _imageList.Images.Add(key, image);
+    }
+
+    private static string CustomIconKey(string id) => "<CUSTOM:" + id + ">";
+
+    private bool EnsureCustomIcon(string key, string path)
+    {
+        if (_iconImages.ContainsKey(key))
+            return true;
+
+        var image = CustomIconStore.TryLoad(path);
+        if (image == null)
+            return false;
+
+        RegisterIcon(key, image);
+        return true;
+    }
+
+    // 清除某个 key 的图标缓存（编辑/删除后强制重新加载）
+    private void RemoveCachedIcon(string key)
+    {
+        if (_iconImages.Remove(key, out var image))
+            image?.Dispose();
+
+        if (_imageList.Images.ContainsKey(key))
+            _imageList.Images.RemoveByKey(key);
+    }
+
+    private async Task LoadFaviconAsync(string url)
+    {
+        try
+        {
+            var favicon = await _faviconService.GetFaviconAsync(url);
+            if (favicon == null || IsDisposed || !IsHandleCreated)
+                return;
+
+            var host = FaviconService.GetHost(url);
+            if (host == null)
+                return;
+
+            if (InvokeRequired)
+                BeginInvoke(() => ApplyFaviconToItems(host, favicon));
+            else
+                ApplyFaviconToItems(host, favicon);
+        }
+        catch
+        {
+            // 加载失败保持通用图标即可
+        }
+    }
+
+    private void ApplyFaviconToItems(string host, Image favicon)
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+
+        var key = FaviconKey(host);
+        RegisterIcon(key, favicon);
+
+        var changed = false;
+        foreach (ListViewItem item in _listView.Items)
+        {
+            if (item.Tag is QuickEntry entry
+                && entry.Type == EntryType.Url
+                && string.Equals(FaviconService.GetHost(entry.Path), host, StringComparison.OrdinalIgnoreCase)
+                && item.ImageKey != key)
+            {
+                item.ImageKey = key;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            _listView.Invalidate();
     }
 
     // 匹配质量分级，数值越小越靠前
@@ -1438,23 +1552,29 @@ public sealed class MainPopup : Form
         var bounds = e.Bounds;
 
         int textX = bounds.X + UiScaleHelper.Scale(this, 2);
-        if (e.ColumnIndex == 0 && _listView.SmallImageList is { } imgList)
+        if (e.ColumnIndex == 0)
         {
-            bool drewIcon = false;
             var key = item.ImageKey;
-            if (!string.IsNullOrEmpty(key) && imgList.Images.ContainsKey(key))
+            if (!string.IsNullOrEmpty(key) && _iconImages.TryGetValue(key, out var img) && img != null)
             {
-                var img = imgList.Images[key];
-                if (img != null)
-                {
-                    int iconY = bounds.Y + (bounds.Height - imgList.ImageSize.Height) / 2;
-                    g.DrawImage(img, textX, iconY, imgList.ImageSize.Width, imgList.ImageSize.Height);
-                    drewIcon = true;
-                }
-            }
+                // 所有图标统一占用同一目标边长的方形槽位，等比缩放并居中，用高质量插值，
+                // 保证大小一致、清晰、不变形
+                var target = _iconRenderSize > 0 ? _iconRenderSize : _imageList.ImageSize.Width;
+                var fit = Math.Min((double)target / img.Width, (double)target / img.Height);
+                int dw = Math.Max(1, (int)Math.Round(img.Width * fit));
+                int dh = Math.Max(1, (int)Math.Round(img.Height * fit));
+                int dx = textX + (target - dw) / 2;
+                int dy = bounds.Y + (bounds.Height - dh) / 2;
 
-            if (drewIcon)
-                textX += imgList.ImageSize.Width + UiScaleHelper.Scale(this, 4);
+                var prevInterp = g.InterpolationMode;
+                var prevOffset = g.PixelOffsetMode;
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                g.DrawImage(img, new Rectangle(dx, dy, dw, dh));
+                g.InterpolationMode = prevInterp;
+                g.PixelOffsetMode = prevOffset;
+                textX += target + UiScaleHelper.Scale(this, 4);
+            }
         }
 
         var textColor = item.Selected ? Color.FromArgb(59, 130, 246) : item.ForeColor;
@@ -1831,5 +1951,19 @@ public sealed class MainPopup : Form
         base.OnPaintBackground(e);
         using var pen = new Pen(Color.FromArgb(220, 220, 220));
         e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _faviconService.Dispose();
+            foreach (var image in _iconImages.Values)
+                image?.Dispose();
+            _iconImages.Clear();
+            _webEntryImage?.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 }
