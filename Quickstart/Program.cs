@@ -74,9 +74,15 @@ static class Program
         }
 
         var launcher = new ProcessLauncher(configManager);
+        var aiClient = new AiClient();
+        var aiInputCapture = new AiInputCaptureService();
+        var aiFileReader = new AiFileContentReader();
 
         // UI
         MainPopup? mainPopup = null;
+        AiPopup? aiPopup = null;
+        AiActionPickerPopup? aiActionPicker = null;
+        IntPtr aiGestureSourceWindow = IntPtr.Zero;
         var trayIcon = new TrayIcon();
 
         MainPopup EnsureMainPopup()
@@ -91,6 +97,29 @@ static class Program
             return mainPopup;
         }
 
+        AiPopup EnsureAiPopup()
+        {
+            if (aiPopup == null || aiPopup.IsDisposed)
+            {
+                aiPopup = new AiPopup(configManager, aiInputCapture, aiFileReader, aiClient);
+                aiPopup.ShowAiSettings += ShowAiSettings;
+                _ = aiPopup.Handle;
+            }
+
+            return aiPopup;
+        }
+
+        AiActionPickerPopup EnsureAiActionPicker()
+        {
+            if (aiActionPicker == null || aiActionPicker.IsDisposed)
+            {
+                aiActionPicker = new AiActionPickerPopup(configManager);
+                _ = aiActionPicker.Handle;
+            }
+
+            return aiActionPicker;
+        }
+
         trayIcon.ShowMainWindow += () =>
         {
             var popup = EnsureMainPopup();
@@ -101,10 +130,12 @@ static class Program
         };
 
         trayIcon.ShowSettings += ShowSettings;
+        trayIcon.ShowAiSettings += () => ShowAiSettings(null);
 
         trayIcon.ExitRequested += () =>
         {
             trayIcon.Dispose();
+            aiClient.Dispose();
             Application.Exit();
         };
 
@@ -134,26 +165,69 @@ static class Program
 
         // Global right-drag gesture: hold right button, drag right to show popup
         var mouseHook = new GlobalMouseHook();
-        mouseHook.GestureTriggered += pt =>
+        mouseHook.GestureTriggered += (direction, pt, sourceWindow) =>
         {
-            var popup = EnsureMainPopup();
-            popup.ShowAtGesturePoint(pt);
+            if (direction == RightDragDirection.Left)
+            {
+                if (mainPopup is { Visible: true }) mainPopup.Hide();
+                if (aiPopup is { Visible: true }) aiPopup.Hide();
+
+                aiGestureSourceWindow = sourceWindow;
+                var picker = EnsureAiActionPicker();
+                picker.ShowAtGesturePoint(pt);
+                if (!picker.HasActions)
+                    EnsureAiPopup().ShowAtGesturePoint(pt, sourceWindow);
+            }
+            else
+            {
+                if (aiPopup is { Visible: true }) aiPopup.Hide();
+                if (aiActionPicker is { Visible: true }) aiActionPicker.Hide();
+                EnsureMainPopup().ShowAtGesturePoint(pt);
+            }
         };
-        mouseHook.GestureMove += pt =>
+        mouseHook.GestureMove += (direction, pt) =>
         {
-            if (mainPopup is { Visible: true })
+            if (direction == RightDragDirection.Right && mainPopup is { Visible: true })
                 mainPopup.HighlightAtScreenPoint(pt);
+            else if (direction == RightDragDirection.Left && aiActionPicker is { Visible: true })
+                aiActionPicker.HighlightAtScreenPoint(pt);
         };
-        mouseHook.GestureReleased += pt =>
+        mouseHook.GestureReleased += (direction, pt) =>
         {
-            if (mainPopup is { Visible: true })
+            if (direction == RightDragDirection.Right && mainPopup is { Visible: true })
                 mainPopup.TryReleaseAtScreenPoint(pt);
+            else if (direction == RightDragDirection.Left && aiActionPicker is { Visible: true })
+            {
+                var selection = aiActionPicker.TryReleaseAtScreenPoint(pt);
+                if (selection != null)
+                    EnsureAiPopup().ShowForSelectedAction(pt, aiGestureSourceWindow, selection, autoRun: true);
+            }
         };
         mouseHook.GestureCancelled += () =>
         {
             if (mainPopup is { Visible: true }) mainPopup.Hide();
+            if (aiActionPicker is { Visible: true }) aiActionPicker.Hide();
         };
-        Application.ApplicationExit += (_, _) => mouseHook.Dispose();
+        Application.ApplicationExit += (_, _) =>
+        {
+            mouseHook.Dispose();
+            aiClient.Dispose();
+            configManager.Dispose(); // 落盘任何挂起的防抖写入
+        };
+
+        var aiPopupPrewarmed = false;
+        Application.Idle += PrewarmAiPopup;
+
+        void PrewarmAiPopup(object? sender, EventArgs e)
+        {
+            if (aiPopupPrewarmed)
+                return;
+
+            aiPopupPrewarmed = true;
+            Application.Idle -= PrewarmAiPopup;
+            _ = EnsureAiPopup();
+            _ = EnsureAiActionPicker();
+        }
 
         // Run without a main form — tray icon keeps the app alive
         Application.Run();
@@ -161,7 +235,25 @@ static class Program
         void ShowSettings()
         {
             using var settingsForm = new SettingsForm(configManager);
-            settingsForm.ShowDialog();
+            DialogPresenter.ShowModal(settingsForm);
+        }
+
+        void ShowAiSettings(Form? owner)
+        {
+            using var settingsForm = new AiSettingsForm(configManager);
+            try
+            {
+                DialogPresenter.ShowModal(settingsForm, owner);
+            }
+            finally
+            {
+                if (aiPopup is { IsDisposed: false })
+                {
+                    aiPopup.RefreshSelectors();
+                    if (owner is AiPopup)
+                        aiPopup.Activate();
+                }
+            }
         }
     }
 }

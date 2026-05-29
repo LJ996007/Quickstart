@@ -7,12 +7,13 @@ using Quickstart.Utils;
 
 public sealed class MainPopup : Form
 {
-    private enum TabKind { Files, Urls, Texts }
+    private enum TabKind { Folders, Files, Urls, Texts }
 
     private static readonly Size ExpandedPopupLogicalSize = new(380, 440);
     private static readonly Size MinimumExpandedPopupLogicalSize = new(300, 340);
     private const int CollapsedPopupHeightDeltaLogical = 28;
     private const string AllGroupsLabel = "全部";
+    private const string EntryReorderDataFormat = "Quickstart.EntryReorder";
 
     private readonly ConfigManager _configManager;
     private readonly ProcessLauncher _launcher;
@@ -20,6 +21,11 @@ public sealed class MainPopup : Form
     private readonly ListView _listView;
     private readonly ImageList _imageList;
     private Image? _webEntryImage;
+    private readonly FaviconService _faviconService = new();
+    // 统一存放高分辨率原图，自绘时再用高质量插值缩放到统一尺寸，保证图标大小/清晰度一致
+    private readonly Dictionary<string, Image> _iconImages = new(StringComparer.OrdinalIgnoreCase);
+    private int _iconRenderSize;
+    private const int IconSourceSize = 48;
     private readonly System.Windows.Forms.Timer _debounceTimer;
     private readonly Label[] _tabLabels;
     private readonly TableLayoutPanel _tabLayout;
@@ -35,13 +41,17 @@ public sealed class MainPopup : Form
     private readonly TableLayoutPanel _toolbarLayout;
     private readonly Button _addButton;
     private readonly Button _settingsButton;
+    private readonly ToolTip _toolTip = new();
     private readonly Label _countLabel;
     private readonly Panel _listHost;
     private readonly Panel _tabSeparator;
     private readonly Panel _groupSeparator;
-    private TabKind _activeTab = TabKind.Files;
+    private TabKind _activeTab = TabKind.Folders;
     private string _activeGroup = AllGroupsLabel;
     private bool _isSearchExpanded;
+    private List<string>? _lastGroupSignature;
+    private readonly Dictionary<(string Text, int Width), string> _truncateCache = new();
+    private bool _suppressAutoHide;
 
     public event Action? ShowSettings;
 
@@ -91,7 +101,7 @@ public sealed class MainPopup : Form
         {
             Dock = DockStyle.Fill,
             Font = new Font("Segoe UI", 11f),
-            PlaceholderText = "搜索文件夹或文件... (拼音首字母也可)",
+            PlaceholderText = "搜索文件夹... (拼音首字母也可)",
             BorderStyle = BorderStyle.None,
             Margin = new Padding(0),
             BackColor = Color.White
@@ -185,23 +195,23 @@ public sealed class MainPopup : Form
         _listHost.Controls.Add(_listView);
         _listHost.Controls.Add(_toastLabel);
 
-        _tabLabels = new Label[3];
+        _tabLabels = new Label[4];
         _tabLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 4,
+            RowCount = 5,
             Margin = new Padding(0),
             Padding = new Padding(0),
             BackColor = Color.FromArgb(240, 240, 240)
         };
         _tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 3; i++)
-            _tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 56));
+        for (int i = 0; i < 4; i++)
+            _tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
         _tabLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        string[] tabTexts = ["文\n件", "网\n页", "文\n本"];
-        TabKind[] tabKinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
+        string[] tabTexts = ["文\n件\n夹", "文\n件", "网\n页", "文\n本"];
+        TabKind[] tabKinds = [TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts];
         for (int i = 0; i < tabTexts.Length; i++)
         {
             var kind = tabKinds[i];
@@ -267,22 +277,11 @@ public sealed class MainPopup : Form
         contentLayout.Controls.Add(_groupSeparator, 3, 0);
         contentLayout.Controls.Add(_groupLayout, 4, 0);
 
-        _addButton = new RoundedButton
-        {
-            Text = "+ 添加",
-            Font = new Font("Segoe UI", 9f),
-            Margin = new Padding(0)
-        };
-        ButtonStyler.ApplyPrimary(_addButton);
+        _addButton = CreateToolbarIconButton("\uE710", "添加");
         _addButton.Click += (_, _) => AddNewEntry();
 
-        _settingsButton = new RoundedButton
-        {
-            Text = "设置",
-            Font = new Font("Segoe UI", 9f),
-            Margin = new Padding(8, 0, 0, 0)
-        };
-        ButtonStyler.ApplySecondary(_settingsButton);
+        _settingsButton = CreateToolbarIconButton("\uE713", "设置");
+        _settingsButton.Margin = new Padding(4, 0, 0, 0);
         _settingsButton.Click += (_, _) => ShowSettings?.Invoke();
 
         _countLabel = new Label
@@ -348,6 +347,8 @@ public sealed class MainPopup : Form
             if (_listView.SelectedItems.Count > 0)
                 OpenSelectedEntry();
         };
+
+        _listView.ItemDrag += OnListItemDrag;
 
         _listView.KeyDown += (_, e) =>
         {
@@ -424,6 +425,7 @@ public sealed class MainPopup : Form
         DragEnter += OnDragEnter;
         DragDrop += OnDragDrop;
         _listView.DragEnter += OnDragEnter;
+        _listView.DragOver += OnDragOver;
         _listView.DragDrop += OnDragDrop;
 
         Resize += (_, _) =>
@@ -440,12 +442,39 @@ public sealed class MainPopup : Form
 
         Deactivate += (_, _) =>
         {
-            if (Visible) Hide();
+            // 打开编辑/删除等子对话框期间不自动隐藏，方便连续编辑多个条目
+            if (Visible && !_suppressAutoHide) Hide();
         };
+    }
+
+    private Button CreateToolbarIconButton(string glyph, string tooltip)
+    {
+        var button = new Button
+        {
+            Text = glyph,
+            AccessibleName = tooltip,
+            Font = new Font("Segoe MDL2 Assets", 10f),
+            TextAlign = ContentAlignment.MiddleCenter,
+            FlatStyle = FlatStyle.Flat,
+            BackColor = Color.FromArgb(245, 245, 245),
+            ForeColor = Color.FromArgb(75, 75, 75),
+            UseVisualStyleBackColor = false,
+            Cursor = Cursors.Hand,
+            Margin = new Padding(0),
+            TabStop = false
+        };
+        button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(232, 238, 246);
+        button.FlatAppearance.MouseDownBackColor = Color.FromArgb(218, 230, 246);
+        _toolTip.SetToolTip(button, tooltip);
+        return button;
     }
 
     private void ApplyScaledMetrics()
     {
+        // 字体/DPI 变化会使按 (文本,宽度) 缓存的截断结果失效
+        _truncateCache.Clear();
+
         var separatorWidth = Math.Max(1, UiScaleHelper.Scale(this, 1));
         _separatorPanel.Height = separatorWidth;
         _separatorPanel.MinimumSize = new Size(0, separatorWidth);
@@ -475,15 +504,16 @@ public sealed class MainPopup : Form
         UpdateSearchIndicatorBounds();
         UpdateSearchPresentation();
 
-        var toolbarHorizontalPadding = UiScaleHelper.Scale(this, 3);
-        var toolbarVerticalPadding = 6;
+        var toolbarHorizontalPadding = UiScaleHelper.Scale(this, 6);
+        var toolbarVerticalPadding = UiScaleHelper.Scale(this, 4);
         _toolbarLayout.Padding = new Padding(
             toolbarHorizontalPadding,
             toolbarVerticalPadding,
             toolbarHorizontalPadding,
             toolbarVerticalPadding);
-        _addButton.Size = UiScaleHelper.GetButtonSize(this, _addButton.Text, _addButton.Font, 84, 24, horizontalLogicalPadding: 8, verticalLogicalPadding: 3);
-        _settingsButton.Size = UiScaleHelper.GetButtonSize(this, _settingsButton.Text, _settingsButton.Font, 72, 24, horizontalLogicalPadding: 8, verticalLogicalPadding: 3);
+        var toolbarButtonSize = UiScaleHelper.Scale(this, 28);
+        _addButton.Size = new Size(toolbarButtonSize, toolbarButtonSize);
+        _settingsButton.Size = new Size(toolbarButtonSize, toolbarButtonSize);
         _countLabel.MinimumSize = new Size(UiScaleHelper.Scale(this, 64), Math.Max(_addButton.Height, _settingsButton.Height));
         _countLabel.Margin = new Padding(UiScaleHelper.Scale(this, 8), 0, 0, 0);
         _countLabel.Padding = new Padding(0);
@@ -591,13 +621,16 @@ public sealed class MainPopup : Form
     private void UpdateImageList()
     {
         var iconSize = UiScaleHelper.GetIconSize(this, 20);
-        if (_imageList.ImageSize.Width == iconSize && _webEntryImage?.Width == iconSize)
+        _iconRenderSize = iconSize;
+        if (_imageList.ImageSize.Width == iconSize)
             return;
 
+        // ImageList 仅用于撑起行高；实际绘制用 _iconImages 的高分原图
         _imageList.ImageSize = new Size(iconSize, iconSize);
         _imageList.Images.Clear();
-        _webEntryImage?.Dispose();
-        _webEntryImage = LoadWebEntryImage(iconSize);
+        _iconImages.Clear();
+        // 通用网页占位图按固定高分辨率生成一次，缩放交给自绘
+        _webEntryImage ??= LoadWebEntryImage(IconSourceSize);
 
         if (IsHandleCreated)
             RefreshList();
@@ -676,7 +709,7 @@ public sealed class MainPopup : Form
 
     private void ApplyTabStyles()
     {
-        TabKind[] kinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
+        TabKind[] kinds = [TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts];
         for (int i = 0; i < _tabLabels.Length; i++)
         {
             bool active = kinds[i] == _activeTab;
@@ -700,11 +733,50 @@ public sealed class MainPopup : Form
     {
         _searchBox.PlaceholderText = _activeTab switch
         {
-            TabKind.Files => "搜索文件夹或文件... (拼音首字母也可)",
+            TabKind.Folders => "搜索文件夹... (拼音首字母也可)",
+            TabKind.Files => "搜索要打开的文件... (拼音首字母也可)",
             TabKind.Urls => "搜索网页...",
             TabKind.Texts => "搜索文本...",
             _ => "搜索..."
         };
+    }
+
+    // 打开子对话框时保持主弹窗可见（抑制失焦自动隐藏），关闭后重新激活，便于连续编辑
+    private DialogResult ShowChildDialog(Form dialog)
+    {
+        _suppressAutoHide = true;
+        try
+        {
+            return DialogPresenter.ShowModal(dialog, this);
+        }
+        finally
+        {
+            _suppressAutoHide = false;
+            ReactivateAfterChildDialog();
+        }
+    }
+
+    private void ReactivateAfterChildDialog()
+    {
+        if (!Visible)
+            return;
+
+        Activate();
+        if (_listView.Items.Count > 0)
+            _listView.Focus();
+    }
+
+    // 按条目类型汇总各自已有的分组名，供编辑对话框下拉选择
+    private Dictionary<EntryType, List<string>> BuildGroupSuggestions()
+    {
+        var result = new Dictionary<EntryType, List<string>>();
+        foreach (var type in new[] { EntryType.Folder, EntryType.File, EntryType.Url, EntryType.Text })
+        {
+            var entries = _configManager.Config.Entries.Where(e => e.Type == type);
+            result[type] = GetOrderedGroupNames(entries).ToList();
+        }
+
+        return result;
     }
 
     private ContextMenuStrip BuildItemContextMenu()
@@ -813,7 +885,7 @@ public sealed class MainPopup : Form
 
     public void ShowPopup()
     {
-        ShowPopup(TabKind.Files);
+        ShowPopup(TabKind.Folders);
     }
 
     private void ShowPopup(TabKind kind, bool focusList = true)
@@ -839,7 +911,8 @@ public sealed class MainPopup : Form
         {
             if (!QuickstartProtocol.TryParseAddUrlRequest(request, out var addUrlRequest) || addUrlRequest == null)
             {
-                MessageBox.Show(
+                DialogPresenter.ShowMessage(
+                    this,
                     "无效的网站添加请求。",
                     "Quickstart",
                     MessageBoxButtons.OK,
@@ -860,6 +933,9 @@ public sealed class MainPopup : Form
         var isFile = File.Exists(path);
         if (!isDir && !isFile) return;
 
+        if (TryFocusExistingEntry(path, showDuplicateToast: true))
+            return;
+
         var entry = new QuickEntry
         {
             Name = Path.GetFileName(path),
@@ -867,13 +943,10 @@ public sealed class MainPopup : Form
             Type = isDir ? EntryType.Folder : EntryType.File
         };
 
-        using var form = new EntryEditForm(entry);
-        if (form.ShowDialog(this) == DialogResult.OK)
-        {
-            _configManager.AddEntry(entry);
-            ReconcileActiveGroup();
-            RefreshList();
-        }
+        ShowPopup(GetTabKind(entry.Type), focusList: false);
+        using var form = new EntryEditForm(entry, BuildGroupSuggestions());
+        if (ShowChildDialog(form) == DialogResult.OK)
+            AddEntryAndFocus(entry);
     }
 
     public void AddUrlEntry(string url, string title)
@@ -890,14 +963,9 @@ public sealed class MainPopup : Form
             Type = EntryType.Url
         };
 
-        using var form = new EntryEditForm(entry);
-        if (form.ShowDialog(this) == DialogResult.OK)
-        {
-            _configManager.AddEntry(entry);
-            ReconcileActiveGroup();
-            ShowPopup(TabKind.Urls);
-            SelectEntryById(entry.Id);
-        }
+        using var form = new EntryEditForm(entry, BuildGroupSuggestions());
+        if (ShowChildDialog(form) == DialogResult.OK)
+            AddEntryAndFocus(entry);
     }
 
     private void AddNewEntry()
@@ -906,18 +974,15 @@ public sealed class MainPopup : Form
         {
             Type = _activeTab switch
             {
+                TabKind.Files => EntryType.File,
                 TabKind.Urls => EntryType.Url,
                 TabKind.Texts => EntryType.Text,
                 _ => EntryType.Folder
             }
         };
-        using var form = new EntryEditForm(entry);
-        if (form.ShowDialog(this) == DialogResult.OK)
-        {
-            _configManager.AddEntry(entry);
-            ReconcileActiveGroup();
-            RefreshList();
-        }
+        using var form = new EntryEditForm(entry, BuildGroupSuggestions());
+        if (ShowChildDialog(form) == DialogResult.OK)
+            AddEntryAndFocus(entry);
     }
 
     private void EditSelectedEntry()
@@ -925,12 +990,14 @@ public sealed class MainPopup : Form
         var entry = GetSelectedEntry();
         if (entry == null) return;
 
-        using var form = new EntryEditForm(entry);
-        if (form.ShowDialog(this) == DialogResult.OK)
+        using var form = new EntryEditForm(entry, BuildGroupSuggestions());
+        if (ShowChildDialog(form) == DialogResult.OK)
         {
             _configManager.UpdateEntry(entry);
+            RemoveCachedIcon(CustomIconKey(entry.Id)); // 图标可能已更改，丢弃旧缓存
             ReconcileActiveGroup();
             RefreshList();
+            SelectEntryById(entry.Id);
         }
     }
 
@@ -939,15 +1006,28 @@ public sealed class MainPopup : Form
         var entry = GetSelectedEntry();
         if (entry == null) return;
 
-        var result = MessageBox.Show(
-            $"确定要删除 \"{entry.Name}\" 吗？",
-            "确认删除",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Question);
+        DialogResult result;
+        _suppressAutoHide = true;
+        try
+        {
+            result = DialogPresenter.ShowMessage(
+                this,
+                $"确定要删除 \"{entry.Name}\" 吗？",
+                "确认删除",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Question);
+        }
+        finally
+        {
+            _suppressAutoHide = false;
+            ReactivateAfterChildDialog();
+        }
 
         if (result == DialogResult.Yes)
         {
             _configManager.RemoveEntry(entry.Id);
+            CustomIconStore.Remove(entry.Id);
+            RemoveCachedIcon(CustomIconKey(entry.Id));
             ReconcileActiveGroup();
             RefreshList();
         }
@@ -997,22 +1077,83 @@ public sealed class MainPopup : Form
         _toastTimer.Start();
     }
 
+    private void AddEntryAndFocus(QuickEntry entry)
+    {
+        if (_configManager.AddEntry(entry))
+        {
+            FocusEntry(entry);
+            return;
+        }
+
+        var existing = FindEntryByPath(entry.Path);
+        if (existing != null)
+        {
+            FocusEntry(existing, GetDuplicateMessage(existing));
+            return;
+        }
+
+        ShowToast("该项目已存在");
+    }
+
     private bool TryFocusExistingUrl(string url, bool showDuplicateToast)
     {
         var existing = FindEntryByPath(url, EntryType.Url);
         if (existing == null)
             return false;
 
-        ShowPopup(TabKind.Urls);
-        SelectEntryById(existing.Id);
-        if (showDuplicateToast)
-            ShowToast("该网站已存在");
+        FocusEntry(existing, showDuplicateToast ? "该网站已存在" : null);
         return true;
     }
 
-    private QuickEntry? FindEntryByPath(string path, EntryType type)
+    private bool TryFocusExistingEntry(string path, bool showDuplicateToast)
+    {
+        var existing = FindEntryByPath(path);
+        if (existing == null)
+            return false;
+
+        FocusEntry(existing, showDuplicateToast ? GetDuplicateMessage(existing) : null);
+        return true;
+    }
+
+    private void FocusEntry(QuickEntry entry, string? toastMessage = null)
+    {
+        _activeTab = GetTabKind(entry.Type);
+        _activeGroup = AllGroupsLabel;
+        _searchBox.Clear();
+        SetSearchExpanded(false);
+        ApplyTabStyles();
+        UpdateSearchPlaceholder();
+        EnsurePopupSizeForScreen(Screen.PrimaryScreen ?? Screen.FromPoint(Cursor.Position));
+        RefreshList();
+
+        if (!Visible)
+        {
+            PositionNearTray();
+            Show();
+            Activate();
+        }
+
+        SelectEntryById(entry.Id);
+        if (!string.IsNullOrWhiteSpace(toastMessage))
+            ShowToast(toastMessage);
+    }
+
+    private static TabKind GetTabKind(EntryType type)
+        => type switch
+        {
+            EntryType.File => TabKind.Files,
+            EntryType.Url => TabKind.Urls,
+            EntryType.Text => TabKind.Texts,
+            _ => TabKind.Folders
+        };
+
+    private static string GetDuplicateMessage(QuickEntry entry)
+        => entry.Type == EntryType.Url ? "该网站已存在" : "该项目已存在";
+
+    private QuickEntry? FindEntryByPath(string path, EntryType? type = null)
         => _configManager.Config.Entries.FirstOrDefault(e =>
-            e.Type == type && string.Equals(e.Path, path, StringComparison.OrdinalIgnoreCase));
+            (!type.HasValue || e.Type == type.Value)
+            && string.Equals(e.Path, path, StringComparison.OrdinalIgnoreCase));
 
     private bool SelectEntryById(string id)
     {
@@ -1060,15 +1201,20 @@ public sealed class MainPopup : Form
 
         if (!string.IsNullOrEmpty(query))
         {
+            // 命中项按匹配质量排序（前缀 > 子串 > 路径子串 > 仅拼音），同级再按用户排序
             entries = entries
                 .Where(e => PinyinHelper.MatchesPinyin(e.Name, query)
                     || PinyinHelper.MatchesPinyin(e.Path, query))
+                .OrderBy(e => GetMatchRank(e, query))
+                .ThenBy(e => e.SortOrder)
                 .ToList();
         }
+        else
+        {
+            entries = entries.OrderBy(e => e.SortOrder).ToList();
+        }
 
-        entries = entries.OrderBy(e => e.SortOrder).ToList();
-
-        var useLargeIcon = _imageList.ImageSize.Width > 20;
+        var faviconsToLoad = new List<string>();
 
         _listView.BeginUpdate();
         _listView.Items.Clear();
@@ -1077,38 +1223,52 @@ public sealed class MainPopup : Form
         {
             string? iconKey;
             if (entry.Type == EntryType.Url)
-                iconKey = _webEntryImage != null ? "<URL_CUSTOM>" : ".url";
+            {
+                var customKey = CustomIconKey(entry.Id);
+                if (!string.IsNullOrEmpty(entry.CustomIconPath) && EnsureCustomIcon(customKey, entry.CustomIconPath))
+                {
+                    // 用户自定义图标优先
+                    iconKey = customKey;
+                }
+                else
+                {
+                    // 否则使用已缓存的网站图标，未命中则用通用图标占位并触发后台加载
+                    var host = FaviconService.GetHost(entry.Path);
+                    var favicon = host != null ? _faviconService.TryGetCached(entry.Path) : null;
+                    if (favicon != null && host != null)
+                    {
+                        iconKey = FaviconKey(host);
+                        RegisterIcon(iconKey, favicon);
+                    }
+                    else if (_webEntryImage != null)
+                    {
+                        iconKey = "<URL_CUSTOM>";
+                        RegisterIcon(iconKey, _webEntryImage);
+                        if (host != null) faviconsToLoad.Add(entry.Path);
+                    }
+                    else
+                    {
+                        iconKey = ".url";
+                        if (!_iconImages.ContainsKey(iconKey))
+                            RegisterIcon(iconKey, IconExtractor.GetIcon(".url", isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                        if (host != null) faviconsToLoad.Add(entry.Path);
+                    }
+                }
+            }
             else if (entry.Type == EntryType.Text)
                 iconKey = null;
             else if (entry.Type == EntryType.Folder)
+            {
                 iconKey = "<DIR>";
+                if (!_iconImages.ContainsKey(iconKey))
+                    RegisterIcon(iconKey, IconExtractor.GetIcon(entry.Path, isDirectory: true, useLargeIcon: true)?.ToBitmap());
+            }
             else
             {
                 iconKey = Path.GetExtension(entry.Path).ToLowerInvariant();
                 if (string.IsNullOrEmpty(iconKey)) iconKey = "<NOEXT>";
-            }
-
-            if (!string.IsNullOrEmpty(iconKey) && !_imageList.Images.ContainsKey(iconKey))
-            {
-                if (entry.Type == EntryType.Url)
-                {
-                    if (_webEntryImage != null)
-                    {
-                        _imageList.Images.Add(iconKey, _webEntryImage);
-                    }
-                    else
-                    {
-                        var icon = IconExtractor.GetIcon(iconKey, isDirectory: false, useLargeIcon);
-                        if (icon != null)
-                            _imageList.Images.Add(iconKey, icon);
-                    }
-                }
-                else
-                {
-                    var icon = IconExtractor.GetIcon(entry.Path, entry.Type == EntryType.Folder, useLargeIcon);
-                    if (icon != null)
-                        _imageList.Images.Add(iconKey, icon);
-                }
+                if (!_iconImages.ContainsKey(iconKey))
+                    RegisterIcon(iconKey, IconExtractor.GetIcon(entry.Path, isDirectory: false, useLargeIcon: true)?.ToBitmap());
             }
 
             var item = string.IsNullOrEmpty(iconKey)
@@ -1130,6 +1290,105 @@ public sealed class MainPopup : Form
 
         _countLabel.Text = $"{entries.Count} 项";
         UpdateListColumnWidth();
+
+        foreach (var url in faviconsToLoad.Distinct(StringComparer.OrdinalIgnoreCase))
+            _ = LoadFaviconAsync(url);
+    }
+
+    private static string FaviconKey(string host) => "<FAV:" + host + ">";
+
+    // 登记一张原图：_iconImages 供自绘高质量缩放，_imageList 仅用于撑行高
+    private void RegisterIcon(string key, Image? image)
+    {
+        if (image == null || _iconImages.ContainsKey(key))
+            return;
+
+        _iconImages[key] = image;
+        if (!_imageList.Images.ContainsKey(key))
+            _imageList.Images.Add(key, image);
+    }
+
+    private static string CustomIconKey(string id) => "<CUSTOM:" + id + ">";
+
+    private bool EnsureCustomIcon(string key, string path)
+    {
+        if (_iconImages.ContainsKey(key))
+            return true;
+
+        var image = CustomIconStore.TryLoad(path);
+        if (image == null)
+            return false;
+
+        RegisterIcon(key, image);
+        return true;
+    }
+
+    // 清除某个 key 的图标缓存（编辑/删除后强制重新加载）
+    private void RemoveCachedIcon(string key)
+    {
+        if (_iconImages.Remove(key, out var image))
+            image?.Dispose();
+
+        if (_imageList.Images.ContainsKey(key))
+            _imageList.Images.RemoveByKey(key);
+    }
+
+    private async Task LoadFaviconAsync(string url)
+    {
+        try
+        {
+            var favicon = await _faviconService.GetFaviconAsync(url);
+            if (favicon == null || IsDisposed || !IsHandleCreated)
+                return;
+
+            var host = FaviconService.GetHost(url);
+            if (host == null)
+                return;
+
+            if (InvokeRequired)
+                BeginInvoke(() => ApplyFaviconToItems(host, favicon));
+            else
+                ApplyFaviconToItems(host, favicon);
+        }
+        catch
+        {
+            // 加载失败保持通用图标即可
+        }
+    }
+
+    private void ApplyFaviconToItems(string host, Image favicon)
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+
+        var key = FaviconKey(host);
+        RegisterIcon(key, favicon);
+
+        var changed = false;
+        foreach (ListViewItem item in _listView.Items)
+        {
+            if (item.Tag is QuickEntry entry
+                && entry.Type == EntryType.Url
+                && string.Equals(FaviconService.GetHost(entry.Path), host, StringComparison.OrdinalIgnoreCase)
+                && item.ImageKey != key)
+            {
+                item.ImageKey = key;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            _listView.Invalidate();
+    }
+
+    // 匹配质量分级，数值越小越靠前
+    private static int GetMatchRank(QuickEntry entry, string query)
+    {
+        var name = entry.Name ?? string.Empty;
+        if (name.StartsWith(query, StringComparison.OrdinalIgnoreCase)) return 0;
+        if (name.Contains(query, StringComparison.OrdinalIgnoreCase)) return 1;
+        if (!string.IsNullOrEmpty(entry.Path) && entry.Path.Contains(query, StringComparison.OrdinalIgnoreCase)) return 2;
+        return 3; // 仅拼音首字母匹配
     }
 
     private List<QuickEntry> GetEntriesForActiveTab()
@@ -1137,7 +1396,8 @@ public sealed class MainPopup : Form
         var entries = _configManager.Config.Entries;
         return _activeTab switch
         {
-            TabKind.Files => entries.Where(e => e.Type is EntryType.Folder or EntryType.File).ToList(),
+            TabKind.Folders => entries.Where(e => e.Type == EntryType.Folder).ToList(),
+            TabKind.Files => entries.Where(e => e.Type == EntryType.File).ToList(),
             TabKind.Urls => entries.Where(e => e.Type == EntryType.Url).ToList(),
             TabKind.Texts => entries.Where(e => e.Type == EntryType.Text).ToList(),
             _ => entries
@@ -1152,6 +1412,15 @@ public sealed class MainPopup : Form
         {
             _activeGroup = AllGroupsLabel;
         }
+
+        // 分组集合（名称+顺序）未变时无需重建 UI。搜索过滤不会改变分组集合
+        // （分组取自整类条目），这能避免每次按键都 Dispose/重建 Label + 重新布局测量。
+        if (_lastGroupSignature != null && _lastGroupSignature.SequenceEqual(groups, StringComparer.Ordinal))
+        {
+            ApplyGroupStyles();
+            return;
+        }
+        _lastGroupSignature = new List<string>(groups);
 
         _groupLayout.SuspendLayout();
         foreach (var label in _groupLabels)
@@ -1174,15 +1443,22 @@ public sealed class MainPopup : Form
     private IEnumerable<string> GetOrderedGroupNames(IEnumerable<QuickEntry> entries)
     {
         var groups = entries
-            .Select(entry => NormalizeGroupName(entry.Group))
-            .Where(group => !string.IsNullOrEmpty(group))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .Select(group =>
+            .Select((entry, index) => new
             {
-                _configManager.Config.GroupLastUsedAt.TryGetValue(group, out var lastUsedAt);
-                return new { Name = group, LastUsedAt = lastUsedAt };
+                Entry = entry,
+                Index = index,
+                Group = NormalizeGroupName(entry.Group)
             })
-            .OrderByDescending(item => item.LastUsedAt)
+            .Where(item => !string.IsNullOrEmpty(item.Group))
+            .GroupBy(item => item.Group, StringComparer.OrdinalIgnoreCase)
+            .Select(group => new
+            {
+                Name = group.First().Group,
+                FirstSortOrder = group.Min(item => item.Entry.SortOrder),
+                FirstIndex = group.Min(item => item.Index)
+            })
+            .OrderBy(item => item.FirstSortOrder)
+            .ThenBy(item => item.FirstIndex)
             .ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
             .Select(item => item.Name);
 
@@ -1206,7 +1482,7 @@ public sealed class MainPopup : Form
         _groupLayout.Controls.Add(label);
     }
 
-    private void SwitchGroup(string group, bool rememberUsage = true)
+    private void SwitchGroup(string group)
     {
         if (string.IsNullOrWhiteSpace(group))
             group = AllGroupsLabel;
@@ -1215,9 +1491,6 @@ public sealed class MainPopup : Form
             return;
 
         _activeGroup = group;
-        if (rememberUsage && !string.Equals(group, AllGroupsLabel, StringComparison.OrdinalIgnoreCase))
-            _configManager.TouchGroup(group);
-
         RefreshList();
     }
 
@@ -1279,28 +1552,34 @@ public sealed class MainPopup : Form
         var bounds = e.Bounds;
 
         int textX = bounds.X + UiScaleHelper.Scale(this, 2);
-        if (e.ColumnIndex == 0 && _listView.SmallImageList is { } imgList)
+        if (e.ColumnIndex == 0)
         {
-            bool drewIcon = false;
             var key = item.ImageKey;
-            if (!string.IsNullOrEmpty(key) && imgList.Images.ContainsKey(key))
+            if (!string.IsNullOrEmpty(key) && _iconImages.TryGetValue(key, out var img) && img != null)
             {
-                var img = imgList.Images[key];
-                if (img != null)
-                {
-                    int iconY = bounds.Y + (bounds.Height - imgList.ImageSize.Height) / 2;
-                    g.DrawImage(img, textX, iconY, imgList.ImageSize.Width, imgList.ImageSize.Height);
-                    drewIcon = true;
-                }
-            }
+                // 所有图标统一占用同一目标边长的方形槽位，等比缩放并居中，用高质量插值，
+                // 保证大小一致、清晰、不变形
+                var target = _iconRenderSize > 0 ? _iconRenderSize : _imageList.ImageSize.Width;
+                var fit = Math.Min((double)target / img.Width, (double)target / img.Height);
+                int dw = Math.Max(1, (int)Math.Round(img.Width * fit));
+                int dh = Math.Max(1, (int)Math.Round(img.Height * fit));
+                int dx = textX + (target - dw) / 2;
+                int dy = bounds.Y + (bounds.Height - dh) / 2;
 
-            if (drewIcon)
-                textX += imgList.ImageSize.Width + UiScaleHelper.Scale(this, 4);
+                var prevInterp = g.InterpolationMode;
+                var prevOffset = g.PixelOffsetMode;
+                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+                g.DrawImage(img, new Rectangle(dx, dy, dw, dh));
+                g.InterpolationMode = prevInterp;
+                g.PixelOffsetMode = prevOffset;
+                textX += target + UiScaleHelper.Scale(this, 4);
+            }
         }
 
         var textColor = item.Selected ? Color.FromArgb(59, 130, 246) : item.ForeColor;
         var textBounds = new Rectangle(textX, bounds.Y, bounds.Right - textX - UiScaleHelper.Scale(this, 2), bounds.Height);
-        var display = MidTruncate(item.Text, _listView.Font, textBounds.Width);
+        var display = GetTruncatedText(item.Text, textBounds.Width);
 
         TextRenderer.DrawText(
             g,
@@ -1309,6 +1588,20 @@ public sealed class MainPopup : Form
             textBounds,
             textColor,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+    }
+
+    private string GetTruncatedText(string text, int maxPx)
+    {
+        if (string.IsNullOrEmpty(text) || maxPx <= 0)
+            return text;
+
+        var key = (text, maxPx);
+        if (_truncateCache.TryGetValue(key, out var cached))
+            return cached;
+
+        var result = MidTruncate(text, _listView.Font, maxPx);
+        _truncateCache[key] = result;
+        return result;
     }
 
     private static string MidTruncate(string text, Font font, int maxPx)
@@ -1352,9 +1645,110 @@ public sealed class MainPopup : Form
             ? Directory.Exists(entry.Path)
             : File.Exists(entry.Path);
 
+    private void OnListItemDrag(object? sender, ItemDragEventArgs e)
+    {
+        if (e.Item is not ListViewItem { Tag: QuickEntry entry })
+            return;
+
+        if (!CanReorderEntries())
+        {
+            ShowToast("搜索时不能调整顺序");
+            return;
+        }
+
+        var data = new DataObject();
+        data.SetData(EntryReorderDataFormat, entry.Id);
+        _listView.DoDragDrop(data, DragDropEffects.Move);
+    }
+
+    private bool CanReorderEntries()
+        => string.IsNullOrWhiteSpace(_searchBox.Text);
+
+    private static bool HasEntryReorderData(IDataObject? data)
+        => data?.GetDataPresent(EntryReorderDataFormat) == true;
+
+    private static string? GetEntryReorderId(IDataObject? data)
+        => data?.GetData(EntryReorderDataFormat) as string;
+
+    private bool TryReorderEntryFromDrop(DragEventArgs e)
+    {
+        var draggedId = GetEntryReorderId(e.Data);
+        if (string.IsNullOrWhiteSpace(draggedId) || !CanReorderEntries())
+            return false;
+
+        var scopeEntries = GetDisplayedEntries().ToList();
+        var oldIndex = scopeEntries.FindIndex(entry => string.Equals(entry.Id, draggedId, StringComparison.OrdinalIgnoreCase));
+        if (oldIndex < 0)
+            return false;
+
+        var clientPoint = _listView.PointToClient(new Point(e.X, e.Y));
+        var targetItem = _listView.GetItemAt(clientPoint.X, clientPoint.Y);
+        var insertIndex = scopeEntries.Count;
+
+        if (targetItem?.Tag is QuickEntry targetEntry)
+        {
+            insertIndex = scopeEntries.FindIndex(entry => string.Equals(entry.Id, targetEntry.Id, StringComparison.OrdinalIgnoreCase));
+            if (insertIndex < 0)
+                insertIndex = scopeEntries.Count;
+            else if (clientPoint.Y > targetItem.Bounds.Top + targetItem.Bounds.Height / 2)
+                insertIndex++;
+        }
+
+        var draggedEntry = scopeEntries[oldIndex];
+        scopeEntries.RemoveAt(oldIndex);
+        if (insertIndex > oldIndex)
+            insertIndex--;
+
+        insertIndex = Math.Clamp(insertIndex, 0, scopeEntries.Count);
+        scopeEntries.Insert(insertIndex, draggedEntry);
+
+        var fullCategoryEntries = GetEntriesForActiveTab()
+            .OrderBy(e => e.SortOrder)
+            .ThenBy(e => e.AddedAt)
+            .ToList();
+
+        var orderedEntries = string.Equals(_activeGroup, AllGroupsLabel, StringComparison.OrdinalIgnoreCase)
+            ? scopeEntries
+            : MergeReorderedGroupEntries(fullCategoryEntries, scopeEntries);
+
+        _configManager.ReorderEntries(orderedEntries.Select(entry => entry.Id));
+        RefreshList();
+        SelectEntryById(draggedId);
+        ShowToast("已调整顺序");
+        return true;
+    }
+
+    private IEnumerable<QuickEntry> GetDisplayedEntries()
+    {
+        var entries = GetEntriesForActiveTab()
+            .OrderBy(e => e.SortOrder)
+            .ThenBy(e => e.AddedAt);
+
+        if (string.Equals(_activeGroup, AllGroupsLabel, StringComparison.OrdinalIgnoreCase))
+            return entries.ToList();
+
+        return entries
+            .Where(IsEntryInActiveGroup)
+            .ToList();
+    }
+
+    private List<QuickEntry> MergeReorderedGroupEntries(List<QuickEntry> fullCategoryEntries, List<QuickEntry> reorderedGroupEntries)
+    {
+        var groupQueue = new Queue<QuickEntry>(reorderedGroupEntries);
+        var merged = new List<QuickEntry>(fullCategoryEntries.Count);
+
+        foreach (var entry in fullCategoryEntries)
+            merged.Add(IsEntryInActiveGroup(entry) ? groupQueue.Dequeue() : entry);
+
+        return merged;
+    }
+
+    private bool IsEntryInActiveGroup(QuickEntry entry)
+        => string.Equals(NormalizeGroupName(entry.Group), _activeGroup, StringComparison.OrdinalIgnoreCase);
+
     public void ShowAtGesturePoint(Point screenPt)
     {
-        _activeTab = TabKind.Files;
+        _activeTab = TabKind.Folders;
         _activeGroup = AllGroupsLabel;
         _searchBox.Clear();
         SetSearchExpanded(false);
@@ -1380,7 +1774,7 @@ public sealed class MainPopup : Form
         var tabClientPt = _tabLayout.PointToClient(screenPt);
         if (_tabLayout.ClientRectangle.Contains(tabClientPt))
         {
-            TabKind[] kinds = [TabKind.Files, TabKind.Urls, TabKind.Texts];
+            TabKind[] kinds = [TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts];
             for (int i = 0; i < _tabLabels.Length; i++)
             {
                 if (_tabLabels[i].Bounds.Contains(tabClientPt))
@@ -1507,7 +1901,19 @@ public sealed class MainPopup : Form
 
     private void OnDragEnter(object? sender, DragEventArgs e)
     {
-        if (_activeTab == TabKind.Files && e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+        if (sender == _listView && HasEntryReorderData(e.Data) && CanReorderEntries())
+            e.Effect = DragDropEffects.Move;
+        else if (_activeTab is TabKind.Folders or TabKind.Files && e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
+            e.Effect = DragDropEffects.Link;
+        else
+            e.Effect = DragDropEffects.None;
+    }
+
+    private void OnDragOver(object? sender, DragEventArgs e)
+    {
+        if (sender == _listView && HasEntryReorderData(e.Data) && CanReorderEntries())
+            e.Effect = DragDropEffects.Move;
+        else if (_activeTab is TabKind.Folders or TabKind.Files && e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
             e.Effect = DragDropEffects.Link;
         else
             e.Effect = DragDropEffects.None;
@@ -1515,6 +1921,12 @@ public sealed class MainPopup : Form
 
     private void OnDragDrop(object? sender, DragEventArgs e)
     {
+        if (sender == _listView && HasEntryReorderData(e.Data))
+        {
+            TryReorderEntryFromDrop(e);
+            return;
+        }
+
         if (e.Data?.GetData(DataFormats.FileDrop) is string[] files)
         {
             foreach (var path in files)
@@ -1539,5 +1951,19 @@ public sealed class MainPopup : Form
         base.OnPaintBackground(e);
         using var pen = new Pen(Color.FromArgb(220, 220, 220));
         e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            _faviconService.Dispose();
+            foreach (var image in _iconImages.Values)
+                image?.Dispose();
+            _iconImages.Clear();
+            _webEntryImage?.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 }

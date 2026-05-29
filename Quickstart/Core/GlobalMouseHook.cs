@@ -1,6 +1,13 @@
 namespace Quickstart.Core;
 
+using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
+
+public enum RightDragDirection
+{
+    Left,
+    Right
+}
 
 public sealed class GlobalMouseHook : IDisposable
 {
@@ -13,12 +20,14 @@ public sealed class GlobalMouseHook : IDisposable
     private enum GestureState { Idle, Tracking, PopupShown }
     private GestureState _state = GestureState.Idle;
     private Point _startPt;
+    private RightDragDirection _direction = RightDragDirection.Right;
+    private IntPtr _sourceWindow;
     private bool _downSuppressed;
     private bool _disposed;
 
-    public event Action<Point>? GestureTriggered;
-    public event Action<Point>? GestureMove;
-    public event Action<Point>? GestureReleased;
+    public event Action<RightDragDirection, Point, IntPtr>? GestureTriggered;
+    public event Action<RightDragDirection, Point>? GestureMove;
+    public event Action<RightDragDirection, Point>? GestureReleased;
     public event Action? GestureCancelled;
 
     private readonly IntPtr _hookHandle;
@@ -32,23 +41,32 @@ public sealed class GlobalMouseHook : IDisposable
             throw new InvalidOperationException($"鼠标钩子安装失败: {Marshal.GetLastWin32Error()}");
     }
 
-    private IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
+    private unsafe IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
     {
         if (nCode >= 0)
         {
-            var info = Marshal.PtrToStructure<MSLLHOOKSTRUCT>(lParam);
+            var msg = (int)wParam;
+
+            // 空闲态的鼠标移动是全系统最高频事件。此处提前返回，避免对每次移动都
+            // 做结构体封送/分配（合成事件只会是右键 DOWN/UP，绝不会是 MOUSEMOVE，
+            // 故空闲态 MOUSEMOVE 提前返回是安全的）。这是降低全局鼠标延迟的关键。
+            if (msg == WM_MOUSEMOVE && _state == GestureState.Idle)
+                return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
+
+            // 直接从非托管内存读取（结构体为 blittable），避免 Marshal.PtrToStructure 的开销
+            ref readonly var info = ref Unsafe.AsRef<MSLLHOOKSTRUCT>((void*)lParam);
 
             // 忽略自己合成的事件，避免递归
             if (info.dwExtraInfo == SyntheticTag)
                 return CallNextHookEx(_hookHandle, nCode, wParam, lParam);
 
-            var msg = (int)wParam;
             var pt = new Point(info.pt.x, info.pt.y);
 
             switch (msg)
             {
                 case WM_RBUTTONDOWN:
                     _startPt = pt;
+                    _sourceWindow = GetForegroundWindow();
                     _state = GestureState.Tracking;
                     _downSuppressed = true;
                     return (IntPtr)1; // 吞掉：下层窗口不感知按下
@@ -62,7 +80,7 @@ public sealed class GlobalMouseHook : IDisposable
 
                         if (savedState == GestureState.PopupShown)
                         {
-                            GestureReleased?.Invoke(pt);
+                            GestureReleased?.Invoke(_direction, pt);
                         }
                         else if (savedState == GestureState.Tracking)
                         {
@@ -75,16 +93,18 @@ public sealed class GlobalMouseHook : IDisposable
                     break;
 
                 case WM_MOUSEMOVE when _state == GestureState.Tracking:
-                    if (pt.X - _startPt.X >= DragTriggerDx &&
+                    var dx = pt.X - _startPt.X;
+                    if (Math.Abs(dx) >= DragTriggerDx &&
                         Math.Abs(pt.Y - _startPt.Y) <= DragTolerateDy)
                     {
+                        _direction = dx < 0 ? RightDragDirection.Left : RightDragDirection.Right;
                         _state = GestureState.PopupShown;
-                        GestureTriggered?.Invoke(pt);
+                        GestureTriggered?.Invoke(_direction, pt, _sourceWindow);
                     }
                     break;
 
                 case WM_MOUSEMOVE when _state == GestureState.PopupShown:
-                    GestureMove?.Invoke(pt);
+                    GestureMove?.Invoke(_direction, pt);
                     break;
 
                 case WM_LBUTTONDOWN:
@@ -155,6 +175,9 @@ public sealed class GlobalMouseHook : IDisposable
 
     [DllImport("user32.dll")]
     private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);

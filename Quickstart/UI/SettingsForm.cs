@@ -16,6 +16,8 @@ public sealed class SettingsForm : Form
     private readonly Button _copyBookmarkletBtn;
     private readonly Button _repairProtocolBtn;
     private readonly FlowLayoutPanel _websiteActionsRow;
+    private readonly GroupBox _aiToolsGroup;
+    private readonly Button _openAiSettingsBtn;
 
     public SettingsForm(ConfigManager configManager)
     {
@@ -38,12 +40,13 @@ public sealed class SettingsForm : Form
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 11,
+            RowCount = 12,
             AutoSize = false,
             Margin = new Padding(0),
             Padding = new Padding(0)
         };
         root.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         root.RowStyles.Add(new RowStyle(SizeType.AutoSize));
@@ -102,12 +105,12 @@ public sealed class SettingsForm : Form
             if (detected != null)
             {
                 _tcPathBox.Text = detected;
-                MessageBox.Show($"检测到 Total Commander:\n{detected}", "自动检测",
+                DialogPresenter.ShowMessage(this, $"检测到 Total Commander:\n{detected}", "自动检测",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             else
             {
-                MessageBox.Show("未检测到 Total Commander，请手动指定路径。", "自动检测",
+                DialogPresenter.ShowMessage(this, "未检测到 Total Commander，请手动指定路径。", "自动检测",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         };
@@ -158,12 +161,12 @@ public sealed class SettingsForm : Form
             if (detected != null)
             {
                 _dopusPathBox.Text = detected;
-                MessageBox.Show($"检测到 Directory Opus:\n{detected}", "自动检测",
+                DialogPresenter.ShowMessage(this, $"检测到 Directory Opus:\n{detected}", "自动检测",
                     MessageBoxButtons.OK, MessageBoxIcon.Information);
             }
             else
             {
-                MessageBox.Show("未检测到 Directory Opus，请手动指定路径。", "自动检测",
+                DialogPresenter.ShowMessage(this, "未检测到 Directory Opus，请手动指定路径。", "自动检测",
                     MessageBoxButtons.OK, MessageBoxIcon.Warning);
             }
         };
@@ -230,7 +233,7 @@ public sealed class SettingsForm : Form
         _copyBookmarkletBtn.Click += (_, _) =>
         {
             Clipboard.SetText(QuickstartProtocol.Bookmarklet);
-            MessageBox.Show(
+            DialogPresenter.ShowMessage(
                 this,
                 "书签代码已复制。请在浏览器中新建书签，并把复制的内容粘贴到书签地址栏。",
                 "浏览器一键添加网站",
@@ -247,7 +250,7 @@ public sealed class SettingsForm : Form
         _repairProtocolBtn.Click += (_, _) =>
         {
             ShellIntegration.RegisterProtocol(Application.ExecutablePath);
-            MessageBox.Show(
+            DialogPresenter.ShowMessage(
                 this,
                 "quickstart:// 协议已重新注册。",
                 "浏览器一键添加网站",
@@ -280,6 +283,48 @@ public sealed class SettingsForm : Form
         websiteLayout.Controls.Add(_websiteHintLabel, 0, 0);
         websiteLayout.Controls.Add(_websiteActionsRow, 0, 1);
         _websiteToolsGroup.Controls.Add(websiteLayout);
+
+        _aiToolsGroup = new GroupBox
+        {
+            Text = "AI 能力",
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Margin = new Padding(0, 8, 0, 0)
+        };
+
+        var aiHintLabel = new Label
+        {
+            Text = "配置模型 Provider、API Key、Prompt 预设和工作流 Skill。右键向左滑动可打开 AI 面板。",
+            AutoSize = true,
+            Margin = new Padding(0)
+        };
+
+        _openAiSettingsBtn = new RoundedButton
+        {
+            Text = "打开 AI 设置",
+            Margin = new Padding(0, 6, 0, 0)
+        };
+        ButtonStyler.ApplyPrimary(_openAiSettingsBtn);
+        _openAiSettingsBtn.Click += (_, _) =>
+        {
+            using var form = new AiSettingsForm(_configManager);
+            DialogPresenter.ShowModal(form, this);
+        };
+
+        var aiLayout = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(10, 10, 10, 10)
+        };
+        aiLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        aiLayout.Controls.Add(aiHintLabel, 0, 0);
+        aiLayout.Controls.Add(_openAiSettingsBtn, 0, 1);
+        _aiToolsGroup.Controls.Add(aiLayout);
 
         var okBtn = new RoundedButton
         {
@@ -394,8 +439,9 @@ public sealed class SettingsForm : Form
         root.Controls.Add(_startupCheck, 0, 5);
         root.Controls.Add(_shellMenuCheck, 0, 6);
         root.Controls.Add(_websiteToolsGroup, 0, 7);
-        root.Controls.Add(buttonsRow, 0, 9);
-        root.Controls.Add(infoLabel, 0, 10);
+        root.Controls.Add(_aiToolsGroup, 0, 8);
+        root.Controls.Add(buttonsRow, 0, 10);
+        root.Controls.Add(infoLabel, 0, 11);
 
         Controls.Add(root);
 
@@ -409,6 +455,7 @@ public sealed class SettingsForm : Form
             var dialogButtonSize = UiScaleHelper.GetButtonSize(this, okBtn.Text, okBtn.Font, 84, 34, horizontalLogicalPadding: 12);
             var copyBookmarkletButtonSize = UiScaleHelper.GetButtonSize(this, _copyBookmarkletBtn.Text, _copyBookmarkletBtn.Font, 150, 34, horizontalLogicalPadding: 12);
             var repairProtocolButtonSize = UiScaleHelper.GetButtonSize(this, _repairProtocolBtn.Text, _repairProtocolBtn.Font, 120, 34, horizontalLogicalPadding: 12);
+            var openAiSettingsButtonSize = UiScaleHelper.GetButtonSize(this, _openAiSettingsBtn.Text, _openAiSettingsBtn.Font, 128, 34, horizontalLogicalPadding: 12);
 
             _tcPathBox.MinimumSize = new Size(0, inputHeight);
             _dopusPathBox.MinimumSize = new Size(0, inputHeight);
@@ -423,12 +470,15 @@ public sealed class SettingsForm : Form
             cancelBtn.Size = UiScaleHelper.GetButtonSize(this, cancelBtn.Text, cancelBtn.Font, 84, 34, horizontalLogicalPadding: 12);
             _copyBookmarkletBtn.Size = copyBookmarkletButtonSize;
             _repairProtocolBtn.Size = repairProtocolButtonSize;
+            _openAiSettingsBtn.Size = openAiSettingsButtonSize;
 
             buttonsRow.Padding = new Padding(0, 0, UiScaleHelper.Scale(this, 10), 0);
             buttonsRow.Height = dialogButtonSize.Height + UiScaleHelper.Scale(this, 8);
 
             _websiteToolsGroup.Padding = UiScaleHelper.ScalePadding(this, new Padding(8, 10, 8, 8));
+            _aiToolsGroup.Padding = UiScaleHelper.ScalePadding(this, new Padding(8, 10, 8, 8));
             _websiteHintLabel.MaximumSize = new Size(UiScaleHelper.Scale(this, 480), 0);
+            aiHintLabel.MaximumSize = new Size(UiScaleHelper.Scale(this, 480), 0);
 
             infoLabel.Height = Math.Max(
                 UiScaleHelper.Scale(this, 24),

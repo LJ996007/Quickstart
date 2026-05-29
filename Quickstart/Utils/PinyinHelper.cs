@@ -1,5 +1,8 @@
 namespace Quickstart.Utils;
 
+using System.Collections.Concurrent;
+using System.Text;
+
 /// <summary>
 /// Lightweight pinyin initial letter matcher for common Chinese characters.
 /// Covers GB2312 first-level characters (~3755 chars) mapped to initials.
@@ -17,6 +20,19 @@ public static class PinyinHelper
         (0xCEF4, 'X'), (0xD1B9, 'Y'), (0xD4D1, 'Z'),
     ];
 
+    // 缓存 GB2312 编码器，避免每个字符都做一次 GetEncoding 查找。
+    // Program.Main 会先注册 CodePagesEncodingProvider，此处再访问。
+    private static readonly Encoding? Gb2312 = TryGetGb2312();
+
+    // 记忆化整串首字母结果，避免每次按键对每个条目重复计算。条目名稳定，命中率高。
+    private static readonly ConcurrentDictionary<string, string> InitialsCache = new();
+
+    private static Encoding? TryGetGb2312()
+    {
+        try { return Encoding.GetEncoding("GB2312"); }
+        catch { return null; }
+    }
+
     public static char? GetInitial(char ch)
     {
         // ASCII letters
@@ -24,19 +40,22 @@ public static class PinyinHelper
         if (ch is >= 'A' and <= 'Z') return ch;
         if (ch is >= '0' and <= '9') return ch;
 
-        // Convert to GB2312
-        byte[] bytes;
+        if (Gb2312 == null) return null;
+
+        // 单字符转 GB2312，使用栈缓冲避免堆分配
+        Span<char> chars = stackalloc char[1] { ch };
+        Span<byte> bytes = stackalloc byte[4];
+        int count;
         try
         {
-            var gb2312 = System.Text.Encoding.GetEncoding("GB2312");
-            bytes = gb2312.GetBytes(ch.ToString());
+            count = Gb2312.GetBytes(chars, bytes);
         }
         catch
         {
             return null;
         }
 
-        if (bytes.Length != 2) return null;
+        if (count != 2) return null;
 
         int code = bytes[0] * 256 + bytes[1];
 
@@ -53,8 +72,13 @@ public static class PinyinHelper
     }
 
     public static string GetInitials(string text)
+        => string.IsNullOrEmpty(text)
+            ? string.Empty
+            : InitialsCache.GetOrAdd(text, ComputeInitials);
+
+    private static string ComputeInitials(string text)
     {
-        var sb = new System.Text.StringBuilder(text.Length);
+        var sb = new StringBuilder(text.Length);
         foreach (var ch in text)
         {
             var initial = GetInitial(ch);

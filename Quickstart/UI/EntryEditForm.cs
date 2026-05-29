@@ -1,15 +1,17 @@
 namespace Quickstart.UI;
 
+using Quickstart.Core;
 using Quickstart.Models;
 using Quickstart.Utils;
 
 public sealed class EntryEditForm : Form
 {
     private readonly QuickEntry _entry;
+    private readonly IReadOnlyDictionary<EntryType, List<string>>? _groupSuggestions;
     private readonly TextBox _nameBox;
     private readonly TextBox _pathBox;
     private readonly ComboBox _typeBox;
-    private readonly TextBox _groupBox;
+    private readonly ComboBox _groupBox;
     private readonly Button _browseBtn;
     private readonly Label _pathLabel;
     private readonly Button _okBtn;
@@ -17,10 +19,19 @@ public sealed class EntryEditForm : Form
     private readonly TableLayoutPanel _root;
     private readonly TableLayoutPanel _pathInputLayout;
     private readonly FlowLayoutPanel _buttonRow;
+    private readonly TableLayoutPanel _iconRow;
+    private readonly PictureBox _iconPreview;
+    private readonly Button _chooseIconBtn;
+    private readonly Button _clearIconBtn;
+    private Image? _pendingIconImage;
+    private Image? _placeholderImage;
+    private bool _customIconChanged;
+    private bool _removeCustomIcon;
 
-    public EntryEditForm(QuickEntry entry)
+    public EntryEditForm(QuickEntry entry, IReadOnlyDictionary<EntryType, List<string>>? groupSuggestions = null)
     {
         _entry = entry;
+        _groupSuggestions = groupSuggestions;
 
         AutoScaleMode = AutoScaleMode.Dpi;
 
@@ -102,12 +113,59 @@ public sealed class EntryEditForm : Form
         };
 
         var groupLabel = CreateFieldLabel("分组:");
-        _groupBox = new TextBox
+        _groupBox = new ComboBox
         {
             Text = entry.Group,
             Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDown,
+            AutoCompleteMode = AutoCompleteMode.SuggestAppend,
+            AutoCompleteSource = AutoCompleteSource.ListItems,
             Margin = new Padding(0)
         };
+
+        var iconLabel = CreateFieldLabel("图标:");
+        _iconPreview = new PictureBox
+        {
+            SizeMode = PictureBoxSizeMode.Zoom,
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = Color.White,
+            Margin = new Padding(0, 0, 10, 0)
+        };
+        _chooseIconBtn = new RoundedButton { Text = "选择图片...", Margin = new Padding(0, 0, 8, 0) };
+        ButtonStyler.ApplySecondary(_chooseIconBtn);
+        _chooseIconBtn.Click += OnChooseIcon;
+        _clearIconBtn = new RoundedButton { Text = "使用网站图标", Margin = new Padding(0) };
+        ButtonStyler.ApplySecondary(_clearIconBtn);
+        _clearIconBtn.Click += OnClearIcon;
+
+        _iconRow = new TableLayoutPanel
+        {
+            Dock = DockStyle.Fill,
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 4,
+            Margin = new Padding(0, 6, 0, 0)
+        };
+        _iconRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _iconRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _iconRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _iconRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _iconRow.Controls.Add(iconLabel, 0, 0);
+        _iconRow.Controls.Add(_iconPreview, 1, 0);
+        _iconRow.Controls.Add(_chooseIconBtn, 2, 0);
+        _iconRow.Controls.Add(_clearIconBtn, 3, 0);
+
+        _placeholderImage = LoadWebPlaceholder();
+        var existingIcon = CustomIconStore.TryLoad(entry.CustomIconPath);
+        if (existingIcon != null)
+        {
+            _pendingIconImage = existingIcon;
+            _iconPreview.Image = existingIcon;
+        }
+        else
+        {
+            _iconPreview.Image = _placeholderImage;
+        }
 
         _okBtn = new RoundedButton
         {
@@ -141,7 +199,7 @@ public sealed class EntryEditForm : Form
                     EntryType.Text => "请输入内容。",
                     _ => "请输入路径。"
                 };
-                MessageBox.Show(hint, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                DialogPresenter.ShowMessage(this, hint, "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
                 DialogResult = DialogResult.None;
                 return;
             }
@@ -154,9 +212,27 @@ public sealed class EntryEditForm : Form
                 : _nameBox.Text.Trim();
             _entry.Type = currentType;
             _entry.Group = _groupBox.Text.Trim();
+
+            // 应用自定义图标更改（仅网页条目有意义）
+            if (_customIconChanged && currentType == EntryType.Url)
+            {
+                if (_removeCustomIcon)
+                {
+                    CustomIconStore.Remove(_entry.Id);
+                    _entry.CustomIconPath = null;
+                }
+                else if (_pendingIconImage != null)
+                {
+                    _entry.CustomIconPath = CustomIconStore.Save(_entry.Id, _pendingIconImage);
+                }
+            }
         };
 
-        _typeBox.SelectedIndexChanged += (_, _) => AdjustLayoutForType();
+        _typeBox.SelectedIndexChanged += (_, _) =>
+        {
+            AdjustLayoutForType();
+            UpdateGroupSuggestions();
+        };
 
         _pathBox.TextChanged += (_, _) =>
         {
@@ -205,7 +281,8 @@ public sealed class EntryEditForm : Form
         _root.Controls.Add(CreateFieldRow(nameLabel, _nameBox), 0, 0);
         _root.Controls.Add(CreateFieldRow(_pathLabel, _pathInputLayout), 0, 1);
         _root.Controls.Add(metaRow, 0, 2);
-        _root.Controls.Add(_buttonRow, 0, 3);
+        _root.Controls.Add(_iconRow, 0, 3);
+        _root.Controls.Add(_buttonRow, 0, 4);
 
         Controls.Add(_root);
 
@@ -223,11 +300,28 @@ public sealed class EntryEditForm : Form
 
         ApplyScaledMetrics();
         AdjustLayoutForType();
+        UpdateGroupSuggestions();
         DpiChanged += (_, _) =>
         {
             ApplyScaledMetrics();
             AdjustLayoutForType();
         };
+    }
+
+    // 用当前选中类型下已有的分组名填充下拉项，保留用户当前输入/选择的文本
+    private void UpdateGroupSuggestions()
+    {
+        var current = _groupBox.Text;
+        _groupBox.BeginUpdate();
+        _groupBox.Items.Clear();
+        if (_groupSuggestions != null
+            && _groupSuggestions.TryGetValue(GetSelectedEntryType(), out var groups))
+        {
+            foreach (var group in groups)
+                _groupBox.Items.Add(group);
+        }
+        _groupBox.EndUpdate();
+        _groupBox.Text = current;
     }
 
     private Label CreateFieldLabel(string text) => new()
@@ -273,13 +367,18 @@ public sealed class EntryEditForm : Form
         var browseButtonSize = UiScaleHelper.GetButtonSize(this, _browseBtn.Text, _browseBtn.Font, 44, 30, horizontalLogicalPadding: 10);
 
         _nameBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 340), inputHeight);
-        _groupBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 160), inputHeight);
+        _groupBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 160), comboHeight);
         _pathBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 340), inputHeight);
         _typeBox.MinimumSize = new Size(UiScaleHelper.Scale(this, 128), comboHeight);
         _browseBtn.Size = new Size(browseButtonSize.Width, inputHeight);
 
         _okBtn.Size = UiScaleHelper.GetButtonSize(this, _okBtn.Text, _okBtn.Font, 88, 34, horizontalLogicalPadding: 12);
         _cancelBtn.Size = UiScaleHelper.GetButtonSize(this, _cancelBtn.Text, _cancelBtn.Font, 88, 34, horizontalLogicalPadding: 12);
+
+        var previewSize = UiScaleHelper.Scale(this, 40);
+        _iconPreview.Size = new Size(previewSize, previewSize);
+        _chooseIconBtn.Size = UiScaleHelper.GetButtonSize(this, _chooseIconBtn.Text, _chooseIconBtn.Font, 96, 30, horizontalLogicalPadding: 12);
+        _clearIconBtn.Size = UiScaleHelper.GetButtonSize(this, _clearIconBtn.Text, _clearIconBtn.Font, 108, 30, horizontalLogicalPadding: 12);
 
         var minClientWidth = UiScaleHelper.Scale(this, 520);
         var preferredHeight = _root.GetPreferredSize(new Size(minClientWidth, 0)).Height;
@@ -289,6 +388,7 @@ public sealed class EntryEditForm : Form
     private void AdjustLayoutForType()
     {
         var type = GetSelectedEntryType();
+        _iconRow.Visible = type == EntryType.Url; // 自定义图标仅对网页条目开放
         var singleLineHeight = UiScaleHelper.GetInputHeight(_pathBox, 30);
         var multiLineHeight = UiScaleHelper.Scale(this, 120);
 
@@ -328,6 +428,79 @@ public sealed class EntryEditForm : Form
         var minClientWidth = UiScaleHelper.Scale(this, 520);
         var preferred = _root.GetPreferredSize(new Size(minClientWidth, 0));
         MinimumSize = SizeFromClientSize(new Size(minClientWidth, preferred.Height));
+    }
+
+    private void OnChooseIcon(object? sender, EventArgs e)
+    {
+        using var dlg = new OpenFileDialog
+        {
+            Title = "选择图标图片",
+            Filter = "图片文件|*.png;*.jpg;*.jpeg;*.ico;*.bmp;*.gif|所有文件|*.*"
+        };
+
+        if (dlg.ShowDialog(this) != DialogResult.OK)
+            return;
+
+        try
+        {
+            var bytes = File.ReadAllBytes(dlg.FileName);
+            using var ms = new MemoryStream(bytes);
+            var image = new Bitmap(ms);
+            SetPendingIcon(image);
+        }
+        catch (Exception ex)
+        {
+            DialogPresenter.ShowMessage(this, $"无法加载该图片：{ex.Message}", "提示", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+        }
+    }
+
+    private void OnClearIcon(object? sender, EventArgs e)
+    {
+        _iconPreview.Image = _placeholderImage;
+        if (_pendingIconImage != null && !ReferenceEquals(_pendingIconImage, _placeholderImage))
+            _pendingIconImage.Dispose();
+        _pendingIconImage = null;
+        _customIconChanged = true;
+        _removeCustomIcon = true;
+    }
+
+    private void SetPendingIcon(Image image)
+    {
+        _iconPreview.Image = image;
+        if (_pendingIconImage != null && !ReferenceEquals(_pendingIconImage, image) && !ReferenceEquals(_pendingIconImage, _placeholderImage))
+            _pendingIconImage.Dispose();
+        _pendingIconImage = image;
+        _customIconChanged = true;
+        _removeCustomIcon = false;
+    }
+
+    private static Image? LoadWebPlaceholder()
+    {
+        try
+        {
+            using var stream = typeof(EntryEditForm).Assembly.GetManifestResourceStream("Quickstart.Resources.web-url.png");
+            if (stream == null)
+                return null;
+
+            using var original = Image.FromStream(stream);
+            return new Bitmap(original);
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing)
+        {
+            if (_pendingIconImage != null && !ReferenceEquals(_pendingIconImage, _placeholderImage))
+                _pendingIconImage.Dispose();
+            _placeholderImage?.Dispose();
+        }
+
+        base.Dispose(disposing);
     }
 
     private void OnBrowse(object? sender, EventArgs e)
