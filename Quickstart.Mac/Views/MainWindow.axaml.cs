@@ -36,16 +36,87 @@ public partial class MainWindow : Window
         BuildTabs();
         SearchBox.TextChanged += (_, _) => RefreshList();
         EntryList.DoubleTapped += (_, _) => OpenSelected();
-        EntryList.KeyDown += (_, e) =>
+        EntryList.KeyDown += async (_, e) =>
         {
             if (e.Key == Key.Enter)
             {
                 OpenSelected();
                 e.Handled = true;
             }
+            else if (e.Key == Key.Delete)
+            {
+                DeleteSelected();
+                e.Handled = true;
+            }
+            else if (e.Key == Key.F2)
+            {
+                await EditSelectedAsync();
+                e.Handled = true;
+            }
         };
 
+        var editItem = new MenuItem { Header = "编辑" };
+        editItem.Click += async (_, _) => await EditSelectedAsync();
+        var deleteItem = new MenuItem { Header = "删除" };
+        deleteItem.Click += (_, _) => DeleteSelected();
+        EntryList.ContextMenu = new ContextMenu { ItemsSource = new[] { editItem, deleteItem } };
+
+        AddButton.Click += async (_, _) => await AddEntryAsync();
+        SettingsButton.Click += (_, _) => { }; // 设置窗口：后续阶段
+
         SwitchTab(TabKind.Folders);
+    }
+
+    private Dictionary<EntryType, List<string>> BuildGroupSuggestions()
+    {
+        var dict = new Dictionary<EntryType, List<string>>();
+        foreach (var type in new[] { EntryType.Folder, EntryType.File, EntryType.Url, EntryType.Text })
+            dict[type] = EntryQueries.OrderedGroupNames(EntryQueries.ByType(_config.Config.Entries, type));
+        return dict;
+    }
+
+    private async System.Threading.Tasks.Task AddEntryAsync()
+    {
+        var entry = new QuickEntry { Type = ActiveType };
+        var ok = await new EntryEditWindow(entry, BuildGroupSuggestions()).ShowDialog<bool>(this);
+        if (!ok) return;
+
+        if (_config.AddEntry(entry))
+        {
+            _activeTab = entry.Type switch
+            {
+                EntryType.File => TabKind.Files,
+                EntryType.Url => TabKind.Urls,
+                EntryType.Text => TabKind.Texts,
+                _ => TabKind.Folders
+            };
+            SwitchTab(_activeTab);
+            EntryList.SelectedItem = (EntryList.ItemsSource as IEnumerable<QuickEntry>)?.FirstOrDefault(e => e.Id == entry.Id);
+        }
+    }
+
+    private async System.Threading.Tasks.Task EditSelectedAsync()
+    {
+        if (EntryList.SelectedItem is not QuickEntry entry)
+            return;
+
+        var ok = await new EntryEditWindow(entry, BuildGroupSuggestions()).ShowDialog<bool>(this);
+        if (!ok) return;
+
+        _config.UpdateEntry(entry);
+        RebuildGroups();
+        RefreshList();
+        EntryList.SelectedItem = (EntryList.ItemsSource as IEnumerable<QuickEntry>)?.FirstOrDefault(e => e.Id == entry.Id);
+    }
+
+    private void DeleteSelected()
+    {
+        if (EntryList.SelectedItem is not QuickEntry entry)
+            return;
+
+        _config.RemoveEntry(entry.Id);
+        RebuildGroups();
+        RefreshList();
     }
 
     private static string VerticalText(string text)
