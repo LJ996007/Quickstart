@@ -13,4 +13,5 @@ Quickstart.local/
 
 # macOS build output
 macos/QuickstartMac/build/
+Quickstart.Mac/build/
 .omx/
