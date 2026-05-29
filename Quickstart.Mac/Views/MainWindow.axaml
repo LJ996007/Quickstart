@@ -1,0 +1,25 @@
+<Window xmlns="https://github.com/avaloniaui"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        xmlns:models="clr-namespace:Quickstart.Models;assembly=Quickstart.Core"
+        x:Class="Quickstart.Mac.Views.MainWindow"
+        x:DataType="models:QuickEntry"
+        Width="380" Height="440"
+        Title="Quickstart"
+        Background="#FAFAFA">
+  <DockPanel Margin="8">
+    <TextBox x:Name="SearchBox"
+             DockPanel.Dock="Top"
+             Watermark="搜索文件夹... (拼音首字母也可)"
+             Margin="0,0,0,8"/>
+    <ListBox x:Name="EntryList">
+      <ListBox.ItemTemplate>
+        <DataTemplate x:DataType="models:QuickEntry">
+          <StackPanel Orientation="Horizontal" Spacing="8">
+            <TextBlock Text="{Binding Name}" FontSize="13" VerticalAlignment="Center"/>
+            <TextBlock Text="{Binding Path}" Foreground="#999999" FontSize="11" VerticalAlignment="Center"/>
+          </StackPanel>
+        </DataTemplate>
+      </ListBox.ItemTemplate>
+    </ListBox>
+  </DockPanel>
+</Window>
