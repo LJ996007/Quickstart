@@ -133,3 +133,10 @@ public static class DpapiProtector
         public IntPtr pbData;
     }
 }
+
+/// <summary>Windows 平台的密钥保护器实现（DPAPI）。</summary>
+public sealed class DpapiSecretProtector : ISecretProtector
+{
+    public string Protect(string plainText) => DpapiProtector.Protect(plainText);
+    public string Unprotect(string protectedText) => DpapiProtector.Unprotect(protectedText);
+}
