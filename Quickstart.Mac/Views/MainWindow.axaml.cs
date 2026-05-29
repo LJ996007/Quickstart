@@ -26,18 +26,22 @@ public partial class MainWindow : Window
     private static readonly IBrush ActiveFg = Brushes.White;
     private static readonly IBrush InactiveFg = new SolidColorBrush(Color.Parse("#505050"));
 
-    private readonly ConfigManager _config = new();
+    private readonly ConfigManager _config;
     private readonly FaviconLoader _favicons = new();
+    private bool _allowClose;
     private TabKind _activeTab = TabKind.Folders;
     private string _activeGroup = EntryQueries.AllGroupsLabel;
 
     private readonly List<(TabKind Kind, Border Border, TextBlock Text)> _tabs = [];
     private readonly List<(string Group, Border Border, TextBlock Text)> _groups = [];
 
-    public MainWindow()
+    // 设计期/无参回退；运行时由 App 传入已加载的配置
+    public MainWindow() : this(new ConfigManager()) { }
+
+    public MainWindow(ConfigManager config)
     {
         InitializeComponent();
-        _config.Load();
+        _config = config;
 
         BuildTabs();
         SearchBox.TextChanged += (_, _) => RefreshList();
@@ -128,6 +132,26 @@ public partial class MainWindow : Window
 
     private void SelectEntryById(string id)
         => EntryList.SelectedItem = (EntryList.ItemsSource as IEnumerable<EntryItem>)?.FirstOrDefault(i => i.Entry.Id == id);
+
+    public void ShowAndActivate()
+    {
+        Show();
+        Activate();
+    }
+
+    public void AllowClose() => _allowClose = true;
+
+    protected override void OnClosing(WindowClosingEventArgs e)
+    {
+        // 关闭按钮 = 隐藏到菜单栏/托盘；真正退出由菜单“退出”触发
+        if (!_allowClose)
+        {
+            e.Cancel = true;
+            Hide();
+        }
+
+        base.OnClosing(e);
+    }
 
     private static string VerticalText(string text)
         => string.Join("\n", text.Select(c => c.ToString()));
