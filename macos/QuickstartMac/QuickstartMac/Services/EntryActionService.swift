@@ -1,4 +1,5 @@
 import AppKit
+import UniformTypeIdentifiers
 
 final class EntryActionService {
     private let workspace: NSWorkspace
@@ -58,10 +59,16 @@ final class EntryActionService {
                 image = workspace.icon(forFile: entry.path)
             } else {
                 let fileType = URL(fileURLWithPath: entry.path).pathExtension
-                image = workspace.icon(forFileType: fileType.isEmpty ? "txt" : fileType)
+                if let contentType = UTType(filenameExtension: fileType.isEmpty ? "txt" : fileType) {
+                    image = workspace.icon(for: contentType)
+                } else {
+                    image = NSImage(systemSymbolName: "doc", accessibilityDescription: nil) ?? NSImage()
+                }
             }
         case .url:
-            image = NSImage(systemSymbolName: "globe", accessibilityDescription: nil) ?? NSImage()
+            image = Bundle.main.image(forResource: "web-url")
+                ?? NSImage(systemSymbolName: "globe", accessibilityDescription: nil)
+                ?? NSImage()
         case .text:
             image = NSImage(systemSymbolName: "text.alignleft", accessibilityDescription: nil) ?? NSImage()
         }
