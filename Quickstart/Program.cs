@@ -12,6 +12,9 @@ static class Program
         // Register GB2312 encoding for pinyin helper
         Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
 
+        // 注册 Windows 平台的密钥保护器（DPAPI）
+        AiSecretStore.Protector = new DpapiSecretProtector();
+
         // Parse command line
         string? externalRequest = null;
         if (args.Length >= 2 && args[0] == "--add")

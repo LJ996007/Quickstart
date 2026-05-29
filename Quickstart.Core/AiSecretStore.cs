@@ -11,6 +11,9 @@ public static class AiSecretStore
 
     private static readonly object Lock = new();
 
+    /// <summary>平台密钥保护器，由各端在启动时设置（Windows=DPAPI，macOS=Keychain）。</summary>
+    public static ISecretProtector Protector { get; set; } = new NullSecretProtector();
+
     public static bool HasApiKey(AiProviderConfig provider)
         => !string.IsNullOrWhiteSpace(GetApiKey(provider));
 
@@ -30,7 +33,7 @@ public static class AiSecretStore
             }
         }
 
-        return DpapiProtector.Unprotect(provider.ApiKeyProtected);
+        return Protector.Unprotect(provider.ApiKeyProtected);
     }
 
     public static void SaveApiKey(string providerId, string apiKey)
@@ -93,7 +96,7 @@ public static class AiSecretStore
 
     private static AiSecretRecord CreateRecord(string apiKey)
     {
-        var protectedValue = DpapiProtector.Protect(apiKey);
+        var protectedValue = Protector.Protect(apiKey);
         if (!string.IsNullOrWhiteSpace(protectedValue))
         {
             return new AiSecretRecord
@@ -114,7 +117,7 @@ public static class AiSecretStore
     {
         if (!string.IsNullOrWhiteSpace(record.ProtectedValue))
         {
-            var key = DpapiProtector.Unprotect(record.ProtectedValue);
+            var key = Protector.Unprotect(record.ProtectedValue);
             if (!string.IsNullOrWhiteSpace(key))
                 return key;
         }

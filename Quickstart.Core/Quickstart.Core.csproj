@@ -1,0 +1,11 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <RootNamespace>Quickstart</RootNamespace>
+    <!-- 跨平台共享逻辑：无 UI、无平台专属依赖（密钥保护、剪贴板、图标等经接口抽象） -->
+  </PropertyGroup>
+
+</Project>

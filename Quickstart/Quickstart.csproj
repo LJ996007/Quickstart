@@ -36,4 +36,8 @@
     <EmbeddedResource Include="Resources\web-url.png" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\Quickstart.Core\Quickstart.Core.csproj" />
+  </ItemGroup>
+
 </Project>
