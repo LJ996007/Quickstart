@@ -6,7 +6,9 @@ using Avalonia.Controls;
 using Avalonia.Controls.ApplicationLifetimes;
 using Avalonia.Markup.Xaml;
 using Avalonia.Platform;
+using Avalonia.Threading;
 using Quickstart.Core;
+using Quickstart.Mac.Platform;
 using Quickstart.Mac.Views;
 
 public partial class App : Application
@@ -14,6 +16,7 @@ public partial class App : Application
     private readonly ConfigManager _config = new();
     private MainWindow? _mainWindow;
     private TrayIcon? _trayIcon;
+    private MacGlobalGesture? _gesture;
 
     public override void Initialize() => AvaloniaXamlLoader.Load(this);
 
@@ -30,9 +33,40 @@ public partial class App : Application
             _mainWindow.Show();
 
             SetupTray(desktop);
+
+            // macOS：全局右键拖拽手势（右滑→主弹窗，左滑→捕获选区并打开 AI）
+            if (OperatingSystem.IsMacOS())
+                SetupGesture();
         }
 
         base.OnFrameworkInitializationCompleted();
+    }
+
+    private void SetupGesture()
+    {
+        _gesture = new MacGlobalGesture();
+        _gesture.Triggered += direction => Dispatcher.UIThread.Post(async () =>
+        {
+            if (direction == RightDragDirection.Right)
+            {
+                _mainWindow?.ShowAndActivate();
+                return;
+            }
+
+            // 左滑：捕获选中文字并打开 AI 面板预填
+            await MacSelectionCapture.CopySelectionAsync();
+#pragma warning disable CS0618 // GetTextAsync 在当前 Avalonia 版本仍可用
+            string? text = _mainWindow?.Clipboard is { } clipboard
+                ? await clipboard.GetTextAsync()
+                : null;
+#pragma warning restore CS0618
+
+            var ai = new AiWindow(_config);
+            ai.Show();
+            if (!string.IsNullOrWhiteSpace(text))
+                ai.SetInput(text!);
+        });
+        _gesture.Start();
     }
 
     private void SetupTray(IClassicDesktopStyleApplicationLifetime desktop)
