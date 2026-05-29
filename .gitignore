@@ -1,6 +1,7 @@
 artifacts/
 .DS_Store
 qs-*.xml
+qs-*.log
 # .NET 构建产物（所有项目）
 **/bin/
 **/obj/
