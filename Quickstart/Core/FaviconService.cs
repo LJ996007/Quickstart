@@ -116,6 +116,14 @@ public sealed class FaviconService : IDisposable
                     image = await TryDownloadIconAsync(iconUrl).ConfigureAwait(false);
             }
 
+            // 3. 第三方兜底：直连被拒（如 ChatGPT 的 Cloudflare 403）时，用 Google favicon 服务
+            //    （返回 PNG，可解码）。代价是把域名发给 Google。
+            if (image == null)
+            {
+                var googleUrl = $"https://www.google.com/s2/favicons?domain={Uri.EscapeDataString(host)}&sz=64";
+                image = await TryDownloadIconAsync(googleUrl).ConfigureAwait(false);
+            }
+
             if (image != null)
                 SaveToDisk(host, image);
             else
