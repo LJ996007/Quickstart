@@ -68,6 +68,7 @@ public partial class MainWindow : Window
         EntryList.ContextMenu = new ContextMenu { ItemsSource = new[] { editItem, deleteItem } };
 
         AddButton.Click += async (_, _) => await AddEntryAsync();
+        AiButton.Click += (_, _) => new AiWindow(_config).Show(this);
         SettingsButton.Click += (_, _) => { }; // 设置窗口：后续阶段
 
         SwitchTab(TabKind.Folders);

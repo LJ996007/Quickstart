@@ -52,6 +52,9 @@
           <Button x:Name="AddButton" Content="＋" Width="28" Height="28"
                   Background="Transparent" BorderThickness="0" Foreground="#4B4B4B"
                   ToolTip.Tip="添加"/>
+          <Button x:Name="AiButton" Content="AI" Width="32" Height="28" Margin="4,0,0,0"
+                  Background="Transparent" BorderThickness="0" Foreground="#4B4B4B"
+                  ToolTip.Tip="AI 助手"/>
           <Button x:Name="SettingsButton" Content="⚙" Width="28" Height="28" Margin="4,0,0,0"
                   Background="Transparent" BorderThickness="0" Foreground="#4B4B4B"
                   ToolTip.Tip="设置"/>
