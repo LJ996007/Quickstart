@@ -3,13 +3,18 @@ namespace Quickstart.Mac.Views;
 using System;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.IO;
 using System.Linq;
+using System.Threading.Tasks;
 using Avalonia;
 using Avalonia.Controls;
 using Avalonia.Input;
 using Avalonia.Layout;
 using Avalonia.Media;
+using Avalonia.Media.Imaging;
 using Quickstart.Core;
+using Quickstart.Mac;
+using Quickstart.Mac.Services;
 using Quickstart.Models;
 
 public partial class MainWindow : Window
@@ -22,6 +27,7 @@ public partial class MainWindow : Window
     private static readonly IBrush InactiveFg = new SolidColorBrush(Color.Parse("#505050"));
 
     private readonly ConfigManager _config = new();
+    private readonly FaviconLoader _favicons = new();
     private TabKind _activeTab = TabKind.Folders;
     private string _activeGroup = EntryQueries.AllGroupsLabel;
 
@@ -91,13 +97,13 @@ public partial class MainWindow : Window
                 _ => TabKind.Folders
             };
             SwitchTab(_activeTab);
-            EntryList.SelectedItem = (EntryList.ItemsSource as IEnumerable<QuickEntry>)?.FirstOrDefault(e => e.Id == entry.Id);
+            SelectEntryById(entry.Id);
         }
     }
 
     private async System.Threading.Tasks.Task EditSelectedAsync()
     {
-        if (EntryList.SelectedItem is not QuickEntry entry)
+        if (SelectedEntry is not { } entry)
             return;
 
         var ok = await new EntryEditWindow(entry, BuildGroupSuggestions()).ShowDialog<bool>(this);
@@ -106,18 +112,21 @@ public partial class MainWindow : Window
         _config.UpdateEntry(entry);
         RebuildGroups();
         RefreshList();
-        EntryList.SelectedItem = (EntryList.ItemsSource as IEnumerable<QuickEntry>)?.FirstOrDefault(e => e.Id == entry.Id);
+        SelectEntryById(entry.Id);
     }
 
     private void DeleteSelected()
     {
-        if (EntryList.SelectedItem is not QuickEntry entry)
+        if (SelectedEntry is not { } entry)
             return;
 
         _config.RemoveEntry(entry.Id);
         RebuildGroups();
         RefreshList();
     }
+
+    private void SelectEntryById(string id)
+        => EntryList.SelectedItem = (EntryList.ItemsSource as IEnumerable<EntryItem>)?.FirstOrDefault(i => i.Entry.Id == id);
 
     private static string VerticalText(string text)
         => string.Join("\n", text.Select(c => c.ToString()));
@@ -238,16 +247,50 @@ public partial class MainWindow : Window
         }
     }
 
+    private QuickEntry? SelectedEntry => (EntryList.SelectedItem as EntryItem)?.Entry;
+
     private void RefreshList()
     {
-        var items = EntryQueries.FilterAndSort(TypeEntries(), _activeGroup, SearchBox.Text);
+        var entries = EntryQueries.FilterAndSort(TypeEntries(), _activeGroup, SearchBox.Text);
+        var items = entries.Select(e => new EntryItem(e)).ToList();
         EntryList.ItemsSource = items;
-        CountLabel.Text = $"{items.Count} 项";
+        CountLabel.Text = $"{entries.Count} 项";
+        _ = LoadIconsAsync(items);
+    }
+
+    private async Task LoadIconsAsync(IReadOnlyList<EntryItem> items)
+    {
+        foreach (var item in items)
+        {
+            var entry = item.Entry;
+
+            // 1) 自定义图标（PNG 文件）优先
+            if (!string.IsNullOrEmpty(entry.CustomIconPath) && File.Exists(entry.CustomIconPath))
+            {
+                try
+                {
+                    item.Icon = new Bitmap(entry.CustomIconPath);
+                    continue;
+                }
+                catch
+                {
+                    // 损坏的自定义图标，回退到下面的逻辑
+                }
+            }
+
+            // 2) 网页用 favicon；文件/文件夹/文本的原生图标留待 macOS 原生阶段
+            if (entry.Type == EntryType.Url)
+            {
+                var bitmap = await _favicons.GetAsync(entry.Path);
+                if (bitmap != null)
+                    item.Icon = bitmap;
+            }
+        }
     }
 
     private void OpenSelected()
     {
-        if (EntryList.SelectedItem is not QuickEntry entry)
+        if (SelectedEntry is not { } entry)
             return;
 
         try
