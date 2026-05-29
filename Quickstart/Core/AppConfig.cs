@@ -10,6 +10,14 @@ public enum OpenWith
     LastUsed
 }
 
+public enum AiPromptTarget
+{
+    /// <summary>调用 API，在 AI 面板内显示结果（默认）。</summary>
+    Api,
+    /// <summary>把"模板+选中文字"渲染后填入网页对话框（如 DeepSeek 网页版）。</summary>
+    Web
+}
+
 public sealed class AppConfig
 {
     public List<QuickEntry> Entries { get; set; } = [];
@@ -29,6 +37,8 @@ public sealed class AiConfig
     public string DefaultPromptId { get; set; } = string.Empty;
     public string DefaultSkillId { get; set; } = string.Empty;
     public int MaxFileBytes { get; set; } = 256 * 1024;
+    /// <summary>"发送到网页"目标的对话页地址（默认 DeepSeek 网页版）。</summary>
+    public string WebChatUrl { get; set; } = "https://chat.deepseek.com/";
     public List<AiProviderConfig> Providers { get; set; } = [];
     public List<AiPromptPreset> PromptPresets { get; set; } = [];
     public List<AiSkill> Skills { get; set; } = [];
@@ -134,6 +144,8 @@ public sealed class AiPromptPreset
     public string Id { get; set; } = Guid.NewGuid().ToString("N")[..8];
     public string Name { get; set; } = string.Empty;
     public string Template { get; set; } = string.Empty;
+    /// <summary>运行目标：调用 API 或发送到网页对话框。</summary>
+    public AiPromptTarget Target { get; set; } = AiPromptTarget.Api;
 
     public override string ToString() => Name;
 }
