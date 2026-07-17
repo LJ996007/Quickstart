@@ -6,24 +6,34 @@ internal static class DialogPresenter
     {
         ArgumentNullException.ThrowIfNull(dialog);
 
-        var safeOwner = owner is { IsDisposed: false } ? owner : null;
-        var ownerWasTopMost = safeOwner?.TopMost == true;
+        var realOwner = owner is { IsDisposed: false } ? owner : null;
+        var ownerWasTopMost = realOwner?.TopMost == true;
         var dialogWasTopMost = dialog.TopMost;
+        Form? fallbackOwner = null;
         EventHandler? shownHandler = null;
 
         try
         {
-            if (safeOwner != null)
+            Form modalOwner;
+            if (realOwner != null)
             {
-                safeOwner.TopMost = false;
+                realOwner.TopMost = false;
                 dialog.StartPosition = FormStartPosition.CenterParent;
+                // 有父窗体时不进任务栏，避免与主弹窗叠两个图标
+                dialog.ShowInTaskbar = false;
+                modalOwner = realOwner;
             }
-            else if (dialog.StartPosition == FormStartPosition.CenterParent)
+            else
             {
+                // 托盘应用无主窗体：无 owner 的 ShowDialog 在 NotifyIcon 菜单场景下
+                // 可能无法可靠激活。使用隐藏 owner 保证模态与激活行为稳定。
+                fallbackOwner = CreateFallbackOwner();
+                fallbackOwner.Show();
                 dialog.StartPosition = FormStartPosition.CenterScreen;
+                dialog.ShowInTaskbar = true;
+                modalOwner = fallbackOwner;
             }
 
-            dialog.ShowInTaskbar = false;
             dialog.TopMost = true;
             shownHandler = (_, _) =>
             {
@@ -33,9 +43,7 @@ internal static class DialogPresenter
             };
             dialog.Shown += shownHandler;
 
-            return safeOwner != null
-                ? dialog.ShowDialog(safeOwner)
-                : dialog.ShowDialog();
+            return dialog.ShowDialog(modalOwner);
         }
         finally
         {
@@ -45,11 +53,16 @@ internal static class DialogPresenter
             if (!dialog.IsDisposed)
                 dialog.TopMost = dialogWasTopMost;
 
-            if (safeOwner is { IsDisposed: false })
+            if (fallbackOwner != null)
             {
-                safeOwner.TopMost = ownerWasTopMost;
-                safeOwner.BringToFront();
-                safeOwner.Activate();
+                fallbackOwner.Close();
+                fallbackOwner.Dispose();
+            }
+            else if (realOwner is { IsDisposed: false })
+            {
+                realOwner.TopMost = ownerWasTopMost;
+                realOwner.BringToFront();
+                realOwner.Activate();
             }
         }
     }
@@ -64,6 +77,19 @@ internal static class DialogPresenter
         using var messageOwner = new MessageBoxOwner(owner);
         return MessageBox.Show(messageOwner.Window, text, caption, buttons, icon);
     }
+
+    private static Form CreateFallbackOwner()
+        => new()
+        {
+            ShowInTaskbar = false,
+            FormBorderStyle = FormBorderStyle.FixedToolWindow,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-32000, -32000),
+            Size = new Size(1, 1),
+            Opacity = 0,
+            ShowIcon = false,
+            Text = string.Empty
+        };
 
     private sealed class MessageBoxOwner : IDisposable
     {
@@ -80,14 +106,7 @@ internal static class DialogPresenter
                 return;
             }
 
-            _fallback = new Form
-            {
-                ShowInTaskbar = false,
-                StartPosition = FormStartPosition.CenterScreen,
-                Size = new Size(1, 1),
-                Opacity = 0,
-                TopMost = true
-            };
+            _fallback = CreateFallbackOwner();
             _fallback.Show();
             Window = _fallback;
         }

@@ -2,6 +2,10 @@ artifacts/
 .DS_Store
 qs-*.xml
 qs-*.log
+*.pid
+nul
+_probe/
+_settings_probe/
 # .NET 构建产物（所有项目）
 **/bin/
 **/obj/
@@ -15,3 +19,7 @@ Quickstart.local/
 macos/QuickstartMac/build/
 Quickstart.Mac/build/
 .omx/
+
+# Local agent workspace
+.workbuddy/
+

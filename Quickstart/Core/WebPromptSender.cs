@@ -18,7 +18,7 @@ public static class WebPromptSender
     {
         await Task.Delay(SettleDelayMs, token);
 
-        SetClipboardText(text); // 失败会抛异常，由上层提示
+        await SetClipboardTextAsync(text, token); // 失败会抛异常，由上层提示
         OpenUrl(url);
 
         if (!autoPaste)
@@ -29,7 +29,7 @@ public static class WebPromptSender
         TryPaste();
     }
 
-    private static void SetClipboardText(string text)
+    private static async Task SetClipboardTextAsync(string text, CancellationToken token)
     {
         if (string.IsNullOrEmpty(text))
             return;
@@ -37,25 +37,53 @@ public static class WebPromptSender
         // 剪贴板访问要求 STA；若当前线程不是 STA，则在专用 STA 线程执行
         if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
         {
-            SetClipboardTextCore(text);
+            await SetClipboardTextCoreAsync(text, token);
             return;
         }
 
-        Exception? error = null;
+        var completion = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var staThread = new Thread(() =>
         {
-            try { SetClipboardTextCore(text); }
-            catch (Exception ex) { error = ex; }
+            try
+            {
+                SetClipboardTextCore(text);
+                completion.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                completion.TrySetException(ex);
+            }
         })
         {
             IsBackground = true
         };
         staThread.SetApartmentState(ApartmentState.STA);
         staThread.Start();
-        staThread.Join();
+        await completion.Task.WaitAsync(token);
+    }
 
-        if (error != null)
-            throw error;
+    private static async Task SetClipboardTextCoreAsync(string text, CancellationToken token)
+    {
+        Exception? last = null;
+        for (var attempt = 0; attempt < 8; attempt++)
+        {
+            try
+            {
+                Clipboard.SetText(text);
+                if (Clipboard.ContainsText())
+                    return;
+            }
+            catch (Exception ex)
+            {
+                last = ex;
+            }
+
+            await Task.Delay(120, token);
+        }
+
+        throw new InvalidOperationException(
+            last == null ? "写入剪贴板失败（校验未通过）。" : $"写入剪贴板失败：{last.Message}", last);
     }
 
     private static void SetClipboardTextCore(string text)

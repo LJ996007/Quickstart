@@ -62,7 +62,7 @@ $projectPath = (Resolve-Path (Resolve-RepoPath -RepoRoot $repoRoot -PathValue $P
 $buildInstallerScript = (Resolve-Path (Join-Path $repoRoot "scripts\build-installer.ps1")).Path
 
 $version = Get-ProjectVersion -ProjectPath $projectPath
-$releaseRoot = Join-Path $repoRoot "artifacts\releases\v$version\$Runtime"
+$releaseRoot = Join-Path $repoRoot "artifacts\release\v$version\$Runtime"
 $publishDir = Join-Path $releaseRoot "publish"
 $installerDir = Join-Path $releaseRoot "installer"
 $symbolsDir = Join-Path $releaseRoot "symbols"
@@ -72,6 +72,7 @@ $installerBaseName = "Quickstart-Setup-v$version-$Runtime"
 $installerPath = Join-Path $installerDir "$installerBaseName.exe"
 $releaseInfoPath = Join-Path $releaseRoot "release-info.txt"
 $hashesPath = Join-Path $releaseRoot "SHA256SUMS.txt"
+$regularBuildRoot = Join-Path $repoRoot "artifacts\release\build"
 
 New-Item -ItemType Directory -Force -Path $releaseRoot, $publishDir, $installerDir, $symbolsDir | Out-Null
 
@@ -80,16 +81,30 @@ Write-Host "==> Release directory: $releaseRoot"
 Write-Host "==> Publishing portable build"
 dotnet publish $projectPath -c $Configuration -r $Runtime -o $publishDir
 
+if ($LASTEXITCODE -ne 0) {
+    throw "Release publish failed with exit code $LASTEXITCODE"
+}
+
 $publishExe = Join-Path $publishDir "Quickstart.exe"
 if (-not (Test-Path $publishExe)) {
     throw "Published EXE not found: $publishExe"
 }
 
-Copy-Item $publishExe $portableAliasPath -Force
+if (Test-Path $portableAliasPath) {
+    Remove-Item $portableAliasPath -Force
+}
 
-$publishPdb = Join-Path $publishDir "Quickstart.pdb"
-if (Test-Path $publishPdb) {
-    Copy-Item $publishPdb (Join-Path $symbolsDir "Quickstart-v$version-$Runtime.pdb") -Force
+# The versioned portable name and publish/Quickstart.exe refer to the same bytes.
+# Prefer a hard link so the release folder stays readable without storing 59 MB twice.
+try {
+    New-Item -ItemType HardLink -Path $portableAliasPath -Target $publishExe -ErrorAction Stop | Out-Null
+} catch {
+    Copy-Item $publishExe $portableAliasPath -Force
+}
+
+Get-ChildItem $publishDir -Filter "*.pdb" -File | ForEach-Object {
+    $symbolName = "{0}-v{1}-{2}.pdb" -f $_.BaseName, $version, $Runtime
+    Move-Item $_.FullName (Join-Path $symbolsDir $symbolName) -Force
 }
 
 if (-not $SkipInstaller) {
@@ -131,6 +146,12 @@ $releaseInfo = @(
 )
 
 Set-Content -Path $releaseInfoPath -Value $releaseInfo -Encoding Ascii
+
+# The publish directory is the deliverable. Remove the ordinary build copy to
+# avoid keeping another full self-contained runtime under artifacts/release/build.
+if (Test-Path $regularBuildRoot) {
+    Remove-Item $regularBuildRoot -Recurse -Force
+}
 
 Write-Host ""
 Write-Host "Release completed."

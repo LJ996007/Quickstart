@@ -18,17 +18,95 @@ public enum AiPromptTarget
     Web
 }
 
+public enum LeftDragAction
+{
+    AiActionPicker,
+    EverythingSearch
+}
+
 public sealed class AppConfig
 {
     public List<QuickEntry> Entries { get; set; } = [];
     public Dictionary<string, DateTime> GroupLastUsedAt { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public List<WebSearchToolConfig> WebSearchTools { get; set; } = WebSearchToolConfig.CreateDefaults();
     public AiConfig Ai { get; set; } = AiConfig.CreateDefault();
+    public OcrConfig Ocr { get; set; } = new();
     public string TotalCommanderPath { get; set; } = string.Empty;
     public string DirectoryOpusPath { get; set; } = string.Empty;
+    public string EverythingPath { get; set; } = string.Empty;
     public OpenWith DefaultOpenWith { get; set; } = OpenWith.TotalCommander;
     public bool StartWithWindows { get; set; }
     public bool ShellMenuEnabled { get; set; }
     public string HotKey { get; set; } = string.Empty;
+    public bool RightDragEnabled { get; set; } = true;
+    public LeftDragAction LeftDragAction { get; set; } = LeftDragAction.AiActionPicker;
+    public int RightDragTriggerDistance { get; set; } = 120;
+    public int RightDragVerticalTolerance { get; set; } = 50;
+    public bool RememberLastView { get; set; } = true;
+    public string LastViewTab { get; set; } = "Folders";
+    public string LastViewGroup { get; set; } = "全部";
+    public bool SortByRecentUsage { get; set; }
+    public ClipboardHistoryConfig ClipboardHistory { get; set; } = new();
+}
+
+/// <summary>右滑主弹窗「历史」Tab：系统剪贴板文本历史。</summary>
+public sealed class ClipboardHistoryConfig
+{
+    public bool Enabled { get; set; } = true;
+    public int MaxItems { get; set; } = 50;
+    public int MaxTextLength { get; set; } = 20_000;
+    /// <summary>true = 退出后保存到本地 JSON；false = 仅内存。</summary>
+    public bool Persist { get; set; } = true;
+    public bool IgnoreDuplicates { get; set; } = true;
+}
+
+/// <summary>截图 OCR（百度通用文字识别等）配置。密钥走 AiSecretStore，不进明文 config。</summary>
+public sealed class OcrConfig
+{
+    public const string BaiduApiKeySecretId = "baidu-ocr-ak";
+    public const string BaiduSecretKeySecretId = "baidu-ocr-sk";
+
+    /// <summary>是否在左滑工具列显示「截图 OCR」。</summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>提供方：baidu（预留 local 等）。</summary>
+    public string Provider { get; set; } = "baidu";
+
+    /// <summary>百度 language_type，默认中英混合。</summary>
+    public string LanguageType { get; set; } = "CHN_ENG";
+
+    /// <summary>识别后是否自动 Ctrl+V 到手势来源窗（首期默认关）。</summary>
+    public bool AutoPasteAfterOcr { get; set; }
+}
+
+public sealed class WebSearchToolConfig
+{
+    public string Id { get; set; } = Guid.NewGuid().ToString("N")[..8];
+    public string Name { get; set; } = string.Empty;
+    public string UrlTemplate { get; set; } = string.Empty;
+    public bool Enabled { get; set; } = true;
+
+    public static List<WebSearchToolConfig> CreateDefaults() =>
+    [
+        new()
+        {
+            Id = "google",
+            Name = "Google 查询",
+            UrlTemplate = "https://www.google.com/search?q={query}"
+        },
+        new()
+        {
+            Id = "ccgp",
+            Name = "政府采购网查询",
+            UrlTemplate = "https://www.google.com/search?q=site%3Accgp.gov.cn+{query}"
+        },
+        new()
+        {
+            Id = "creditchina",
+            Name = "信用中国查询",
+            UrlTemplate = "https://www.google.com/search?q=site%3Acreditchina.gov.cn+{query}"
+        }
+    ];
 }
 
 public sealed class AiConfig
@@ -42,6 +120,10 @@ public sealed class AiConfig
     public List<AiProviderConfig> Providers { get; set; } = [];
     public List<AiPromptPreset> PromptPresets { get; set; } = [];
     public List<AiSkill> Skills { get; set; } = [];
+    /// <summary>
+    /// 左滑动作面板最近使用的动作键（格式 Kind:Id，如 Prompt:summarize），最近的在前，最多 6 个。
+    /// </summary>
+    public List<string> RecentAiActionIds { get; set; } = [];
 
     public static AiConfig CreateDefault()
     {

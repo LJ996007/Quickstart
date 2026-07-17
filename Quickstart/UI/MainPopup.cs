@@ -7,7 +7,8 @@ using Quickstart.Utils;
 
 public sealed class MainPopup : Form
 {
-    private enum TabKind { Folders, Files, Urls, Texts }
+    private enum TabKind { Folders, Files, Urls, Texts, ClipboardHistory, RecentItems }
+    private readonly record struct PathStatus(bool Exists, DateTime CheckedAtUtc);
 
     private static readonly Size ExpandedPopupLogicalSize = new(380, 440);
     private static readonly Size MinimumExpandedPopupLogicalSize = new(300, 340);
@@ -17,6 +18,7 @@ public sealed class MainPopup : Form
 
     private readonly ConfigManager _configManager;
     private readonly ProcessLauncher _launcher;
+    private readonly ClipboardHistoryService? _clipboardHistory;
     private readonly TextBox _searchBox;
     private readonly ListView _listView;
     private readonly ImageList _imageList;
@@ -24,8 +26,14 @@ public sealed class MainPopup : Form
     private readonly FaviconService _faviconService = new();
     // 统一存放高分辨率原图，自绘时再用高质量插值缩放到统一尺寸，保证图标大小/清晰度一致
     private readonly Dictionary<string, Image> _iconImages = new(StringComparer.OrdinalIgnoreCase);
+    // 按当前 DPI 预缩放后的图标。列表重绘时直接贴图，避免鼠标划过时反复做高质量插值。
+    private readonly Dictionary<string, Bitmap> _renderedIconImages = new(StringComparer.OrdinalIgnoreCase);
     private int _iconRenderSize;
     private const int IconSourceSize = 48;
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PathStatus> _pathExistsCache = new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _pathChecksInFlight = new(StringComparer.OrdinalIgnoreCase);
+    private readonly SemaphoreSlim _pathCheckGate = new(4);
+    private readonly CancellationTokenSource _disposeCts = new();
     private readonly System.Windows.Forms.Timer _debounceTimer;
     private readonly Label[] _tabLabels;
     private readonly TableLayoutPanel _tabLayout;
@@ -51,14 +59,18 @@ public sealed class MainPopup : Form
     private bool _isSearchExpanded;
     private List<string>? _lastGroupSignature;
     private readonly Dictionary<(string Text, int Width), string> _truncateCache = new();
-    private bool _suppressAutoHide;
+    // 嵌套计数：右键菜单 / 子对话框打开期间禁止失焦自动隐藏
+    private int _autoHideSuspendCount;
+    private bool SuppressAutoHide => _autoHideSuspendCount > 0;
 
     public event Action? ShowSettings;
 
-    public MainPopup(ConfigManager configManager, ProcessLauncher launcher)
+    public MainPopup(ConfigManager configManager, ProcessLauncher launcher, ClipboardHistoryService? clipboardHistory = null)
     {
         _configManager = configManager;
         _launcher = launcher;
+        _clipboardHistory = clipboardHistory;
+        RestoreRememberedView();
 
         AutoScaleMode = AutoScaleMode.Dpi;
 
@@ -195,23 +207,27 @@ public sealed class MainPopup : Form
         _listHost.Controls.Add(_listView);
         _listHost.Controls.Add(_toastLabel);
 
-        _tabLabels = new Label[4];
+        _tabLabels = new Label[6];
         _tabLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 5,
+            RowCount = 7,
             Margin = new Padding(0),
             Padding = new Padding(0),
             BackColor = Color.FromArgb(240, 240, 240)
         };
         _tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 4; i++)
-            _tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 72));
+        for (int i = 0; i < 6; i++)
+            _tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
         _tabLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        string[] tabTexts = ["文\n件\n夹", "文\n件", "网\n页", "文\n本"];
-        TabKind[] tabKinds = [TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts];
+        string[] tabTexts = ["文\n件\n夹", "文\n件", "网\n页", "文\n本", "历\n史", "最\n近"];
+        TabKind[] tabKinds =
+        [
+            TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts,
+            TabKind.ClipboardHistory, TabKind.RecentItems
+        ];
         for (int i = 0; i < tabTexts.Length; i++)
         {
             var kind = tabKinds[i];
@@ -225,6 +241,10 @@ public sealed class MainPopup : Form
                 Margin = new Padding(0)
             };
             label.Click += (_, _) => SwitchTab(kind);
+            if (kind == TabKind.ClipboardHistory)
+                _toolTip.SetToolTip(label, "剪贴板历史");
+            else if (kind == TabKind.RecentItems)
+                _toolTip.SetToolTip(label, "Windows 最近使用的文件和文件夹");
             _tabLabels[i] = label;
             _tabLayout.Controls.Add(label, 0, i);
         }
@@ -333,20 +353,18 @@ public sealed class MainPopup : Form
         ApplyTabStyles();
         ApplyScaledMetrics();
 
-        _listView.MouseClick += (_, e) =>
-        {
-            if (e.Button == MouseButtons.Right && _listView.FocusedItem?.Bounds.Contains(e.Location) == true)
-            {
-                var menu = BuildItemContextMenu();
-                menu.Show(_listView, e.Location);
-            }
-        };
+        _listView.MouseUp += OnListMouseUp;
 
         _listView.MouseDoubleClick += (_, _) =>
         {
             if (_listView.SelectedItems.Count > 0)
                 OpenSelectedEntry();
         };
+
+        // 左键单击历史/文本复制；右键弹出条目菜单（见 OnListMouseUp）
+
+        if (_clipboardHistory != null)
+            _clipboardHistory.Changed += OnClipboardHistoryChanged;
 
         _listView.ItemDrag += OnListItemDrag;
 
@@ -359,7 +377,19 @@ public sealed class MainPopup : Form
             }
             else if (e.KeyCode == Keys.Delete && _listView.SelectedItems.Count > 0)
             {
-                DeleteSelectedEntry();
+                if (_activeTab == TabKind.ClipboardHistory)
+                {
+                    var hist = GetSelectedHistoryItem();
+                    if (hist != null)
+                    {
+                        _clipboardHistory?.Remove(hist.Id);
+                        RefreshList();
+                    }
+                }
+                else
+                {
+                    DeleteSelectedEntry();
+                }
                 e.Handled = true;
             }
             else if (e.KeyCode == Keys.Escape)
@@ -442,8 +472,8 @@ public sealed class MainPopup : Form
 
         Deactivate += (_, _) =>
         {
-            // 打开编辑/删除等子对话框期间不自动隐藏，方便连续编辑多个条目
-            if (Visible && !_suppressAutoHide) Hide();
+            // 右键菜单 / 编辑对话框期间不自动隐藏，方便连续操作
+            if (Visible && !SuppressAutoHide) Hide();
         };
     }
 
@@ -456,16 +486,16 @@ public sealed class MainPopup : Form
             Font = new Font("Segoe MDL2 Assets", 10f),
             TextAlign = ContentAlignment.MiddleCenter,
             FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(245, 245, 245),
-            ForeColor = Color.FromArgb(75, 75, 75),
+            BackColor = Color.FromArgb(250, 250, 250),
+            ForeColor = Color.FromArgb(72, 72, 72),
             UseVisualStyleBackColor = false,
             Cursor = Cursors.Hand,
             Margin = new Padding(0),
             TabStop = false
         };
         button.FlatAppearance.BorderSize = 0;
-        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(232, 238, 246);
-        button.FlatAppearance.MouseDownBackColor = Color.FromArgb(218, 230, 246);
+        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(235, 235, 235);
+        button.FlatAppearance.MouseDownBackColor = Color.FromArgb(225, 225, 225);
         _toolTip.SetToolTip(button, tooltip);
         return button;
     }
@@ -628,9 +658,13 @@ public sealed class MainPopup : Form
         // ImageList 仅用于撑起行高；实际绘制用 _iconImages 的高分原图
         _imageList.ImageSize = new Size(iconSize, iconSize);
         _imageList.Images.Clear();
-        _iconImages.Clear();
+        DisposeRenderedIcons();
         // 通用网页占位图按固定高分辨率生成一次，缩放交给自绘
         _webEntryImage ??= LoadWebEntryImage(IconSourceSize);
+
+        // 原图与 DPI 无关，保留缓存；仅重建 ImageList 的行高占位图和目标尺寸绘制缓存。
+        foreach (var pair in _iconImages)
+            _imageList.Images.Add(pair.Key, pair.Value);
 
         if (IsHandleCreated)
             RefreshList();
@@ -702,6 +736,7 @@ public sealed class MainPopup : Form
         if (_activeTab == kind) return;
         _activeTab = kind;
         _activeGroup = AllGroupsLabel;
+        PersistCurrentView();
         ApplyTabStyles();
         UpdateSearchPlaceholder();
         RefreshList();
@@ -709,13 +744,21 @@ public sealed class MainPopup : Form
 
     private void ApplyTabStyles()
     {
-        TabKind[] kinds = [TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts];
+        TabKind[] kinds =
+        [
+            TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts,
+            TabKind.ClipboardHistory, TabKind.RecentItems
+        ];
         for (int i = 0; i < _tabLabels.Length; i++)
         {
             bool active = kinds[i] == _activeTab;
             _tabLabels[i].BackColor = active ? Color.FromArgb(60, 60, 60) : Color.FromArgb(240, 240, 240);
             _tabLabels[i].ForeColor = active ? Color.White : Color.FromArgb(80, 80, 80);
         }
+
+        var historyEnabled = _configManager.Config.ClipboardHistory?.Enabled != false;
+        if (_tabLabels.Length > 4)
+            _tabLabels[4].Enabled = historyEnabled || _activeTab == TabKind.ClipboardHistory;
     }
 
     private void ApplyGroupStyles()
@@ -737,21 +780,138 @@ public sealed class MainPopup : Form
             TabKind.Files => "搜索要打开的文件... (拼音首字母也可)",
             TabKind.Urls => "搜索网页...",
             TabKind.Texts => "搜索文本...",
+            TabKind.ClipboardHistory => "搜索剪贴板历史...",
+            TabKind.RecentItems => "搜索最近使用的文件和文件夹...",
             _ => "搜索..."
         };
+
+        // 系统数据 Tab 不支持新增收藏
+        var canAdd = _activeTab is not (TabKind.ClipboardHistory or TabKind.RecentItems);
+        _addButton.Enabled = canAdd;
+        _addButton.Visible = canAdd;
+    }
+
+    private void SuspendAutoHide() => _autoHideSuspendCount++;
+
+    private void ResumeAutoHide()
+    {
+        if (_autoHideSuspendCount > 0)
+            _autoHideSuspendCount--;
+    }
+
+    private void OnListMouseUp(object? sender, MouseEventArgs e)
+    {
+        var hit = FindListItemAtClientPoint(new Point(e.X, e.Y));
+        if (hit == null)
+            return;
+
+        // 右键：选中光标下的项再弹菜单（不要依赖 FocusedItem，避免点偏/焦点漂移）
+        if (e.Button == MouseButtons.Right)
+        {
+            hit.Selected = true;
+            hit.Focused = true;
+            ShowItemContextMenu(e.Location);
+            return;
+        }
+
+        // 左键单击：历史/文本也可直接复制（双击与手势松手仍可用）
+        if (e.Button != MouseButtons.Left)
+            return;
+        if (_activeTab != TabKind.ClipboardHistory && _activeTab != TabKind.Texts)
+            return;
+
+        hit.Selected = true;
+        OpenSelectedEntry();
+    }
+
+    /// <summary>
+    /// Details 模式下 GetItemAt 常只命中图标/文字区域，行内空白点不中；
+    /// 手势高亮/松手需要按「整行」命中，与 FullRowSelect 视觉一致。
+    /// </summary>
+    private ListViewItem? FindListItemAtScreenPoint(Point screenPt)
+        => FindListItemAtClientPoint(_listView.PointToClient(screenPt));
+
+    private ListViewItem? FindListItemAtClientPoint(Point clientPt)
+    {
+        if (!_listView.ClientRectangle.Contains(clientPt))
+            return null;
+
+        // 先走系统 HitTest / GetItemAt
+        var hit = _listView.HitTest(clientPt);
+        if (hit.Item != null)
+            return hit.Item;
+
+        var byAt = _listView.GetItemAt(clientPt.X, clientPt.Y);
+        if (byAt != null)
+            return byAt;
+
+        // 回退：按行 Bounds 的整行矩形命中（X 扩到列表客户区宽度）
+        foreach (ListViewItem item in _listView.Items)
+        {
+            var bounds = item.Bounds;
+            if (bounds.Height <= 0)
+                continue;
+
+            var fullRow = new Rectangle(
+                _listView.ClientRectangle.Left,
+                bounds.Top,
+                _listView.ClientSize.Width,
+                bounds.Height);
+            if (fullRow.Contains(clientPt))
+                return item;
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 列表项右键菜单。必须延迟 Dispose：若菜单项 Click 里再开模态对话框，
+    /// 会泵消息触发 Closed，过早 Dispose 会抛 ObjectDisposedException(ContextMenuStrip)。
+    /// 菜单打开期间同样要抑制失焦隐藏，否则 Deactivate 会先 Hide 主窗体导致打开/编辑失效。
+    /// </summary>
+    private void ShowItemContextMenu(Point location)
+    {
+        var menu = BuildItemContextMenu();
+        if (menu.Items.Count == 0)
+        {
+            menu.Dispose();
+            return;
+        }
+
+        SuspendAutoHide();
+        menu.Closed += (_, _) =>
+        {
+            // 等当前 Click / 即将弹出的模态框消息队列走完再释放
+            BeginInvoke(() =>
+            {
+                try
+                {
+                    if (!menu.IsDisposed)
+                        menu.Dispose();
+                }
+                catch
+                {
+                    // ignore dispose races
+                }
+
+                ResumeAutoHide();
+            });
+        };
+
+        menu.Show(_listView, location);
     }
 
     // 打开子对话框时保持主弹窗可见（抑制失焦自动隐藏），关闭后重新激活，便于连续编辑
     private DialogResult ShowChildDialog(Form dialog)
     {
-        _suppressAutoHide = true;
+        SuspendAutoHide();
         try
         {
             return DialogPresenter.ShowModal(dialog, this);
         }
         finally
         {
-            _suppressAutoHide = false;
+            ResumeAutoHide();
             ReactivateAfterChildDialog();
         }
     }
@@ -781,9 +941,62 @@ public sealed class MainPopup : Form
 
     private ContextMenuStrip BuildItemContextMenu()
     {
-        var entry = GetSelectedEntry();
         var menu = new ContextMenuStrip();
 
+        if (_activeTab == TabKind.ClipboardHistory)
+        {
+            var hist = GetSelectedHistoryItem();
+            if (hist == null)
+                return menu;
+
+            var copy = new ToolStripMenuItem("复制为纯文本");
+            copy.Font = new Font(copy.Font, FontStyle.Bold);
+            copy.Click += (_, _) => OpenSelectedEntry();
+            menu.Items.Add(copy);
+
+            menu.Items.Add(new ToolStripSeparator());
+
+            var del = new ToolStripMenuItem("删除本条");
+            del.Click += (_, _) =>
+            {
+                _clipboardHistory?.Remove(hist.Id);
+                RefreshList();
+            };
+            menu.Items.Add(del);
+
+            var clear = new ToolStripMenuItem("清空历史");
+            clear.Click += (_, _) =>
+            {
+                if (MessageBox.Show(this, "确定清空全部剪贴板历史？", "剪贴板历史",
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Question) != DialogResult.Yes)
+                    return;
+                _clipboardHistory?.Clear();
+                RefreshList();
+            };
+            menu.Items.Add(clear);
+            return menu;
+        }
+
+        if (_activeTab == TabKind.RecentItems)
+        {
+            var recent = GetSelectedRecentItem();
+            if (recent == null)
+                return menu;
+
+            var open = new ToolStripMenuItem("打开")
+            {
+                Font = new Font(menu.Font, FontStyle.Bold)
+            };
+            open.Click += (_, _) => OpenSelectedEntry();
+            menu.Items.Add(open);
+
+            var locate = new ToolStripMenuItem("在资源管理器中定位");
+            locate.Click += (_, _) => ProcessLauncher.OpenInExplorer(recent.DisplayPath);
+            menu.Items.Add(locate);
+            return menu;
+        }
+
+        var entry = GetSelectedEntry();
         if (entry == null) return menu;
 
         switch (entry.Type)
@@ -885,19 +1098,29 @@ public sealed class MainPopup : Form
 
     public void ShowPopup()
     {
-        ShowPopup(TabKind.Folders);
+        if (_configManager.Config.RememberLastView)
+        {
+            RestoreRememberedView();
+            ShowPopup(_activeTab, preserveGroup: true);
+        }
+        else
+        {
+            ShowPopup(TabKind.Folders);
+        }
     }
 
-    private void ShowPopup(TabKind kind, bool focusList = true)
+    private void ShowPopup(TabKind kind, bool focusList = true, bool preserveGroup = false)
     {
         _activeTab = kind;
-        _activeGroup = AllGroupsLabel;
+        if (!preserveGroup)
+            _activeGroup = AllGroupsLabel;
         _searchBox.Clear();
         SetSearchExpanded(false);
         ApplyTabStyles();
         UpdateSearchPlaceholder();
         EnsurePopupSizeForScreen(Screen.PrimaryScreen ?? Screen.FromPoint(Cursor.Position));
         RefreshList();
+        PersistCurrentView();
         PositionNearTray();
         Show();
         Activate();
@@ -970,6 +1193,9 @@ public sealed class MainPopup : Form
 
     private void AddNewEntry()
     {
+        if (_activeTab == TabKind.ClipboardHistory)
+            return;
+
         var entry = new QuickEntry
         {
             Type = _activeTab switch
@@ -990,10 +1216,13 @@ public sealed class MainPopup : Form
         var entry = GetSelectedEntry();
         if (entry == null) return;
 
+        var originalPath = entry.Path;
         using var form = new EntryEditForm(entry, BuildGroupSuggestions());
         if (ShowChildDialog(form) == DialogResult.OK)
         {
             _configManager.UpdateEntry(entry);
+            _pathExistsCache.TryRemove(originalPath, out _);
+            _pathExistsCache.TryRemove(entry.Path, out _);
             RemoveCachedIcon(CustomIconKey(entry.Id)); // 图标可能已更改，丢弃旧缓存
             ReconcileActiveGroup();
             RefreshList();
@@ -1007,7 +1236,7 @@ public sealed class MainPopup : Form
         if (entry == null) return;
 
         DialogResult result;
-        _suppressAutoHide = true;
+        SuspendAutoHide();
         try
         {
             result = DialogPresenter.ShowMessage(
@@ -1019,13 +1248,14 @@ public sealed class MainPopup : Form
         }
         finally
         {
-            _suppressAutoHide = false;
+            ResumeAutoHide();
             ReactivateAfterChildDialog();
         }
 
         if (result == DialogResult.Yes)
         {
             _configManager.RemoveEntry(entry.Id);
+            _pathExistsCache.TryRemove(entry.Path, out _);
             CustomIconStore.Remove(entry.Id);
             RemoveCachedIcon(CustomIconKey(entry.Id));
             ReconcileActiveGroup();
@@ -1035,27 +1265,94 @@ public sealed class MainPopup : Form
 
     private void OpenSelectedEntry(OpenWith? overrideWith = null)
     {
+        if (_activeTab == TabKind.ClipboardHistory)
+        {
+            var hist = GetSelectedHistoryItem();
+            if (hist != null)
+                ExecuteHistoryItem(hist, hideFirst: true);
+            return;
+        }
+
+        if (_activeTab == TabKind.RecentItems)
+        {
+            var recent = GetSelectedRecentItem();
+            if (recent != null)
+                ExecuteRecentItem(recent, hideFirst: true);
+            return;
+        }
+
         var entry = GetSelectedEntry();
         if (entry == null) return;
-        ExecuteEntry(entry, overrideWith);
-        Hide();
+        ExecuteEntry(entry, overrideWith, hideFirst: true);
     }
 
-    private void ExecuteEntry(QuickEntry entry, OpenWith? overrideWith = null)
+    private void ExecuteHistoryItem(ClipboardHistoryItem item, bool hideFirst = false)
     {
-        switch (entry.Type)
+        if (_clipboardHistory == null || string.IsNullOrEmpty(item.Text))
+            return;
+
+        // 先 Toast + 关窗，复制走服务（STA 重试 + 纯文本）
+        ShowToast("已复制");
+        if (hideFirst)
+            Hide();
+
+        _ = CopyHistoryItemAsync(item.Text);
+    }
+
+    private async Task CopyHistoryItemAsync(string text)
+    {
+        try
         {
-            case EntryType.Url:
+            if (_clipboardHistory != null)
+                await _clipboardHistory.CopyPlainTextAsync(text);
+            else
+                CopyToClipboard(text);
+        }
+        catch
+        {
+            // 写剪贴板失败时不再弹窗打扰
+        }
+    }
+
+    private void ExecuteEntry(QuickEntry entry, OpenWith? overrideWith = null, bool hideFirst = false)
+    {
+        // 文本复制必须在 UI 线程；先复制再关窗，避免剪贴板/Toast 异常。
+        if (entry.Type == EntryType.Text)
+        {
+            _configManager.TouchEntry(entry.Id);
+            CopyToClipboard(entry.Path);
+            if (hideFirst)
+                Hide();
+            return;
+        }
+
+        // 先在仍有前台权限时授权，再关弹窗。Process.Start 必须留在 UI 线程：
+        // 放到 Task.Run 后，Windows 会把外部程序视为后台抢焦点，Directory Opus /
+        // Everything 一类单实例程序尤其容易首次正常、后续只显示不激活。
+        WindowActivator.AllowAnyForeground();
+        if (hideFirst)
+            Hide();
+
+        LaunchEntry(entry, overrideWith);
+    }
+
+    private void LaunchEntry(QuickEntry entry, OpenWith? overrideWith)
+    {
+        try
+        {
+            if (entry.Type == EntryType.Url)
+            {
                 _configManager.TouchEntry(entry.Id);
                 ProcessLauncher.OpenUrl(entry.Path);
-                break;
-            case EntryType.Text:
-                _configManager.TouchEntry(entry.Id);
-                CopyToClipboard(entry.Path);
-                break;
-            default:
-                _launcher.Open(entry, overrideWith);
-                break;
+                return;
+            }
+
+            // File / Folder：ProcessLauncher 内部会 TouchEntry。
+            _launcher.Open(entry, overrideWith);
+        }
+        catch
+        {
+            // 打开失败静默忽略，与 ProcessLauncher 原有行为一致。
         }
     }
 
@@ -1125,6 +1422,7 @@ public sealed class MainPopup : Form
         UpdateSearchPlaceholder();
         EnsurePopupSizeForScreen(Screen.PrimaryScreen ?? Screen.FromPoint(Cursor.Position));
         RefreshList();
+        PersistCurrentView();
 
         if (!Visible)
         {
@@ -1146,6 +1444,26 @@ public sealed class MainPopup : Form
             EntryType.Text => TabKind.Texts,
             _ => TabKind.Folders
         };
+
+    private void RestoreRememberedView()
+    {
+        var config = _configManager.Config;
+        if (!config.RememberLastView)
+            return;
+
+        _activeTab = Enum.TryParse<TabKind>(config.LastViewTab, ignoreCase: true, out var tab)
+            ? tab
+            : TabKind.Folders;
+        _activeGroup = string.IsNullOrWhiteSpace(config.LastViewGroup)
+            ? AllGroupsLabel
+            : config.LastViewGroup.Trim();
+    }
+
+    private void PersistCurrentView()
+    {
+        if (_configManager.Config.RememberLastView)
+            _configManager.SetLastView(_activeTab.ToString(), _activeGroup);
+    }
 
     private static string GetDuplicateMessage(QuickEntry entry)
         => entry.Type == EntryType.Url ? "该网站已存在" : "该项目已存在";
@@ -1189,6 +1507,18 @@ public sealed class MainPopup : Form
 
     public void RefreshList()
     {
+        if (_activeTab == TabKind.ClipboardHistory)
+        {
+            RefreshClipboardHistoryList();
+            return;
+        }
+
+        if (_activeTab == TabKind.RecentItems)
+        {
+            RefreshRecentItemsList();
+            return;
+        }
+
         var query = _searchBox.Text.Trim();
         var typeEntries = GetEntriesForActiveTab();
         RebuildGroupLabels(typeEntries);
@@ -1211,10 +1541,13 @@ public sealed class MainPopup : Form
         }
         else
         {
-            entries = entries.OrderBy(e => e.SortOrder).ToList();
+            entries = _configManager.Config.SortByRecentUsage
+                ? entries.OrderByDescending(e => e.LastUsedAt).ThenBy(e => e.SortOrder).ToList()
+                : entries.OrderBy(e => e.SortOrder).ToList();
         }
 
         var faviconsToLoad = new List<string>();
+        var pathsToValidate = new List<QuickEntry>();
 
         _listView.BeginUpdate();
         _listView.Items.Clear();
@@ -1238,12 +1571,12 @@ public sealed class MainPopup : Form
                     if (favicon != null && host != null)
                     {
                         iconKey = FaviconKey(host);
-                        RegisterIcon(iconKey, favicon);
+                        RegisterIcon(iconKey, favicon, clone: true);
                     }
                     else if (_webEntryImage != null)
                     {
                         iconKey = "<URL_CUSTOM>";
-                        RegisterIcon(iconKey, _webEntryImage);
+                        RegisterIcon(iconKey, _webEntryImage, clone: true);
                         if (host != null) faviconsToLoad.Add(entry.Path);
                     }
                     else
@@ -1265,10 +1598,20 @@ public sealed class MainPopup : Form
             }
             else
             {
-                iconKey = Path.GetExtension(entry.Path).ToLowerInvariant();
-                if (string.IsNullOrEmpty(iconKey)) iconKey = "<NOEXT>";
-                if (!_iconImages.ContainsKey(iconKey))
-                    RegisterIcon(iconKey, IconExtractor.GetIcon(entry.Path, isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                // .exe/.lnk 等图标嵌在文件自身，必须按完整路径区分；其它类型按扩展名共用
+                if (IconExtractor.NeedsPerFileIcon(entry.Path))
+                {
+                    iconKey = FileIconKey(entry.Path);
+                    if (!_iconImages.ContainsKey(iconKey))
+                        RegisterIcon(iconKey, IconExtractor.GetIcon(entry.Path, isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                }
+                else
+                {
+                    iconKey = Path.GetExtension(entry.Path).ToLowerInvariant();
+                    if (string.IsNullOrEmpty(iconKey)) iconKey = "<NOEXT>";
+                    if (!_iconImages.ContainsKey(iconKey))
+                        RegisterIcon(iconKey, IconExtractor.GetIcon(entry.Path, isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                }
             }
 
             var item = string.IsNullOrEmpty(iconKey)
@@ -1280,8 +1623,19 @@ public sealed class MainPopup : Form
                 ? (entry.Path.Length > 200 ? entry.Path[..200] + "..." : entry.Path)
                 : entry.Path;
 
-            if (entry.Type is EntryType.Folder or EntryType.File && !PathExists(entry))
-                item.ForeColor = Color.Red;
+            if (entry.Type is EntryType.Folder or EntryType.File)
+            {
+                if (_pathExistsCache.TryGetValue(entry.Path, out var status)
+                    && DateTime.UtcNow - status.CheckedAtUtc < TimeSpan.FromSeconds(30))
+                {
+                    if (!status.Exists)
+                        item.ForeColor = Color.Red;
+                }
+                else
+                {
+                    pathsToValidate.Add(entry);
+                }
+            }
 
             _listView.Items.Add(item);
         }
@@ -1293,19 +1647,24 @@ public sealed class MainPopup : Form
 
         foreach (var url in faviconsToLoad.Distinct(StringComparer.OrdinalIgnoreCase))
             _ = LoadFaviconAsync(url);
+
+        QueuePathValidation(pathsToValidate);
     }
 
     private static string FaviconKey(string host) => "<FAV:" + host + ">";
+    private static string FileIconKey(string path) => "<FILE:" + path + ">";
 
     // 登记一张原图：_iconImages 供自绘高质量缩放，_imageList 仅用于撑行高
-    private void RegisterIcon(string key, Image? image)
+    private void RegisterIcon(string key, Image? image, bool clone = false)
     {
         if (image == null || _iconImages.ContainsKey(key))
             return;
 
-        _iconImages[key] = image;
+        // FaviconService 和网页占位图仍由各自服务持有；登记时复制一份，避免重复释放。
+        var ownedImage = clone ? new Bitmap(image) : image;
+        _iconImages[key] = ownedImage;
         if (!_imageList.Images.ContainsKey(key))
-            _imageList.Images.Add(key, image);
+            _imageList.Images.Add(key, ownedImage);
     }
 
     private static string CustomIconKey(string id) => "<CUSTOM:" + id + ">";
@@ -1328,6 +1687,9 @@ public sealed class MainPopup : Form
     {
         if (_iconImages.Remove(key, out var image))
             image?.Dispose();
+
+        if (_renderedIconImages.Remove(key, out var rendered))
+            rendered.Dispose();
 
         if (_imageList.Images.ContainsKey(key))
             _imageList.Images.RemoveByKey(key);
@@ -1362,7 +1724,7 @@ public sealed class MainPopup : Form
             return;
 
         var key = FaviconKey(host);
-        RegisterIcon(key, favicon);
+        RegisterIcon(key, favicon, clone: true);
 
         var changed = false;
         foreach (ListViewItem item in _listView.Items)
@@ -1393,6 +1755,9 @@ public sealed class MainPopup : Form
 
     private List<QuickEntry> GetEntriesForActiveTab()
     {
+        if (_activeTab is TabKind.ClipboardHistory or TabKind.RecentItems)
+            return [];
+
         var entries = _configManager.Config.Entries;
         return _activeTab switch
         {
@@ -1404,8 +1769,200 @@ public sealed class MainPopup : Form
         };
     }
 
+    private void RefreshRecentItemsList()
+    {
+        RebuildGroupLabels([]);
+        SetGroupColumnVisible(false);
+
+        var query = _searchBox.Text.Trim();
+        var items = WindowsRecentItemsService.GetItems().ToList();
+        if (!string.IsNullOrEmpty(query))
+        {
+            items = items
+                .Where(item => PinyinHelper.MatchesPinyin(item.Name, query)
+                    || PinyinHelper.MatchesPinyin(item.DisplayPath, query))
+                .ToList();
+        }
+
+        _listView.BeginUpdate();
+        _listView.Items.Clear();
+
+        if (items.Count == 0)
+        {
+            var empty = new ListViewItem(string.IsNullOrEmpty(query)
+                ? "暂无 Windows 最近使用记录"
+                : "无匹配的最近使用记录")
+            {
+                ForeColor = Color.FromArgb(140, 140, 140)
+            };
+            _listView.Items.Add(empty);
+        }
+        else
+        {
+            foreach (var recent in items)
+            {
+                string iconKey;
+                if (recent.IsDirectory)
+                {
+                    iconKey = "<DIR>";
+                    if (!_iconImages.ContainsKey(iconKey))
+                        RegisterIcon(iconKey, IconExtractor.GetIcon(recent.DisplayPath, isDirectory: true, useLargeIcon: true)?.ToBitmap());
+                }
+                else if (IconExtractor.NeedsPerFileIcon(recent.DisplayPath))
+                {
+                    iconKey = FileIconKey(recent.DisplayPath);
+                    if (!_iconImages.ContainsKey(iconKey))
+                        RegisterIcon(iconKey, IconExtractor.GetIcon(recent.DisplayPath, isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                }
+                else
+                {
+                    iconKey = Path.GetExtension(recent.DisplayPath).ToLowerInvariant();
+                    if (string.IsNullOrEmpty(iconKey)) iconKey = "<NOEXT>";
+                    if (!_iconImages.ContainsKey(iconKey))
+                        RegisterIcon(iconKey, IconExtractor.GetIcon(recent.DisplayPath, isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                }
+
+                var item = new ListViewItem(recent.Name, iconKey)
+                {
+                    ImageKey = iconKey,
+                    Tag = recent,
+                    ToolTipText = $"{FormatRelativeTime(recent.LastUsedAt)}\n{recent.DisplayPath}"
+                };
+                _listView.Items.Add(item);
+            }
+        }
+
+        _listView.EndUpdate();
+        _countLabel.Text = items.Count == 0 ? "0 项" : $"{items.Count} 项";
+        UpdateListColumnWidth();
+    }
+
+    private WindowsRecentItem? GetSelectedRecentItem()
+        => _listView.SelectedItems.Count == 0
+            ? null
+            : _listView.SelectedItems[0].Tag as WindowsRecentItem;
+
+    private void ExecuteRecentItem(WindowsRecentItem item, bool hideFirst = false)
+    {
+        try
+        {
+            WindowActivator.AllowAnyForeground();
+            if (hideFirst)
+                Hide();
+
+            System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo
+            {
+                FileName = item.LaunchPath,
+                UseShellExecute = true
+            });
+        }
+        catch
+        {
+            // 最近记录可能在显示后被移动或删除；打开失败时静默忽略。
+        }
+    }
+
+    private void RefreshClipboardHistoryList()
+    {
+        // 历史无分组
+        RebuildGroupLabels([]);
+        SetGroupColumnVisible(false);
+
+        var query = _searchBox.Text.Trim();
+        var items = _clipboardHistory?.GetItems().ToList() ?? [];
+        if (!string.IsNullOrEmpty(query))
+        {
+            items = items
+                .Where(i => i.Text.Contains(query, StringComparison.OrdinalIgnoreCase)
+                            || PinyinHelper.MatchesPinyin(i.Preview(80), query))
+                .ToList();
+        }
+
+        _listView.BeginUpdate();
+        _listView.Items.Clear();
+
+        if (items.Count == 0)
+        {
+            var empty = new ListViewItem(
+                string.IsNullOrEmpty(query)
+                    ? "暂无历史 · 复制文本后自动出现"
+                    : "无匹配历史");
+            empty.ForeColor = Color.FromArgb(140, 140, 140);
+            empty.Tag = null;
+            _listView.Items.Add(empty);
+        }
+        else
+        {
+            foreach (var hist in items)
+            {
+                var item = new ListViewItem(hist.Preview());
+                item.Tag = hist;
+                var tip = hist.Text.Length > 800 ? hist.Text[..800] + "…" : hist.Text;
+                item.ToolTipText = $"{FormatRelativeTime(hist.CopiedAt)} · {hist.CharCount} 字\n{tip}";
+                _listView.Items.Add(item);
+            }
+        }
+
+        _listView.EndUpdate();
+        _countLabel.Text = items.Count == 0 ? "0 项" : $"{items.Count} 项";
+        UpdateListColumnWidth();
+    }
+
+    private static string FormatRelativeTime(DateTime time)
+    {
+        var span = DateTime.Now - time;
+        if (span.TotalSeconds < 45) return "刚刚";
+        if (span.TotalMinutes < 60) return $"{(int)span.TotalMinutes} 分钟前";
+        if (span.TotalHours < 24) return $"{(int)span.TotalHours} 小时前";
+        if (span.TotalDays < 7) return $"{(int)span.TotalDays} 天前";
+        return time.ToString("MM-dd HH:mm", CultureInfo.InvariantCulture);
+    }
+
+    private ClipboardHistoryItem? GetSelectedHistoryItem()
+    {
+        if (_listView.SelectedItems.Count == 0) return null;
+        return _listView.SelectedItems[0].Tag as ClipboardHistoryItem;
+    }
+
+    private void OnClipboardHistoryChanged()
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+        if (!Visible || _activeTab != TabKind.ClipboardHistory)
+            return;
+        RefreshList();
+    }
+
+    private void SetGroupColumnVisible(bool visible)
+    {
+        _groupLayout.Visible = visible;
+        _groupSeparator.Visible = visible;
+    }
+
     private void RebuildGroupLabels(IEnumerable<QuickEntry> currentTypeEntries)
     {
+        if (_activeTab is TabKind.ClipboardHistory or TabKind.RecentItems)
+        {
+            // 清空分组 UI
+            if (_lastGroupSignature is { Count: 0 })
+            {
+                ApplyGroupStyles();
+                SetGroupColumnVisible(false);
+                return;
+            }
+
+            _lastGroupSignature = [];
+            _groupLayout.SuspendLayout();
+            foreach (var label in _groupLabels)
+                label.Dispose();
+            _groupLabels.Clear();
+            _groupLayout.Controls.Clear();
+            _groupLayout.ResumeLayout();
+            SetGroupColumnVisible(false);
+            return;
+        }
+
+        SetGroupColumnVisible(true);
         var groups = GetOrderedGroupNames(currentTypeEntries).ToList();
         if (_activeGroup != AllGroupsLabel
             && groups.All(group => !string.Equals(group, _activeGroup, StringComparison.OrdinalIgnoreCase)))
@@ -1491,6 +2048,8 @@ public sealed class MainPopup : Form
             return;
 
         _activeGroup = group;
+        _configManager.TouchGroup(group);
+        PersistCurrentView();
         RefreshList();
     }
 
@@ -1557,22 +2116,10 @@ public sealed class MainPopup : Form
             var key = item.ImageKey;
             if (!string.IsNullOrEmpty(key) && _iconImages.TryGetValue(key, out var img) && img != null)
             {
-                // 所有图标统一占用同一目标边长的方形槽位，等比缩放并居中，用高质量插值，
-                // 保证大小一致、清晰、不变形
                 var target = _iconRenderSize > 0 ? _iconRenderSize : _imageList.ImageSize.Width;
-                var fit = Math.Min((double)target / img.Width, (double)target / img.Height);
-                int dw = Math.Max(1, (int)Math.Round(img.Width * fit));
-                int dh = Math.Max(1, (int)Math.Round(img.Height * fit));
-                int dx = textX + (target - dw) / 2;
-                int dy = bounds.Y + (bounds.Height - dh) / 2;
-
-                var prevInterp = g.InterpolationMode;
-                var prevOffset = g.PixelOffsetMode;
-                g.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
-                g.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
-                g.DrawImage(img, new Rectangle(dx, dy, dw, dh));
-                g.InterpolationMode = prevInterp;
-                g.PixelOffsetMode = prevOffset;
+                var rendered = GetRenderedIcon(key, img, target);
+                var dy = bounds.Y + (bounds.Height - rendered.Height) / 2;
+                g.DrawImageUnscaled(rendered, textX, dy);
                 textX += target + UiScaleHelper.Scale(this, 4);
             }
         }
@@ -1588,6 +2135,36 @@ public sealed class MainPopup : Form
             textBounds,
             textColor,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine | TextFormatFlags.NoPadding);
+    }
+
+    private Bitmap GetRenderedIcon(string key, Image source, int target)
+    {
+        if (_renderedIconImages.TryGetValue(key, out var cached))
+            return cached;
+
+        var rendered = new Bitmap(target, target, System.Drawing.Imaging.PixelFormat.Format32bppPArgb);
+        var fit = Math.Min((double)target / source.Width, (double)target / source.Height);
+        var width = Math.Max(1, (int)Math.Round(source.Width * fit));
+        var height = Math.Max(1, (int)Math.Round(source.Height * fit));
+        var x = (target - width) / 2;
+        var y = (target - height) / 2;
+
+        using (var graphics = Graphics.FromImage(rendered))
+        {
+            graphics.InterpolationMode = System.Drawing.Drawing2D.InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = System.Drawing.Drawing2D.PixelOffsetMode.HighQuality;
+            graphics.DrawImage(source, new Rectangle(x, y, width, height));
+        }
+
+        _renderedIconImages[key] = rendered;
+        return rendered;
+    }
+
+    private void DisposeRenderedIcons()
+    {
+        foreach (var image in _renderedIconImages.Values)
+            image.Dispose();
+        _renderedIconImages.Clear();
     }
 
     private string GetTruncatedText(string text, int maxPx)
@@ -1640,10 +2217,76 @@ public sealed class MainPopup : Form
         return text[..startLen] + dots + (endLen > 0 ? text[^endLen..] : "");
     }
 
-    private static bool PathExists(QuickEntry entry)
-        => entry.Type == EntryType.Folder
-            ? Directory.Exists(entry.Path)
-            : File.Exists(entry.Path);
+    private void QueuePathValidation(IEnumerable<QuickEntry> entries)
+    {
+        foreach (var entry in entries
+                     .Where(entry => !string.IsNullOrWhiteSpace(entry.Path))
+                     .DistinctBy(entry => entry.Path, StringComparer.OrdinalIgnoreCase))
+        {
+            var path = entry.Path;
+            if (!_pathChecksInFlight.TryAdd(path, 0))
+                continue;
+
+            _ = ValidatePathAsync(path, entry.Type);
+        }
+    }
+
+    private async Task ValidatePathAsync(string path, EntryType type)
+    {
+        var token = _disposeCts.Token;
+        var gateEntered = false;
+        try
+        {
+            await _pathCheckGate.WaitAsync(token).ConfigureAwait(false);
+            gateEntered = true;
+
+            // File/Directory.Exists 可能在断开的网络盘上阻塞，必须与 UI 和鼠标钩子线程隔离。
+            var exists = await Task.Run(
+                () => type == EntryType.Folder ? Directory.Exists(path) : File.Exists(path),
+                CancellationToken.None).ConfigureAwait(false);
+
+            if (token.IsCancellationRequested)
+                return;
+
+            _pathExistsCache[path] = new PathStatus(exists, DateTime.UtcNow);
+            if (IsDisposed || !IsHandleCreated)
+                return;
+
+            try
+            {
+                BeginInvoke(() => ApplyPathStatus(path, exists));
+            }
+            catch (InvalidOperationException)
+            {
+                // 窗口正在销毁，无需再更新颜色。
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        finally
+        {
+            if (gateEntered)
+                _pathCheckGate.Release();
+            _pathChecksInFlight.TryRemove(path, out _);
+        }
+    }
+
+    private void ApplyPathStatus(string path, bool exists)
+    {
+        if (IsDisposed)
+            return;
+
+        foreach (ListViewItem item in _listView.Items)
+        {
+            if (item.Tag is QuickEntry entry
+                && entry.Type is EntryType.Folder or EntryType.File
+                && string.Equals(entry.Path, path, StringComparison.OrdinalIgnoreCase))
+            {
+                item.ForeColor = exists ? _listView.ForeColor : Color.Red;
+            }
+        }
+    }
 
     private void OnListItemDrag(object? sender, ItemDragEventArgs e)
     {
@@ -1652,7 +2295,9 @@ public sealed class MainPopup : Form
 
         if (!CanReorderEntries())
         {
-            ShowToast("搜索时不能调整顺序");
+            ShowToast(_configManager.Config.SortByRecentUsage
+                ? "最近使用排序下不能手动调整顺序"
+                : "搜索时不能调整顺序");
             return;
         }
 
@@ -1662,7 +2307,9 @@ public sealed class MainPopup : Form
     }
 
     private bool CanReorderEntries()
-        => string.IsNullOrWhiteSpace(_searchBox.Text);
+        => _activeTab is not (TabKind.ClipboardHistory or TabKind.RecentItems)
+            && string.IsNullOrWhiteSpace(_searchBox.Text)
+            && !_configManager.Config.SortByRecentUsage;
 
     private static bool HasEntryReorderData(IDataObject? data)
         => data?.GetDataPresent(EntryReorderDataFormat) == true;
@@ -1748,8 +2395,13 @@ public sealed class MainPopup : Form
 
     public void ShowAtGesturePoint(Point screenPt)
     {
-        _activeTab = TabKind.Folders;
-        _activeGroup = AllGroupsLabel;
+        if (_configManager.Config.RememberLastView)
+            RestoreRememberedView();
+        else
+        {
+            _activeTab = TabKind.Folders;
+            _activeGroup = AllGroupsLabel;
+        }
         _searchBox.Clear();
         SetSearchExpanded(false);
         ApplyTabStyles();
@@ -1758,6 +2410,7 @@ public sealed class MainPopup : Form
         var screen = Screen.FromPoint(screenPt);
         EnsurePopupSizeForScreen(screen);
         RefreshList();
+        PersistCurrentView();
 
         var workingArea = screen.WorkingArea;
         var popupMargin = UiScaleHelper.Scale(this, 8);
@@ -1774,8 +2427,12 @@ public sealed class MainPopup : Form
         var tabClientPt = _tabLayout.PointToClient(screenPt);
         if (_tabLayout.ClientRectangle.Contains(tabClientPt))
         {
-            TabKind[] kinds = [TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts];
-            for (int i = 0; i < _tabLabels.Length; i++)
+            TabKind[] kinds =
+            [
+                TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts,
+                TabKind.ClipboardHistory, TabKind.RecentItems
+            ];
+            for (int i = 0; i < _tabLabels.Length && i < kinds.Length; i++)
             {
                 if (_tabLabels[i].Bounds.Contains(tabClientPt))
                 {
@@ -1801,14 +2458,14 @@ public sealed class MainPopup : Form
             return;
         }
 
-        var clientPt = _listView.PointToClient(screenPt);
-        var item = _listView.GetItemAt(clientPt.X, clientPt.Y);
+        var item = FindListItemAtScreenPoint(screenPt);
         if (item != null)
         {
             if (!item.Selected)
             {
                 _listView.SelectedItems.Clear();
                 item.Selected = true;
+                item.Focused = true;
             }
         }
         else if (_listView.SelectedItems.Count > 0)
@@ -1825,12 +2482,30 @@ public sealed class MainPopup : Form
             return false;
         }
 
-        var clientPt = _listView.PointToClient(screenPt);
-        var item = _listView.GetItemAt(clientPt.X, clientPt.Y);
-        if (item?.Tag is QuickEntry entry)
+        // 整行命中；松手点在列表区内但略偏时，回退到当前高亮项（手势高亮与松手可能差 1 帧）
+        var hitItem = FindListItemAtScreenPoint(screenPt);
+        if (hitItem == null)
         {
-            ExecuteEntry(entry);
-            Hide();
+            var listClient = _listView.PointToClient(screenPt);
+            if (_listView.ClientRectangle.Contains(listClient) && _listView.SelectedItems.Count > 0)
+                hitItem = _listView.SelectedItems[0];
+        }
+
+        if (hitItem?.Tag is ClipboardHistoryItem hist)
+        {
+            ExecuteHistoryItem(hist, hideFirst: true);
+            return true;
+        }
+
+        if (hitItem?.Tag is QuickEntry entry)
+        {
+            ExecuteEntry(entry, hideFirst: true);
+            return true;
+        }
+
+        if (hitItem?.Tag is WindowsRecentItem recent)
+        {
+            ExecuteRecentItem(recent, hideFirst: true);
             return true;
         }
 
@@ -1957,13 +2632,24 @@ public sealed class MainPopup : Form
     {
         if (disposing)
         {
-            _faviconService.Dispose();
+            if (_clipboardHistory != null)
+                _clipboardHistory.Changed -= OnClipboardHistoryChanged;
+            _disposeCts.Cancel();
+            _debounceTimer.Dispose();
+            _toastTimer.Dispose();
+            _toolTip.Dispose();
+            DisposeRenderedIcons();
             foreach (var image in _iconImages.Values)
                 image?.Dispose();
             _iconImages.Clear();
             _webEntryImage?.Dispose();
+            _faviconService.Dispose();
+            _disposeCts.Dispose();
         }
 
         base.Dispose(disposing);
+
+        if (disposing)
+            _imageList.Dispose();
     }
 }

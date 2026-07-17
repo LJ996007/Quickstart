@@ -66,3 +66,11 @@ Quickstart/
 - csproj 启用了 `AllowUnsafeBlocks`（IconExtractor P/Invoke 需要）和 `Nullable`
 - 无外部 NuGet 依赖
 - UI 文本全部为中文
+
+## Versioning & Release Notes
+
+- 每次调整程序代码时，必须同步递增 `Quickstart/Quickstart.csproj` 中的 `<Version>`；默认按语义化版本递增补丁号，发布范围明显变化时再递增次版本号或主版本号。`installer/Quickstart.iss` 的默认 `MyAppVersion` 也要保持一致。
+- 每次版本调整都必须在 `Quickstart/Core/AppReleaseNotes.cs` 的版本记录顶部新增对应条目，写明版本号、日期和本次修改内容。
+- 版本记录中的最新版本号必须与 `Quickstart/Quickstart.csproj` 的 `<Version>` 完全一致。
+- 代码修改完成后默认**不要编译、构建或发布**；只有用户明确要求“编译”“构建”或“发布”时才执行相应命令。未收到明确要求时，仅完成代码、版本号和版本说明更新。
+- 纯文档、注释或仓库维护文件调整且不影响程序代码时，无需递增程序版本。

@@ -74,7 +74,7 @@ if ([string]::IsNullOrWhiteSpace($AppVersion)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($PublishDir)) {
-    $PublishDir = Join-Path $repoRoot "Quickstart\bin\$Configuration\net10.0-windows\$Runtime\publish"
+    $PublishDir = Join-Path $repoRoot "artifacts\release\v$AppVersion\$Runtime\publish"
 } else {
     $PublishDir = Resolve-RepoPath -RepoRoot $repoRoot -PathValue $PublishDir
 }

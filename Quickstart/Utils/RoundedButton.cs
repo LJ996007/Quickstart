@@ -27,19 +27,19 @@ public sealed class RoundedButton : Button
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    internal int CornerRadius { get; set; } = FormStyler.StandardCornerRadius;
+    internal int CornerRadius { get; set; } = 4;
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    internal Color NormalBackColor { get; set; } = SystemColors.Control;
+    internal Color NormalBackColor { get; set; } = Color.FromArgb(249, 249, 249);
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    internal Color HoverBackColor { get; set; } = SystemColors.ControlLight;
+    internal Color HoverBackColor { get; set; } = Color.FromArgb(238, 238, 238);
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
-    internal Color PressedBackColor { get; set; } = SystemColors.ControlDark;
+    internal Color PressedBackColor { get; set; } = Color.FromArgb(229, 229, 229);
 
     [Browsable(false)]
     [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
@@ -110,7 +110,7 @@ public sealed class RoundedButton : Button
 
     protected override void OnPaintBackground(PaintEventArgs pevent)
     {
-        using var brush = new SolidBrush(Parent?.BackColor ?? SystemColors.Control);
+        using var brush = new SolidBrush(GetOpaqueParentBackColor());
         pevent.Graphics.FillRectangle(brush, ClientRectangle);
     }
 
@@ -244,7 +244,7 @@ public sealed class RoundedButton : Button
         if (color.A == 0)
             return color;
 
-        var background = Parent?.BackColor ?? SystemColors.Control;
+        var background = GetOpaqueParentBackColor();
         amount = Math.Clamp(amount, 0f, 1f);
 
         int r = (int)Math.Round(color.R + ((background.R - color.R) * amount));
@@ -252,5 +252,19 @@ public sealed class RoundedButton : Button
         int b = (int)Math.Round(color.B + ((background.B - color.B) * amount));
         int a = (int)Math.Round(color.A + ((255 - color.A) * amount));
         return Color.FromArgb(a, r, g, b);
+    }
+
+    private Color GetOpaqueParentBackColor()
+    {
+        Control? current = Parent;
+        while (current != null)
+        {
+            if (current.BackColor.A == 255)
+                return current.BackColor;
+
+            current = current.Parent;
+        }
+
+        return SystemColors.Control;
     }
 }

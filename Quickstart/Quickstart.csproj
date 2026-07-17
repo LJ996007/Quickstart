@@ -19,7 +19,8 @@
     <PublishReadyToRun>true</PublishReadyToRun>
     <SelfContained>true</SelfContained>
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
-    <EnableCompressionInSingleFile>true</EnableCompressionInSingleFile>
+    <!-- 关闭 bundle 压缩以减少冷启动解压开销；仍保持自包含单 EXE 发布 -->
+    <EnableCompressionInSingleFile>false</EnableCompressionInSingleFile>
     <InvariantGlobalization>false</InvariantGlobalization>
     <BuiltInComInteropSupport>true</BuiltInComInteropSupport>
     <_SuppressWinFormsTrimError>true</_SuppressWinFormsTrimError>
@@ -27,7 +28,7 @@
     <!-- Assembly info -->
     <AssemblyName>Quickstart</AssemblyName>
     <RootNamespace>Quickstart</RootNamespace>
-    <Version>1.0.0</Version>
+    <Version>1.0.7</Version>
     <Description>Windows tray app for quick folder/file access</Description>
   </PropertyGroup>
 

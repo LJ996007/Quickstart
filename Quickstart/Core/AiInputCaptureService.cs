@@ -1,7 +1,9 @@
 namespace Quickstart.Core;
 
 using System.Collections.Specialized;
+using System.ComponentModel;
 using System.Runtime.InteropServices;
+using Quickstart.Utils;
 
 public enum AiCapturedInputKind
 {
@@ -22,8 +24,12 @@ public sealed class AiCapturedInput
 
 public sealed class AiInputCaptureService
 {
-    private const int ClipboardRetryCount = 5;
+    private const int ClipboardRetryCount = 8;
     private const int ClipboardRetryDelayMs = 80;
+    private const int ActivateRetryCount = 8;
+    private const int ActivateRetryDelayMs = 30;
+    private const ushort VkControl = 0x11;
+    private const ushort VkC = 0x43;
 
     // 激活来源窗口并捕获其选中内容（供左滑等场景复用，无需弹出 AI 面板）。在 UI 线程调用。
     public async Task<AiCapturedInput> CaptureFromSourceAsync(IntPtr sourceWindow, CancellationToken token, bool restoreClipboard = true)
@@ -52,15 +58,22 @@ public sealed class AiInputCaptureService
         if (sourceWindow == IntPtr.Zero || !IsWindow(sourceWindow))
             return;
 
-        SetForegroundWindow(sourceWindow);
-        await Task.Delay(80, token);
+        // 先释放前台限制，再用 AttachThreadInput 强制切回微信等来源窗。
+        WindowActivator.AllowAnyForeground();
+        WindowActivator.TryForceForeground(sourceWindow);
+
+        for (var attempt = 0; attempt < ActivateRetryCount; attempt++)
+        {
+            if (GetForegroundWindow() == sourceWindow)
+                break;
+
+            WindowActivator.TryForceForeground(sourceWindow);
+            await Task.Delay(ActivateRetryDelayMs, token);
+        }
+
+        // 给目标应用一点时间处理 WM_ACTIVATE，避免立刻发 Ctrl+C 被丢弃。
+        await Task.Delay(60, token);
     }
-
-    [DllImport("user32.dll")]
-    private static extern bool SetForegroundWindow(IntPtr hWnd);
-
-    [DllImport("user32.dll")]
-    private static extern bool IsWindow(IntPtr hWnd);
 
     // 在 UI 线程（STA）上调用：用 await Task.Delay 让出消息泵，避免冻结弹窗。
     public async Task<AiCapturedInput> CaptureSelectionAsync(CancellationToken token, bool restoreClipboard = true)
@@ -77,8 +90,9 @@ public sealed class AiInputCaptureService
             }
 
             Clipboard.Clear();
-            SendKeys.SendWait("^c");
-            await Task.Delay(150, token);
+            // 用 SendInput 模拟 Ctrl+C，比 SendKeys 更稳（微信等自定义控件尤其明显）
+            SendCopyShortcut();
+            await Task.Delay(180, token);
 
             var captured = await ReadClipboardContentAsync(token);
             return captured.HasContent
@@ -107,6 +121,34 @@ public sealed class AiInputCaptureService
                 TryRestoreClipboard(original);
         }
     }
+
+    private static void SendCopyShortcut()
+    {
+        var inputs = new[]
+        {
+            CreateKeyboardInput(VkControl, keyUp: false),
+            CreateKeyboardInput(VkC, keyUp: false),
+            CreateKeyboardInput(VkC, keyUp: true),
+            CreateKeyboardInput(VkControl, keyUp: true)
+        };
+
+        var sent = SendInput((uint)inputs.Length, inputs, Marshal.SizeOf<INPUT>());
+        if (sent != inputs.Length)
+            throw new Win32Exception(Marshal.GetLastWin32Error(), "无法发送复制快捷键。");
+    }
+
+    private static INPUT CreateKeyboardInput(ushort virtualKey, bool keyUp) => new()
+    {
+        type = InputKeyboard,
+        u = new InputUnion
+        {
+            ki = new KEYBDINPUT
+            {
+                wVk = virtualKey,
+                dwFlags = keyUp ? KeyEventKeyUp : 0
+            }
+        }
+    };
 
     private static async Task<AiCapturedInput> ReadClipboardContentAsync(CancellationToken token)
     {
@@ -186,4 +228,60 @@ public sealed class AiInputCaptureService
             }
         }
     }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern bool IsWindow(IntPtr hWnd);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern uint SendInput(uint inputCount, INPUT[] inputs, int inputSize);
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct INPUT
+    {
+        public uint type;
+        public InputUnion u;
+    }
+
+    [StructLayout(LayoutKind.Explicit)]
+    private struct InputUnion
+    {
+        [FieldOffset(0)] public MOUSEINPUT mi;
+        [FieldOffset(0)] public KEYBDINPUT ki;
+        [FieldOffset(0)] public HARDWAREINPUT hi;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MOUSEINPUT
+    {
+        public int dx;
+        public int dy;
+        public uint mouseData;
+        public uint dwFlags;
+        public uint time;
+        public UIntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KEYBDINPUT
+    {
+        public ushort wVk;
+        public ushort wScan;
+        public uint dwFlags;
+        public uint time;
+        public UIntPtr dwExtraInfo;
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct HARDWAREINPUT
+    {
+        public uint uMsg;
+        public ushort wParamL;
+        public ushort wParamH;
+    }
+
+    private const uint InputKeyboard = 1;
+    private const uint KeyEventKeyUp = 0x0002;
 }

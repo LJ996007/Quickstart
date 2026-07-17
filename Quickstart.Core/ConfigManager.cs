@@ -14,15 +14,14 @@ public sealed class ConfigManager : IDisposable
     private static readonly string ConfigPath = Path.Combine(AppDataDir, "config.json");
     private static readonly string BackupPath = Path.Combine(AppDataDir, "config.json.bak");
 
-    private static readonly JsonSerializerOptions JsonOpts =
-        AppConfigJsonContext.Default.Options;
-
     private AppConfig _config = new();
     private readonly object _lock = new();
+    private readonly object _ioLock = new();
 
     // 高频低价值写入（如 LastUsedAt）走防抖，合并多次更新为一次后台写盘，避免阻塞 UI 线程
     private readonly System.Threading.Timer _saveDebounceTimer;
     private bool _savePending;
+    private string? _pendingJson;
 
     public ConfigManager()
     {
@@ -91,38 +90,65 @@ public sealed class ConfigManager : IDisposable
     {
         // 立即写盘视为已落地，撤销任何挂起的防抖保存
         _savePending = false;
-
-        Directory.CreateDirectory(AppDataDir);
+        _pendingJson = null;
 
         var json = JsonSerializer.Serialize(_config, AppConfigJsonContext.Default.AppConfig);
-        var tempPath = ConfigPath + ".tmp";
+        WriteSnapshot(json);
+    }
 
-        // Atomic write: write to temp file, then rename
-        File.WriteAllText(tempPath, json);
-
-        // Backup current config
-        if (File.Exists(ConfigPath))
+    private void WriteSnapshot(string json)
+    {
+        lock (_ioLock)
         {
-            File.Copy(ConfigPath, BackupPath, overwrite: true);
-        }
+            Directory.CreateDirectory(AppDataDir);
 
-        File.Move(tempPath, ConfigPath, overwrite: true);
+            var tempPath = ConfigPath + ".tmp";
+
+            // Atomic write: write to temp file, then rename
+            File.WriteAllText(tempPath, json);
+
+            // Backup current config
+            if (File.Exists(ConfigPath))
+                File.Copy(ConfigPath, BackupPath, overwrite: true);
+
+            File.Move(tempPath, ConfigPath, overwrite: true);
+        }
     }
 
     // 标记有挂起改动并重置防抖计时器；到期后在后台线程写盘
     private void ScheduleSave()
     {
         _savePending = true;
+        // 在持有配置锁且修改刚完成时生成不可变快照。后台线程只写字符串，
+        // 不再遍历 UI 仍可能修改的 List/Dictionary。
+        _pendingJson = JsonSerializer.Serialize(_config, AppConfigJsonContext.Default.AppConfig);
         _saveDebounceTimer.Change(SaveDebounceMs, Timeout.Infinite);
     }
 
     // 立即落盘任何挂起的防抖改动（退出前调用，避免丢失）
     public void FlushPendingSave()
     {
+        string? json;
         lock (_lock)
         {
-            if (_savePending)
-                SaveInternal();
+            if (!_savePending)
+                return;
+
+            _savePending = false;
+            json = _pendingJson;
+            _pendingJson = null;
+        }
+
+        if (string.IsNullOrEmpty(json))
+            return;
+
+        try
+        {
+            WriteSnapshot(json);
+        }
+        catch
+        {
+            // 防抖保存失败不应在 ThreadPool 线程终止进程；下次显式保存仍会重试。
         }
     }
 
@@ -212,6 +238,46 @@ public sealed class ConfigManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// 记录左滑动作最近使用。actionKey 格式为 Kind:Id（如 Prompt:summarize）。
+    /// </summary>
+    public void TouchAiAction(string actionKey)
+    {
+        if (string.IsNullOrWhiteSpace(actionKey))
+            return;
+
+        lock (_lock)
+        {
+            _config.Ai.RecentAiActionIds ??= [];
+            var key = actionKey.Trim();
+            _config.Ai.RecentAiActionIds.RemoveAll(id =>
+                string.Equals(id, key, StringComparison.OrdinalIgnoreCase));
+            _config.Ai.RecentAiActionIds.Insert(0, key);
+            const int maxRecent = 6;
+            while (_config.Ai.RecentAiActionIds.Count > maxRecent)
+                _config.Ai.RecentAiActionIds.RemoveAt(_config.Ai.RecentAiActionIds.Count - 1);
+            ScheduleSave();
+        }
+    }
+
+    public void SetLastView(string tab, string group)
+    {
+        lock (_lock)
+        {
+            var normalizedTab = string.IsNullOrWhiteSpace(tab) ? "Folders" : tab.Trim();
+            var normalizedGroup = string.IsNullOrWhiteSpace(group) ? "全部" : group.Trim();
+            if (string.Equals(_config.LastViewTab, normalizedTab, StringComparison.Ordinal)
+                && string.Equals(_config.LastViewGroup, normalizedGroup, StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            _config.LastViewTab = normalizedTab;
+            _config.LastViewGroup = normalizedGroup;
+            ScheduleSave();
+        }
+    }
+
     public void Dispose()
     {
         _saveDebounceTimer.Dispose();
@@ -226,6 +292,115 @@ public sealed class ConfigManager : IDisposable
             : new Dictionary<string, DateTime>(_config.GroupLastUsedAt, StringComparer.OrdinalIgnoreCase);
 
         var migrated = false;
+        if (_config.WebSearchTools == null)
+        {
+            _config.WebSearchTools = WebSearchToolConfig.CreateDefaults();
+            migrated = true;
+        }
+
+        foreach (var tool in _config.WebSearchTools)
+        {
+            if (string.IsNullOrWhiteSpace(tool.Id))
+            {
+                tool.Id = Guid.NewGuid().ToString("N")[..8];
+                migrated = true;
+            }
+        }
+
+        if (_config.HotKey == null)
+        {
+            _config.HotKey = string.Empty;
+            migrated = true;
+        }
+
+        if (_config.EverythingPath == null)
+        {
+            _config.EverythingPath = string.Empty;
+            migrated = true;
+        }
+
+        if (_config.Ocr == null)
+        {
+            _config.Ocr = new OcrConfig();
+            migrated = true;
+        }
+        else
+        {
+            if (string.IsNullOrWhiteSpace(_config.Ocr.Provider))
+            {
+                _config.Ocr.Provider = "baidu";
+                migrated = true;
+            }
+
+            if (string.IsNullOrWhiteSpace(_config.Ocr.LanguageType))
+            {
+                _config.Ocr.LanguageType = "CHN_ENG";
+                migrated = true;
+            }
+        }
+
+        if (_config.ClipboardHistory == null)
+        {
+            _config.ClipboardHistory = new ClipboardHistoryConfig();
+            migrated = true;
+        }
+        else
+        {
+            if (_config.ClipboardHistory.MaxItems < 5)
+            {
+                _config.ClipboardHistory.MaxItems = 5;
+                migrated = true;
+            }
+            else if (_config.ClipboardHistory.MaxItems > 200)
+            {
+                _config.ClipboardHistory.MaxItems = 200;
+                migrated = true;
+            }
+
+            if (_config.ClipboardHistory.MaxTextLength < 100)
+            {
+                _config.ClipboardHistory.MaxTextLength = 100;
+                migrated = true;
+            }
+            else if (_config.ClipboardHistory.MaxTextLength > 200_000)
+            {
+                _config.ClipboardHistory.MaxTextLength = 200_000;
+                migrated = true;
+            }
+        }
+
+        if (!Enum.IsDefined(_config.LeftDragAction))
+        {
+            _config.LeftDragAction = LeftDragAction.AiActionPicker;
+            migrated = true;
+        }
+
+        var triggerDistance = Math.Clamp(_config.RightDragTriggerDistance, 40, 600);
+        if (_config.RightDragTriggerDistance != triggerDistance)
+        {
+            _config.RightDragTriggerDistance = triggerDistance;
+            migrated = true;
+        }
+
+        var verticalTolerance = Math.Clamp(_config.RightDragVerticalTolerance, 10, 300);
+        if (_config.RightDragVerticalTolerance != verticalTolerance)
+        {
+            _config.RightDragVerticalTolerance = verticalTolerance;
+            migrated = true;
+        }
+
+        if (_config.LastViewTab is not ("Folders" or "Files" or "Urls" or "Texts" or "ClipboardHistory" or "RecentItems"))
+        {
+            _config.LastViewTab = "Folders";
+            migrated = true;
+        }
+
+        if (string.IsNullOrWhiteSpace(_config.LastViewGroup))
+        {
+            _config.LastViewGroup = "全部";
+            migrated = true;
+        }
+
         foreach (var entry in _config.Entries)
         {
             if ((int)entry.Type == LegacyFileEntryType)
@@ -256,6 +431,27 @@ public sealed class ConfigManager : IDisposable
         _config.Ai.Providers ??= [];
         _config.Ai.PromptPresets ??= [];
         _config.Ai.Skills ??= [];
+        if (_config.Ai.RecentAiActionIds == null)
+        {
+            _config.Ai.RecentAiActionIds = [];
+            changed = true;
+        }
+        else
+        {
+            var normalizedRecent = _config.Ai.RecentAiActionIds
+                .Where(id => !string.IsNullOrWhiteSpace(id))
+                .Select(id => id.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(6)
+                .ToList();
+            if (normalizedRecent.Count != _config.Ai.RecentAiActionIds.Count
+                || normalizedRecent.Where((id, index) =>
+                    !string.Equals(id, _config.Ai.RecentAiActionIds[index], StringComparison.Ordinal)).Any())
+            {
+                _config.Ai.RecentAiActionIds = normalizedRecent;
+                changed = true;
+            }
+        }
 
         changed |= EnsureDefaultProviders(_config.Ai, defaults);
         changed |= EnsureDefaultPrompts(_config.Ai, defaults);

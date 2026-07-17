@@ -85,31 +85,33 @@ public sealed class ProcessLauncher(ConfigManager configManager)
     {
         try
         {
-            var dopusrt = Path.Combine(Path.GetDirectoryName(dopusPath)!, "dopusrt.exe");
+            if (!Directory.Exists(path))
+            {
+                OpenInExplorer(path);
+                return;
+            }
+
+            // 通过 dopus.exe /cmd 把内部 Go 命令发送给现有 Opus 实例：
+            // 在默认 Lister 中新建标签并切到前台，避免把目录作为普通启动参数
+            // 时额外打开一个 Opus 窗口。相比 dopusrt /acmd，直接使用主程序的
+            // 命令通道在新版 Opus 中更稳定。
+            WindowActivator.ClaimForegroundRights();
             WindowActivator.AllowAnyForeground();
 
-            if (File.Exists(dopusrt))
+            var startInfo = new ProcessStartInfo
             {
-                // Use the last-active Opus lister when one exists, otherwise open the
-                // default lister and create a tab there.
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = dopusrt,
-                    Arguments = $"/acmd Go \"{path}\" NEWTAB=deflister,findexisting,tofront",
-                    UseShellExecute = false
-                });
-            }
-            else
-            {
-                Process.Start(new ProcessStartInfo
-                {
-                    FileName = dopusPath,
-                    Arguments = $"\"{path}\"",
-                    UseShellExecute = false
-                });
-            }
+                FileName = dopusPath,
+                UseShellExecute = false
+            };
+            startInfo.ArgumentList.Add("/cmd");
+            startInfo.ArgumentList.Add("Go");
+            startInfo.ArgumentList.Add(path);
+            startInfo.ArgumentList.Add("NEWTAB=deflister,tofront");
 
-            WindowActivator.BringToFrontAsync(seedProcess: null, windowClass: null, procName: "dopus");
+            var process = Process.Start(startInfo)
+                ?? throw new InvalidOperationException("Directory Opus 未返回启动进程。");
+
+            WindowActivator.BringToFrontAsync(process, windowClass: null, procName: "dopus");
         }
         catch
         {

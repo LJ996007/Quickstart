@@ -205,9 +205,25 @@ macos/QuickstartMac/
 ### Windows
 
 ```bash
-dotnet build Quickstart.sln
-dotnet publish Quickstart/Quickstart.csproj -c Release -r win-x64
+debug.cmd
+release.cmd -SkipInstaller
 ```
+
+构建产物统一放在 `artifacts`，不再散落到各项目的 `bin/obj`：
+
+```text
+artifacts/
+├── debug/
+│   ├── win-x64/                 # 可直接运行的 Debug 版
+│   └── build/                   # 直接运行 dotnet build 时的临时输出
+├── release/
+│   ├── build/                   # 发布过程中自动清除的临时输出
+│   └── v1.0.0/win-x64/         # 正式发布物、符号与校验文件
+└── obj/                         # MSBuild/NuGet 中间文件
+```
+
+`release.cmd` 默认同时尝试生成安装包；只需要便携版时使用
+`release.cmd -SkipInstaller`。
 
 ### macOS
 

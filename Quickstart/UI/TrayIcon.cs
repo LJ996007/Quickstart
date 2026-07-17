@@ -1,12 +1,13 @@
 namespace Quickstart.UI;
 
+using System.Runtime.InteropServices;
+
 public sealed class TrayIcon : IDisposable
 {
     private readonly NotifyIcon _notifyIcon;
 
     public event Action? ShowMainWindow;
     public event Action? ShowSettings;
-    public event Action? ShowAiSettings;
     public event Action? ExitRequested;
 
     public TrayIcon()
@@ -30,13 +31,10 @@ public sealed class TrayIcon : IDisposable
     {
         var menu = new ContextMenuStrip();
 
+        // AI 设置已并入「设置」页，托盘菜单不再单独入口
         var settingsItem = new ToolStripMenuItem("设置(&S)");
         settingsItem.Click += (_, _) => ShowSettings?.Invoke();
         menu.Items.Add(settingsItem);
-
-        var aiSettingsItem = new ToolStripMenuItem("AI 设置(&A)");
-        aiSettingsItem.Click += (_, _) => ShowAiSettings?.Invoke();
-        menu.Items.Add(aiSettingsItem);
 
         menu.Items.Add(new ToolStripSeparator());
 
@@ -102,8 +100,20 @@ public sealed class TrayIcon : IDisposable
             g.DrawImage(bmp, new Rectangle(Point.Empty, targetSize), contentRect, GraphicsUnit.Pixel);
         }
 
-        return Icon.FromHandle(scaled.GetHicon());
+        var hIcon = scaled.GetHicon();
+        try
+        {
+            return (Icon)Icon.FromHandle(hIcon).Clone();
+        }
+        finally
+        {
+            DestroyIcon(hIcon);
+        }
     }
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool DestroyIcon(IntPtr hIcon);
 
     public void ShowBalloon(string title, string text, ToolTipIcon icon = ToolTipIcon.Info)
     {

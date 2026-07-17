@@ -3,6 +3,11 @@ namespace Quickstart.Core;
 using System.Text.Json.Serialization;
 
 [JsonSerializable(typeof(AppConfig))]
+[JsonSerializable(typeof(WebSearchToolConfig))]
+[JsonSerializable(typeof(OcrConfig))]
+[JsonSerializable(typeof(ClipboardHistoryConfig))]
+[JsonSerializable(typeof(ClipboardHistoryItem))]
+[JsonSerializable(typeof(ClipboardHistoryFile))]
 [JsonSerializable(typeof(AiConfig))]
 [JsonSerializable(typeof(AiProviderConfig))]
 [JsonSerializable(typeof(AiPromptPreset))]
@@ -13,4 +18,4 @@ using System.Text.Json.Serialization;
 [JsonSourceGenerationOptions(
     WriteIndented = true,
     PropertyNamingPolicy = JsonKnownNamingPolicy.CamelCase)]
-internal partial class AppConfigJsonContext : JsonSerializerContext;
+public partial class AppConfigJsonContext : JsonSerializerContext;

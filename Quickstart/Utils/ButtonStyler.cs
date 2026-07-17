@@ -1,40 +1,57 @@
 namespace Quickstart.Utils;
 
 /// <summary>
-/// Provides consistent rounded button styling across the application.
+/// WinUI 3 / Windows 11 inspired flat button styling.
+/// No gradient highlights, no heavy borders — just clean background tints
+/// with subtle hover/pressed states.
 /// </summary>
 public static class ButtonStyler
 {
-    private const int PillCornerRadius = 999;
+    private const int FlatCornerRadius = 4;
 
     public static void ApplyPrimary(Button btn)
     {
         ConfigureButton(
             btn,
-            backColor: Color.FromArgb(96, 170, 255),
+            backColor: Color.FromArgb(0, 103, 192),
             foreColor: Color.White,
-            hoverBackColor: Color.FromArgb(88, 162, 247),
-            pressedBackColor: Color.FromArgb(76, 149, 233),
-            borderColor: Color.FromArgb(42, 255, 255, 255),
-            hoverBorderColor: Color.FromArgb(52, 255, 255, 255),
-            pressedBorderColor: Color.FromArgb(30, 255, 255, 255),
-            highlightColor: Color.FromArgb(30, 255, 255, 255),
-            cornerRadius: PillCornerRadius);
+            hoverBackColor: Color.FromArgb(0, 89, 171),
+            pressedBackColor: Color.FromArgb(0, 78, 152),
+            borderColor: Color.Transparent,
+            hoverBorderColor: Color.Transparent,
+            pressedBorderColor: Color.Transparent,
+            highlightColor: Color.Transparent,
+            cornerRadius: FlatCornerRadius);
     }
 
     public static void ApplySecondary(Button btn)
     {
         ConfigureButton(
             btn,
-            backColor: Color.FromArgb(247, 247, 248),
-            foreColor: Color.FromArgb(55, 65, 81),
-            hoverBackColor: Color.FromArgb(240, 242, 245),
-            pressedBackColor: Color.FromArgb(232, 236, 240),
-            borderColor: Color.FromArgb(120, 205, 209, 214),
-            hoverBorderColor: Color.FromArgb(136, 198, 203, 209),
-            pressedBorderColor: Color.FromArgb(150, 188, 194, 201),
+            backColor: Color.FromArgb(249, 249, 249),
+            foreColor: Color.FromArgb(48, 48, 48),
+            hoverBackColor: Color.FromArgb(238, 238, 238),
+            pressedBackColor: Color.FromArgb(229, 229, 229),
+            borderColor: Color.Transparent,
+            hoverBorderColor: Color.FromArgb(220, 220, 220),
+            pressedBorderColor: Color.FromArgb(210, 210, 210),
             highlightColor: Color.Transparent,
-            cornerRadius: FormStyler.StandardCornerRadius);
+            cornerRadius: FlatCornerRadius);
+    }
+
+    public static void ApplyDangerSecondary(Button btn)
+    {
+        ConfigureButton(
+            btn,
+            backColor: Color.FromArgb(253, 247, 247),
+            foreColor: Color.FromArgb(196, 43, 28),
+            hoverBackColor: Color.FromArgb(251, 235, 235),
+            pressedBackColor: Color.FromArgb(248, 223, 223),
+            borderColor: Color.Transparent,
+            hoverBorderColor: Color.FromArgb(243, 200, 200),
+            pressedBorderColor: Color.FromArgb(238, 180, 180),
+            highlightColor: Color.Transparent,
+            cornerRadius: FlatCornerRadius);
     }
 
     private static void ConfigureButton(

@@ -11,8 +11,8 @@ public enum RightDragDirection
 
 public sealed class GlobalMouseHook : IDisposable
 {
-    private const int DragTriggerDx = 120;
-    private const int DragTolerateDy = 50;
+    private const int DragTriggerDxLogical = 120;
+    private const int DragTolerateDyLogical = 50;
 
     // 标记合成事件，避免钩子递归
     private static readonly UIntPtr SyntheticTag = (UIntPtr)0x51534854u; // 'QSHT'
@@ -22,8 +22,13 @@ public sealed class GlobalMouseHook : IDisposable
     private Point _startPt;
     private RightDragDirection _direction = RightDragDirection.Right;
     private IntPtr _sourceWindow;
+    private int _dragTriggerDx = DragTriggerDxLogical;
+    private int _dragTolerateDy = DragTolerateDyLogical;
     private bool _downSuppressed;
     private bool _disposed;
+    private bool _enabled = true;
+    private int _dragTriggerDxLogical = DragTriggerDxLogical;
+    private int _dragTolerateDyLogical = DragTolerateDyLogical;
 
     public event Action<RightDragDirection, Point, IntPtr>? GestureTriggered;
     public event Action<RightDragDirection, Point>? GestureMove;
@@ -39,6 +44,19 @@ public sealed class GlobalMouseHook : IDisposable
         _hookHandle = SetWindowsHookEx(WH_MOUSE_LL, _hookProc, GetModuleHandle(null), 0);
         if (_hookHandle == IntPtr.Zero)
             throw new InvalidOperationException($"鼠标钩子安装失败: {Marshal.GetLastWin32Error()}");
+    }
+
+    public void UpdateSettings(bool enabled, int triggerDistance, int verticalTolerance)
+    {
+        _enabled = enabled;
+        _dragTriggerDxLogical = Math.Clamp(triggerDistance, 40, 600);
+        _dragTolerateDyLogical = Math.Clamp(verticalTolerance, 10, 300);
+
+        if (!enabled && _state != GestureState.Idle)
+        {
+            _state = GestureState.Idle;
+            _downSuppressed = false;
+        }
     }
 
     private unsafe IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam)
@@ -65,8 +83,15 @@ public sealed class GlobalMouseHook : IDisposable
             switch (msg)
             {
                 case WM_RBUTTONDOWN:
+                    if (!_enabled)
+                        break;
+
                     _startPt = pt;
                     _sourceWindow = GetForegroundWindow();
+                    var dpi = _sourceWindow == IntPtr.Zero ? 96u : GetDpiForWindow(_sourceWindow);
+                    if (dpi == 0) dpi = 96;
+                    _dragTriggerDx = Math.Max(1, (int)Math.Round(_dragTriggerDxLogical * dpi / 96d));
+                    _dragTolerateDy = Math.Max(1, (int)Math.Round(_dragTolerateDyLogical * dpi / 96d));
                     _state = GestureState.Tracking;
                     _downSuppressed = true;
                     return (IntPtr)1; // 吞掉：下层窗口不感知按下
@@ -94,8 +119,8 @@ public sealed class GlobalMouseHook : IDisposable
 
                 case WM_MOUSEMOVE when _state == GestureState.Tracking:
                     var dx = pt.X - _startPt.X;
-                    if (Math.Abs(dx) >= DragTriggerDx &&
-                        Math.Abs(pt.Y - _startPt.Y) <= DragTolerateDy)
+                    if (Math.Abs(dx) >= _dragTriggerDx &&
+                        Math.Abs(pt.Y - _startPt.Y) <= _dragTolerateDy)
                     {
                         _direction = dx < 0 ? RightDragDirection.Left : RightDragDirection.Right;
                         _state = GestureState.PopupShown;
@@ -178,6 +203,9 @@ public sealed class GlobalMouseHook : IDisposable
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    private static extern uint GetDpiForWindow(IntPtr hWnd);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern uint SendInput(uint nInputs, INPUT[] pInputs, int cbSize);

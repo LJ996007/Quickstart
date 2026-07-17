@@ -1,9 +1,9 @@
 #define MyAppName "Quickstart"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.0"
+  #define MyAppVersion "1.0.7"
 #endif
 #ifndef MyPublishDir
-  #define MyPublishDir "..\\Quickstart\\bin\\Release\\net10.0-windows\\win-x64\\publish"
+  #define MyPublishDir "..\\artifacts\\release\\v{#MyAppVersion}\\win-x64\\publish"
 #endif
 #ifndef MyOutputDir
   #define MyOutputDir "output"

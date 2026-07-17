@@ -17,15 +17,31 @@ public static class AiSecretStore
     public static bool HasApiKey(AiProviderConfig provider)
         => !string.IsNullOrWhiteSpace(GetApiKey(provider));
 
+    public static bool HasApiKeyById(string secretId)
+        => !string.IsNullOrWhiteSpace(GetApiKeyById(secretId));
+
     public static string GetApiKey(AiProviderConfig provider)
     {
         if (string.IsNullOrWhiteSpace(provider.Id))
             return string.Empty;
 
+        var byId = GetApiKeyById(provider.Id);
+        if (!string.IsNullOrWhiteSpace(byId))
+            return byId;
+
+        return Protector.Unprotect(provider.ApiKeyProtected);
+    }
+
+    /// <summary>按任意密钥槽 Id 读取（如 Provider Id、baidu-ocr-ak）。</summary>
+    public static string GetApiKeyById(string secretId)
+    {
+        if (string.IsNullOrWhiteSpace(secretId))
+            return string.Empty;
+
         lock (Lock)
         {
             var secrets = Load();
-            if (secrets.ProviderApiKeys.TryGetValue(provider.Id, out var record))
+            if (secrets.ProviderApiKeys.TryGetValue(secretId, out var record))
             {
                 var storedKey = ResolveApiKey(record);
                 if (!string.IsNullOrWhiteSpace(storedKey))
@@ -33,7 +49,7 @@ public static class AiSecretStore
             }
         }
 
-        return Protector.Unprotect(provider.ApiKeyProtected);
+        return string.Empty;
     }
 
     public static void SaveApiKey(string providerId, string apiKey)

@@ -45,10 +45,33 @@ internal static class UiScaleHelper
 
         return control switch
         {
-            TextBoxBase textBox => Math.Max(minHeight, textBox.PreferredHeight + Scale(control, 2)),
+            // Single-line TextBox paints text with a fixed top margin; if Height >
+            // PreferredHeight the text looks top-aligned (not vertically centered)
+            // and FixedSingle can clip the bottom border. Always use PreferredHeight.
+            TextBoxBase { Multiline: false } textBox => textBox.PreferredHeight,
+            TextBoxBase textBox => Math.Max(minHeight, textBox.PreferredHeight),
             ComboBox comboBox => Math.Max(minHeight, comboBox.PreferredSize.Height),
             _ => minHeight
         };
+    }
+
+    /// <summary>
+    /// Locks a single-line TextBox to its native PreferredHeight so text sits
+    /// correctly inside the border (vertical centering of the glyph box).
+    /// </summary>
+    public static int FitSingleLineTextBox(TextBox textBox)
+    {
+        if (textBox.Multiline)
+            return textBox.Height;
+
+        var height = textBox.PreferredHeight;
+        textBox.AutoSize = false;
+        textBox.MinimumSize = new Size(Math.Max(0, textBox.MinimumSize.Width), height);
+        textBox.MaximumSize = textBox.MaximumSize.Width > 0
+            ? new Size(textBox.MaximumSize.Width, height)
+            : Size.Empty;
+        textBox.Height = height;
+        return height;
     }
 
     public static Size GetButtonSize(

@@ -1,0 +1,18 @@
+<Project>
+  <PropertyGroup>
+    <!-- Keep generated files out of source project folders. -->
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
+    <OutputPath>$(MSBuildThisFileDirectory)artifacts\debug\build\$(MSBuildProjectName)\</OutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <OutputPath>$(MSBuildThisFileDirectory)artifacts\release\build\$(MSBuildProjectName)\</OutputPath>
+  </PropertyGroup>
+
+  <PropertyGroup Condition="'$(Configuration)' != 'Debug' and '$(Configuration)' != 'Release'">
+    <OutputPath>$(MSBuildThisFileDirectory)artifacts\build\$(Configuration)\$(MSBuildProjectName)\</OutputPath>
+  </PropertyGroup>
+</Project>
