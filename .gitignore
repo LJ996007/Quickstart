@@ -23,8 +23,18 @@ Quickstart.Mac/build/
 # Local agent workspace
 .workbuddy/
 
-.alma-snapshots
+.alma-snapshots/
 
 # Local AI editor instructions
 AGENTS.md
 CLAUDE.md
+# One-off local tools / scratch
+generate-icon.cs
+
+# Local clipboard / screenshot dumps
+剪贴板图片.jpg
+clipboard-*.jpg
+clipboard-*.png
+
+# Local AI / editor dirs
+.agents/
