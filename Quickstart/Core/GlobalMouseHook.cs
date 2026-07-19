@@ -13,6 +13,7 @@ public sealed class GlobalMouseHook : IDisposable
 {
     private const int DragTriggerDxLogical = 120;
     private const int DragTolerateDyLogical = 50;
+    private const int WM_QUIT = 0x0012;
 
     // 标记合成事件，避免钩子递归
     private static readonly UIntPtr SyntheticTag = (UIntPtr)0x51534854u; // 'QSHT'
@@ -26,24 +27,43 @@ public sealed class GlobalMouseHook : IDisposable
     private int _dragTolerateDy = DragTolerateDyLogical;
     private bool _downSuppressed;
     private bool _disposed;
-    private bool _enabled = true;
-    private int _dragTriggerDxLogical = DragTriggerDxLogical;
-    private int _dragTolerateDyLogical = DragTolerateDyLogical;
+
+    // UI 线程写、钩子线程读：用 volatile 保证可见性
+    private volatile bool _enabled = true;
+    private volatile int _dragTriggerDxLogical = DragTriggerDxLogical;
+    private volatile int _dragTolerateDyLogical = DragTolerateDyLogical;
 
     public event Action<RightDragDirection, Point, IntPtr>? GestureTriggered;
     public event Action<RightDragDirection, Point>? GestureMove;
     public event Action<RightDragDirection, Point>? GestureReleased;
     public event Action? GestureCancelled;
 
-    private readonly IntPtr _hookHandle;
-    private readonly LowLevelMouseProc _hookProc;
+    private IntPtr _hookHandle;
+    private LowLevelMouseProc? _hookProc;
+    private readonly Thread _hookThread;
+    private readonly ManualResetEventSlim _hookReady = new(false);
+    private uint _hookThreadId;
+    private Exception? _hookStartError;
 
     public GlobalMouseHook()
     {
-        _hookProc = HookCallback;
-        _hookHandle = SetWindowsHookEx(WH_MOUSE_LL, _hookProc, GetModuleHandle(null), 0);
+        _hookThread = new Thread(HookThreadMain)
+        {
+            IsBackground = true,
+            Name = "Quickstart.MouseHook",
+            // 钩子回调必须尽快返回，否则会拖慢整机鼠标并可能被系统静默摘除
+            Priority = ThreadPriority.Highest
+        };
+        _hookThread.Start();
+
+        if (!_hookReady.Wait(TimeSpan.FromSeconds(3)))
+            throw new InvalidOperationException("鼠标钩子线程启动超时。");
+
         if (_hookHandle == IntPtr.Zero)
-            throw new InvalidOperationException($"鼠标钩子安装失败: {Marshal.GetLastWin32Error()}");
+        {
+            var detail = _hookStartError?.Message ?? Marshal.GetLastWin32Error().ToString();
+            throw new InvalidOperationException($"鼠标钩子安装失败: {detail}");
+        }
     }
 
     public void UpdateSettings(bool enabled, int triggerDistance, int verticalTolerance)
@@ -56,6 +76,43 @@ public sealed class GlobalMouseHook : IDisposable
         {
             _state = GestureState.Idle;
             _downSuppressed = false;
+        }
+    }
+
+    private void HookThreadMain()
+    {
+        try
+        {
+            _hookThreadId = GetCurrentThreadId();
+            // 必须由安装钩子的线程持有委托引用，防止 GC 回收
+            _hookProc = HookCallback;
+            _hookHandle = SetWindowsHookEx(WH_MOUSE_LL, _hookProc, GetModuleHandle(null), 0);
+            if (_hookHandle == IntPtr.Zero)
+                _hookStartError = new InvalidOperationException(Marshal.GetLastWin32Error().ToString());
+        }
+        catch (Exception ex)
+        {
+            _hookStartError = ex;
+        }
+        finally
+        {
+            _hookReady.Set();
+        }
+
+        if (_hookHandle == IntPtr.Zero)
+            return;
+
+        // WH_MOUSE_LL 回调经本线程消息循环派发，与 UI 线程彻底解耦
+        while (GetMessage(out var msg, IntPtr.Zero, 0, 0) > 0)
+        {
+            TranslateMessage(ref msg);
+            DispatchMessage(ref msg);
+        }
+
+        if (_hookHandle != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_hookHandle);
+            _hookHandle = IntPtr.Zero;
         }
     }
 
@@ -181,12 +238,24 @@ public sealed class GlobalMouseHook : IDisposable
 
     public void Dispose()
     {
-        if (!_disposed)
+        if (_disposed)
+            return;
+        _disposed = true;
+
+        if (_hookThreadId != 0 && _hookThread.IsAlive)
         {
-            _disposed = true;
-            if (_hookHandle != IntPtr.Zero)
-                UnhookWindowsHookEx(_hookHandle);
+            PostThreadMessage(_hookThreadId, WM_QUIT, IntPtr.Zero, IntPtr.Zero);
+            _hookThread.Join(500);
         }
+
+        // 线程若已退出会自行 Unhook；兜底再卸一次
+        if (_hookHandle != IntPtr.Zero)
+        {
+            UnhookWindowsHookEx(_hookHandle);
+            _hookHandle = IntPtr.Zero;
+        }
+
+        _hookReady.Dispose();
     }
 
     private delegate IntPtr LowLevelMouseProc(int nCode, IntPtr wParam, IntPtr lParam);
@@ -213,8 +282,36 @@ public sealed class GlobalMouseHook : IDisposable
     [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
     private static extern IntPtr GetModuleHandle(string? lpModuleName);
 
+    [DllImport("kernel32.dll")]
+    private static extern uint GetCurrentThreadId();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool PostThreadMessage(uint idThread, int msg, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    private static extern int GetMessage(out MSG lpMsg, IntPtr hWnd, uint wMsgFilterMin, uint wMsgFilterMax);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool TranslateMessage(ref MSG lpMsg);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr DispatchMessage(ref MSG lpMsg);
+
     [StructLayout(LayoutKind.Sequential)]
     private struct POINT { public int x, y; }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSG
+    {
+        public IntPtr hwnd;
+        public uint message;
+        public IntPtr wParam;
+        public IntPtr lParam;
+        public uint time;
+        public POINT pt;
+    }
 
     [StructLayout(LayoutKind.Sequential)]
     private struct MSLLHOOKSTRUCT

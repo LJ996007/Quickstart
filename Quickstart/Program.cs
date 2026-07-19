@@ -1,5 +1,7 @@
 namespace Quickstart;
 
+using System.Diagnostics;
+using System.Reflection;
 using System.Text;
 using Quickstart.Core;
 using Quickstart.UI;
@@ -9,13 +11,21 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
-        // Register GB2312 encoding for pinyin helper
-        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+        var startupSw = Stopwatch.StartNew();
+        var perfEnabled = string.Equals(
+            Environment.GetEnvironmentVariable("QUICKSTART_PERF"),
+            "1",
+            StringComparison.Ordinal);
+        void Perf(string milestone)
+        {
+            if (!perfEnabled)
+                return;
+            StartupPerf.Log(milestone, startupSw.ElapsedMilliseconds);
+        }
 
-        // 注册 Windows 平台的密钥保护器（DPAPI）
-        AiSecretStore.Protector = new DpapiSecretProtector();
+        Perf("main-enter");
 
-        // Parse command line
+        // Parse command line first — secondary-instance path should do zero extra work
         string? externalRequest = null;
         var openSettingsOnStart = false;
         if (args.Length >= 2 && args[0] == "--add")
@@ -32,7 +42,7 @@ static class Program
             externalRequest = args[0];
         }
 
-        // Single instance check
+        // Single instance check (before Encoding/DPAPI registration for --add fast path)
         using var singleInstance = new SingleInstance();
         if (!singleInstance.TryAcquire())
         {
@@ -44,54 +54,18 @@ static class Program
             return;
         }
 
+        // Register GB2312 encoding for pinyin helper
+        Encoding.RegisterProvider(CodePagesEncodingProvider.Instance);
+
+        // 注册 Windows 平台的密钥保护器（DPAPI）
+        AiSecretStore.Protector = new DpapiSecretProtector();
+
         ApplicationConfiguration.Initialize();
 
         // Core services
         var configManager = new ConfigManager();
         configManager.Load();
-
-        var exePath = Application.ExecutablePath;
-        if (!ShellIntegration.IsProtocolRegistered(exePath))
-            ShellIntegration.RegisterProtocol(exePath);
-
-        if (configManager.Config.ShellMenuEnabled)
-        {
-            if (!ShellIntegration.IsRegistered(exePath))
-                ShellIntegration.Register(exePath);
-        }
-
-        // Auto-detect TC on first run
-        if (string.IsNullOrEmpty(configManager.Config.TotalCommanderPath))
-        {
-            var detectedTc = TcDetector.Detect();
-            if (detectedTc != null)
-            {
-                configManager.Config.TotalCommanderPath = detectedTc;
-                configManager.Save();
-            }
-        }
-
-        // Auto-detect Directory Opus on first run
-        if (string.IsNullOrEmpty(configManager.Config.DirectoryOpusPath))
-        {
-            var detectedDopus = DopusDetector.Detect();
-            if (detectedDopus != null)
-            {
-                configManager.Config.DirectoryOpusPath = detectedDopus;
-                configManager.Save();
-            }
-        }
-
-        // Auto-detect Everything on first run. A stale path is detected again when a search runs.
-        if (string.IsNullOrEmpty(configManager.Config.EverythingPath))
-        {
-            var detectedEverything = EverythingDetector.Detect();
-            if (detectedEverything != null)
-            {
-                configManager.Config.EverythingPath = detectedEverything;
-                configManager.Save();
-            }
-        }
+        Perf("config-loaded");
 
         var launcher = new ProcessLauncher(configManager);
         var aiClient = new AiClient();
@@ -112,6 +86,7 @@ static class Program
         using var globalHotKey = new GlobalHotKey();
         using var clipboardHistory = new ClipboardHistoryService(configManager);
         clipboardHistory.Start(uiDispatcher);
+        Perf("tray-and-hook-ready");
 
         MainPopup EnsureMainPopup()
         {
@@ -162,6 +137,7 @@ static class Program
         // 绝不能在 ContextMenuStrip 的 Click 栈上同步 ShowDialog，否则会与菜单的
         // 模态消息循环嵌套冲突：设置窗体出不来，UI 线程卡住；本进程的 WH_MOUSE_LL
         // 钩子无法及时返回，表现为整机鼠标严重卡顿。必须等菜单关闭后再弹出。
+        // （钩子已迁到专用线程后整机鼠标不再受影响，但菜单嵌套仍会导致设置窗异常。）
         trayIcon.ShowSettings += () => PostToUi(ShowSettings);
 
         trayIcon.ExitRequested += () =>
@@ -221,10 +197,10 @@ static class Program
 
         // Global right-drag gesture: hold right button, drag right to show popup
         var gestureMoveTimer = new System.Windows.Forms.Timer { Interval = 16 };
-        var latestGesturePoint = Point.Empty;
-        var latestGestureDirection = RightDragDirection.Right;
-        var gestureMovePending = false;
+        // 钩子线程写、UI 线程读：独立对象字段 + Interlocked，避免 Point 撕裂与 lambda ref 限制
+        var gestureMove = new GestureMoveState();
         var initialUiPrewarmed = false;
+        var deferredStartupDone = false;
         var aiPopupPrewarmTimer = new System.Windows.Forms.Timer { Interval = 3000 };
 
         void PostToUi(Action action)
@@ -246,12 +222,11 @@ static class Program
 
         void ProcessPendingGestureMove()
         {
-            if (!gestureMovePending)
+            if (Interlocked.Exchange(ref gestureMove.Pending, 0) == 0)
                 return;
 
-            gestureMovePending = false;
-            var direction = latestGestureDirection;
-            var point = latestGesturePoint;
+            var direction = (RightDragDirection)Volatile.Read(ref gestureMove.Direction);
+            var point = GestureMoveState.UnpackPoint(Interlocked.Read(ref gestureMove.PackedPoint));
 
             if (direction == RightDragDirection.Right && mainPopup is { Visible: true })
                 mainPopup.HighlightAtScreenPoint(point);
@@ -325,17 +300,17 @@ static class Program
         mouseHook.GestureMove += (direction, pt) =>
         {
             // 只保留最新坐标，由 16 ms UI 定时器统一处理，避免高回报率鼠标淹没消息泵。
-            latestGestureDirection = direction;
-            latestGesturePoint = pt;
-            gestureMovePending = true;
+            Volatile.Write(ref gestureMove.Direction, (int)direction);
+            Interlocked.Exchange(ref gestureMove.PackedPoint, GestureMoveState.PackPoint(pt));
+            Interlocked.Exchange(ref gestureMove.Pending, 1);
         };
         mouseHook.GestureReleased += (direction, pt) =>
         {
             PostGestureAction(() =>
             {
-                latestGestureDirection = direction;
-                latestGesturePoint = pt;
-                gestureMovePending = true;
+                Volatile.Write(ref gestureMove.Direction, (int)direction);
+                Interlocked.Exchange(ref gestureMove.PackedPoint, GestureMoveState.PackPoint(pt));
+                Interlocked.Exchange(ref gestureMove.Pending, 1);
                 ProcessPendingGestureMove();
 
                 if (direction == RightDragDirection.Right && mainPopup is { Visible: true })
@@ -355,7 +330,7 @@ static class Program
                         aiActionPicker.EnterInteractiveMode();
                 }
 
-                gestureMovePending = false;
+                Interlocked.Exchange(ref gestureMove.Pending, 0);
                 gestureMoveTimer.Stop();
             });
         };
@@ -363,7 +338,7 @@ static class Program
         {
             PostGestureAction(() =>
             {
-                gestureMovePending = false;
+                Interlocked.Exchange(ref gestureMove.Pending, 0);
                 gestureMoveTimer.Stop();
                 if (mainPopup is { Visible: true }) mainPopup.Hide();
                 if (aiActionPicker is { Visible: true }) aiActionPicker.Hide();
@@ -385,9 +360,11 @@ static class Program
         aiPopupPrewarmTimer.Tick += (_, _) =>
         {
             aiPopupPrewarmTimer.Stop();
-            _ = EnsureAiPopup();
+            if (ShouldPrewarmAiPopup(configManager.Config))
+                _ = EnsureAiPopup();
         };
         Application.Idle += PrewarmInitialUi;
+        Application.Idle += RunDeferredStartupOnce;
 
         void ExecuteLeftAction(AiActionSelection selection, Point point)
         {
@@ -477,13 +454,71 @@ static class Program
 
             initialUiPrewarmed = true;
             Application.Idle -= PrewarmInitialUi;
-            // 主弹窗和动作选择器体积较小，先创建句柄以消除第一次手势的控件初始化抖动。
-            _ = EnsureMainPopup();
+            // 主弹窗和动作选择器体积较小，先创建句柄并以隐藏状态跑一次 RefreshList，
+            // 把图标提取/布局测量挪到空闲期，首次手势与后续手势耗时基本一致。
+            var popup = EnsureMainPopup();
+            try
+            {
+                popup.RefreshList();
+            }
+            catch
+            {
+                // 预热失败不影响后续正常显示
+            }
+
             _ = EnsureAiActionPicker();
-            // AI 编辑窗口较重，延迟预热，避免与托盘和鼠标钩子的启动就绪争抢 UI 线程。
-            aiPopupPrewarmTimer.Start();
+            // AI 编辑窗口较重；仅在用户配置了 API 类动作时预热
+            if (ShouldPrewarmAiPopup(configManager.Config))
+                aiPopupPrewarmTimer.Start();
+
+            Perf("prewarm-done");
         }
 
+        void RunDeferredStartupOnce(object? sender, EventArgs e)
+        {
+            if (deferredStartupDone)
+                return;
+
+            deferredStartupDone = true;
+            Application.Idle -= RunDeferredStartupOnce;
+
+            var exePath = Application.ExecutablePath;
+            var appVersion = GetAppVersion();
+            var configSnapshot = configManager.Config;
+
+            // Shell 注册表 + 外部工具探测全部后移到后台，托盘更早就绪
+            _ = Task.Run(() =>
+            {
+                try
+                {
+                    if (!ShellIntegration.IsProtocolRegistered(exePath))
+                        ShellIntegration.RegisterProtocol(exePath);
+
+                    if (configSnapshot.ShellMenuEnabled)
+                    {
+                        if (!ShellIntegration.IsRegistered(exePath))
+                            ShellIntegration.Register(exePath);
+                    }
+                }
+                catch
+                {
+                    // 注册表失败不影响主功能
+                }
+
+                try
+                {
+                    RunToolDetection(configManager, appVersion);
+                }
+                catch
+                {
+                    // 探测失败下次版本升级再试
+                }
+
+                Perf("deferred-startup-done");
+            });
+        }
+
+        Perf("entering-run");
         // Run without a main form — tray icon keeps the app alive
         Application.Run();
 
@@ -700,6 +735,122 @@ static class Program
                         aiPopup.Activate();
                 }
             }
+        }
+    }
+
+    /// <summary>
+    /// 后台探测 TC/DOpus/Everything：路径为空时才探测；本版本已探测过且仍空则跳过。
+    /// </summary>
+    private static void RunToolDetection(ConfigManager configManager, string appVersion)
+    {
+        var config = configManager.Config;
+        var alreadyAttemptedThisVersion = string.Equals(
+            config.ToolDetectionAttemptedVersion,
+            appVersion,
+            StringComparison.OrdinalIgnoreCase);
+
+        var changed = false;
+
+        if (string.IsNullOrEmpty(config.TotalCommanderPath) && !alreadyAttemptedThisVersion)
+        {
+            var detectedTc = TcDetector.Detect();
+            if (detectedTc != null)
+            {
+                config.TotalCommanderPath = detectedTc;
+                changed = true;
+            }
+        }
+
+        if (string.IsNullOrEmpty(config.DirectoryOpusPath) && !alreadyAttemptedThisVersion)
+        {
+            var detectedDopus = DopusDetector.Detect();
+            if (detectedDopus != null)
+            {
+                config.DirectoryOpusPath = detectedDopus;
+                changed = true;
+            }
+        }
+
+        if (string.IsNullOrEmpty(config.EverythingPath) && !alreadyAttemptedThisVersion)
+        {
+            var detectedEverything = EverythingDetector.Detect();
+            if (detectedEverything != null)
+            {
+                config.EverythingPath = detectedEverything;
+                changed = true;
+            }
+        }
+
+        // 无论是否找到，都记下本版本已探测，避免未安装工具的用户每次启动都重扫
+        if (!alreadyAttemptedThisVersion)
+        {
+            config.ToolDetectionAttemptedVersion = appVersion;
+            changed = true;
+        }
+
+        if (changed)
+            configManager.Save();
+    }
+
+    private static bool ShouldPrewarmAiPopup(AppConfig config)
+    {
+        // 左滑直接 Everything 且没有 API 类 Prompt/Skill 时跳过 AiPopup 预热
+        if (config.LeftDragAction == LeftDragAction.EverythingSearch)
+        {
+            var ai = config.Ai;
+            var hasApiPrompt = ai.PromptPresets.Any(p => p.Target == AiPromptTarget.Api);
+            var hasSkill = ai.Skills.Count > 0;
+            if (!hasApiPrompt && !hasSkill)
+                return false;
+        }
+
+        return true;
+    }
+
+    private static string GetAppVersion()
+    {
+        var version = Assembly.GetExecutingAssembly().GetName().Version;
+        return version == null
+            ? "0.0.0"
+            : $"{version.Major}.{version.Minor}.{version.Build}";
+    }
+}
+
+/// <summary>手势移动跨线程状态（钩子线程写、UI 定时器读）。</summary>
+file sealed class GestureMoveState
+{
+    public long PackedPoint;
+    public int Direction = (int)RightDragDirection.Right;
+    public int Pending;
+
+    public static long PackPoint(Point pt) => ((long)pt.Y << 32) | (uint)pt.X;
+    public static Point UnpackPoint(long packed) => new((int)packed, (int)(packed >> 32));
+}
+
+/// <summary>启动打点：QUICKSTART_PERF=1 时追加写入 %LOCALAPPDATA%\Quickstart\startup-trace.log</summary>
+file static class StartupPerf
+{
+    private static readonly string LogPath = Path.Combine(
+        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+        "Quickstart",
+        "startup-trace.log");
+
+    private static readonly object Lock = new();
+
+    public static void Log(string milestone, long elapsedMs)
+    {
+        try
+        {
+            var line = $"{DateTime.Now:yyyy-MM-dd HH:mm:ss.fff}\t+{elapsedMs}ms\t{milestone}{Environment.NewLine}";
+            lock (Lock)
+            {
+                Directory.CreateDirectory(Path.GetDirectoryName(LogPath)!);
+                File.AppendAllText(LogPath, line);
+            }
+        }
+        catch
+        {
+            // 打点失败不影响功能
         }
     }
 }

@@ -91,25 +91,24 @@ public sealed class ProcessLauncher(ConfigManager configManager)
                 return;
             }
 
-            // 通过 dopus.exe /cmd 把内部 Go 命令发送给现有 Opus 实例：
-            // 在默认 Lister 中新建标签并切到前台，避免把目录作为普通启动参数
-            // 时额外打开一个 Opus 窗口。相比 dopusrt /acmd，直接使用主程序的
-            // 命令通道在新版 Opus 中更稳定。
+            // 官方命令通道是 dopusrt.exe /cmd <内部命令>。
+            // 若对 dopus.exe 使用 ArgumentList 把 "Go" 单独作为参数，
+            // 主程序会把 "Go" 当成相对路径打开，落到安装目录下的
+            // "...\Directory Opus\Go"，所有文件夹都会指到那里。
+            var runner = ResolveDopusCommandRunner(dopusPath);
+            var escapedPath = path.Replace("\"", "\"\"", StringComparison.Ordinal);
+            // PATH= 可正确处理空格；NEWTAB=deflister,tofront 复用默认窗口并新建标签
+            var arguments = $"/cmd Go PATH=\"{escapedPath}\" NEWTAB=deflister,tofront";
+
             WindowActivator.ClaimForegroundRights();
             WindowActivator.AllowAnyForeground();
 
-            var startInfo = new ProcessStartInfo
+            var process = Process.Start(new ProcessStartInfo
             {
-                FileName = dopusPath,
+                FileName = runner,
+                Arguments = arguments,
                 UseShellExecute = false
-            };
-            startInfo.ArgumentList.Add("/cmd");
-            startInfo.ArgumentList.Add("Go");
-            startInfo.ArgumentList.Add(path);
-            startInfo.ArgumentList.Add("NEWTAB=deflister,tofront");
-
-            var process = Process.Start(startInfo)
-                ?? throw new InvalidOperationException("Directory Opus 未返回启动进程。");
+            }) ?? throw new InvalidOperationException("Directory Opus 未返回启动进程。");
 
             WindowActivator.BringToFrontAsync(process, windowClass: null, procName: "dopus");
         }
@@ -117,6 +116,31 @@ public sealed class ProcessLauncher(ConfigManager configManager)
         {
             OpenInExplorer(path);
         }
+    }
+
+    /// <summary>
+    /// 解析用于发送 /cmd 的可执行文件：优先同目录 dopusrt.exe，其次用户配置路径。
+    /// </summary>
+    private static string ResolveDopusCommandRunner(string dopusPath)
+    {
+        if (string.IsNullOrWhiteSpace(dopusPath))
+            return dopusPath;
+
+        if (string.Equals(Path.GetFileName(dopusPath), "dopusrt.exe", StringComparison.OrdinalIgnoreCase)
+            && File.Exists(dopusPath))
+        {
+            return dopusPath;
+        }
+
+        var dir = Path.GetDirectoryName(dopusPath);
+        if (!string.IsNullOrEmpty(dir))
+        {
+            var dopusrt = Path.Combine(dir, "dopusrt.exe");
+            if (File.Exists(dopusrt))
+                return dopusrt;
+        }
+
+        return dopusPath;
     }
 
     public static void OpenInExplorer(string path)

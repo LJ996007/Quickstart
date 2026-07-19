@@ -43,6 +43,26 @@ public sealed class FaviconService : IDisposable
             : null;
     }
 
+    /// <summary>仅查内存缓存，不触盘，可安全在 UI 线程同步调用。</summary>
+    public Image? TryGetMemoryCached(string url)
+    {
+        var host = GetHost(url);
+        if (host == null)
+            return null;
+
+        return _memCache.TryGetValue(host, out var cached) ? cached : null;
+    }
+
+    /// <summary>是否已知该 host 无图标（内存 miss 标记）。</summary>
+    public bool IsKnownMiss(string url)
+    {
+        var host = GetHost(url);
+        if (host == null)
+            return true;
+
+        return _memCache.TryGetValue(host, out var cached) && cached == null;
+    }
+
     /// <summary>同步查询缓存（内存 / 磁盘），不发起网络请求。</summary>
     public Image? TryGetCached(string url)
     {

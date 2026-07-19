@@ -25,12 +25,20 @@ public static class PinyinHelper
     private static readonly Encoding? Gb2312 = TryGetGb2312();
 
     // 记忆化整串首字母结果，避免每次按键对每个条目重复计算。条目名稳定，命中率高。
+    private const int MaxInitialsCacheEntries = 4096;
     private static readonly ConcurrentDictionary<string, string> InitialsCache = new();
 
     private static Encoding? TryGetGb2312()
     {
         try { return Encoding.GetEncoding("GB2312"); }
         catch { return null; }
+    }
+
+    private static void TrimInitialsCacheIfNeeded()
+    {
+        // 托盘长驻时剪贴板预览/最近路径会不断进来；超上限整表清空，重算成本低
+        if (InitialsCache.Count > MaxInitialsCacheEntries)
+            InitialsCache.Clear();
     }
 
     public static char? GetInitial(char ch)
@@ -72,9 +80,13 @@ public static class PinyinHelper
     }
 
     public static string GetInitials(string text)
-        => string.IsNullOrEmpty(text)
-            ? string.Empty
-            : InitialsCache.GetOrAdd(text, ComputeInitials);
+    {
+        if (string.IsNullOrEmpty(text))
+            return string.Empty;
+
+        TrimInitialsCacheIfNeeded();
+        return InitialsCache.GetOrAdd(text, ComputeInitials);
+    }
 
     private static string ComputeInitials(string text)
     {

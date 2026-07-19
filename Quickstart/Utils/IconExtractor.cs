@@ -45,6 +45,7 @@ public static class IconExtractor
     };
 
     private static readonly Dictionary<string, Icon> _cache = new(StringComparer.OrdinalIgnoreCase);
+    private static readonly object _cacheLock = new();
 
     /// <summary>
     /// 是否应按实际路径取图标（而不是按扩展名共享通用图标）。
@@ -57,6 +58,12 @@ public static class IconExtractor
         return !string.IsNullOrEmpty(ext) && PerFileIconExtensions.Contains(ext);
     }
 
+    /// <summary>
+    /// 按扩展名取通用图标（SHGFI_USEFILEATTRIBUTES，不触盘），可安全在 UI 线程同步调用。
+    /// </summary>
+    public static Icon? GetGenericTypeIcon(string extension, bool useLargeIcon = false)
+        => GetTypeIcon(extension, useLargeIcon);
+
     public static Icon? GetIcon(string path, bool isDirectory, bool useLargeIcon = false)
     {
         var sizeSuffix = useLargeIcon ? "@L" : "@S";
@@ -64,12 +71,18 @@ public static class IconExtractor
         if (isDirectory)
         {
             var dirKey = "<DIR>" + sizeSuffix;
-            if (_cache.TryGetValue(dirKey, out var dirCached))
-                return dirCached;
+            lock (_cacheLock)
+            {
+                if (_cache.TryGetValue(dirKey, out var dirCached))
+                    return dirCached;
+            }
 
             var dirIcon = QueryShellIcon("folder", FILE_ATTRIBUTE_DIRECTORY, useFileAttributes: true, useLargeIcon);
             if (dirIcon != null)
-                _cache[dirKey] = dirIcon;
+            {
+                lock (_cacheLock)
+                    _cache[dirKey] = dirIcon;
+            }
             return dirIcon;
         }
 
@@ -80,8 +93,11 @@ public static class IconExtractor
         if (needsPerFile)
         {
             var pathKey = path + sizeSuffix;
-            if (_cache.TryGetValue(pathKey, out var pathCached))
-                return pathCached;
+            lock (_cacheLock)
+            {
+                if (_cache.TryGetValue(pathKey, out var pathCached))
+                    return pathCached;
+            }
 
             // 优先读真实路径（拿到 .exe 自带图标）；失败再退回扩展名通用图标
             Icon? realIcon = null;
@@ -97,14 +113,18 @@ public static class IconExtractor
 
             if (realIcon != null)
             {
-                _cache[pathKey] = realIcon;
+                lock (_cacheLock)
+                    _cache[pathKey] = realIcon;
                 return realIcon;
             }
 
             // 回退：通用 .exe 等类型图标（不访问路径）
             var fallback = GetTypeIcon(extension, useLargeIcon);
             if (fallback != null)
-                _cache[pathKey] = fallback;
+            {
+                lock (_cacheLock)
+                    _cache[pathKey] = fallback;
+            }
             return fallback;
         }
 
@@ -112,17 +132,60 @@ public static class IconExtractor
         return GetTypeIcon(extension, useLargeIcon);
     }
 
+    /// <summary>
+    /// 仅从真实路径提取图标（触盘 I/O），失败返回 null，不写扩展名回退缓存。
+    /// 供后台 STA 线程异步补真图使用。
+    /// </summary>
+    public static Icon? ExtractRealFileIcon(string path, bool useLargeIcon = false)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+            return null;
+
+        var sizeSuffix = useLargeIcon ? "@L" : "@S";
+        var pathKey = path + sizeSuffix;
+        lock (_cacheLock)
+        {
+            if (_cache.TryGetValue(pathKey, out var pathCached))
+                return pathCached;
+        }
+
+        Icon? realIcon = null;
+        try
+        {
+            if (File.Exists(path))
+                realIcon = QueryShellIcon(path, FILE_ATTRIBUTE_NORMAL, useFileAttributes: false, useLargeIcon);
+        }
+        catch
+        {
+            return null;
+        }
+
+        if (realIcon != null)
+        {
+            lock (_cacheLock)
+                _cache[pathKey] = realIcon;
+        }
+
+        return realIcon;
+    }
+
     private static Icon? GetTypeIcon(string extension, bool useLargeIcon)
     {
         var sizeSuffix = useLargeIcon ? "@L" : "@S";
         var cacheKey = (string.IsNullOrEmpty(extension) ? "<NOEXT>" : extension) + sizeSuffix;
-        if (_cache.TryGetValue(cacheKey, out var cached))
-            return cached;
+        lock (_cacheLock)
+        {
+            if (_cache.TryGetValue(cacheKey, out var cached))
+                return cached;
+        }
 
         var lookupPath = string.IsNullOrEmpty(extension) ? "file" : $"file{extension}";
         var icon = QueryShellIcon(lookupPath, FILE_ATTRIBUTE_NORMAL, useFileAttributes: true, useLargeIcon);
         if (icon != null)
-            _cache[cacheKey] = icon;
+        {
+            lock (_cacheLock)
+                _cache[cacheKey] = icon;
+        }
         return icon;
     }
 
@@ -155,8 +218,11 @@ public static class IconExtractor
     public static Icon? GetShellIcon(int index, bool useLargeIcon = false)
     {
         var cacheKey = $"<SHELL:{index}:{(useLargeIcon ? "L" : "S")}>";
-        if (_cache.TryGetValue(cacheKey, out var cached))
-            return cached;
+        lock (_cacheLock)
+        {
+            if (_cache.TryGetValue(cacheKey, out var cached))
+                return cached;
+        }
 
         var shell32 = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "shell32.dll");
         var hIcon = ExtractIcon(IntPtr.Zero, shell32, index);
@@ -166,7 +232,8 @@ public static class IconExtractor
         try
         {
             var icon = (Icon)Icon.FromHandle(hIcon).Clone();
-            _cache[cacheKey] = icon;
+            lock (_cacheLock)
+                _cache[cacheKey] = icon;
             return icon;
         }
         finally

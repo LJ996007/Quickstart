@@ -24,12 +24,16 @@ public sealed class MainPopup : Form
     private readonly ImageList _imageList;
     private Image? _webEntryImage;
     private readonly FaviconService _faviconService = new();
+    private readonly AsyncIconLoader _iconLoader = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _iconLoadsInFlight = new(StringComparer.OrdinalIgnoreCase);
     // 统一存放高分辨率原图，自绘时再用高质量插值缩放到统一尺寸，保证图标大小/清晰度一致
     private readonly Dictionary<string, Image> _iconImages = new(StringComparer.OrdinalIgnoreCase);
     // 按当前 DPI 预缩放后的图标。列表重绘时直接贴图，避免鼠标划过时反复做高质量插值。
     private readonly Dictionary<string, Bitmap> _renderedIconImages = new(StringComparer.OrdinalIgnoreCase);
     private int _iconRenderSize;
     private const int IconSourceSize = 48;
+    private const int MaxTruncateCacheEntries = 2000;
+    private static readonly Font BoldMenuFont = new("Segoe UI", 9f, FontStyle.Bold);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PathStatus> _pathExistsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _pathChecksInFlight = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _pathCheckGate = new(4);
@@ -157,7 +161,7 @@ public sealed class MainPopup : Form
             ColorDepth = ColorDepth.Depth32Bit
         };
 
-        _listView = new ListView
+        _listView = new BufferedListView
         {
             Dock = DockStyle.Fill,
             View = View.Details,
@@ -399,7 +403,8 @@ public sealed class MainPopup : Form
             }
         };
 
-        _debounceTimer = new System.Windows.Forms.Timer { Interval = 200 };
+        // 拼音有记忆化、分组签名未变时不重建 UI，120ms 比 200ms 更跟手
+        _debounceTimer = new System.Windows.Forms.Timer { Interval = 120 };
         _debounceTimer.Tick += (_, _) =>
         {
             _debounceTimer.Stop();
@@ -949,8 +954,7 @@ public sealed class MainPopup : Form
             if (hist == null)
                 return menu;
 
-            var copy = new ToolStripMenuItem("复制为纯文本");
-            copy.Font = new Font(copy.Font, FontStyle.Bold);
+            var copy = new ToolStripMenuItem("复制为纯文本") { Font = BoldMenuFont };
             copy.Click += (_, _) => OpenSelectedEntry();
             menu.Items.Add(copy);
 
@@ -983,10 +987,7 @@ public sealed class MainPopup : Form
             if (recent == null)
                 return menu;
 
-            var open = new ToolStripMenuItem("打开")
-            {
-                Font = new Font(menu.Font, FontStyle.Bold)
-            };
+            var open = new ToolStripMenuItem("打开") { Font = BoldMenuFont };
             open.Click += (_, _) => OpenSelectedEntry();
             menu.Items.Add(open);
 
@@ -1004,8 +1005,7 @@ public sealed class MainPopup : Form
             case EntryType.Folder:
             case EntryType.File:
             {
-                var openDefault = new ToolStripMenuItem("打开");
-                openDefault.Font = new Font(openDefault.Font, FontStyle.Bold);
+                var openDefault = new ToolStripMenuItem("打开") { Font = BoldMenuFont };
                 openDefault.Click += (_, _) => OpenSelectedEntry();
                 menu.Items.Add(openDefault);
 
@@ -1048,8 +1048,7 @@ public sealed class MainPopup : Form
 
             case EntryType.Url:
             {
-                var openUrl = new ToolStripMenuItem("在浏览器中打开");
-                openUrl.Font = new Font(openUrl.Font, FontStyle.Bold);
+                var openUrl = new ToolStripMenuItem("在浏览器中打开") { Font = BoldMenuFont };
                 openUrl.Click += (_, _) => OpenSelectedEntry();
                 menu.Items.Add(openUrl);
 
@@ -1075,8 +1074,7 @@ public sealed class MainPopup : Form
 
             case EntryType.Text:
             {
-                var copyText = new ToolStripMenuItem("复制文本");
-                copyText.Font = new Font(copyText.Font, FontStyle.Bold);
+                var copyText = new ToolStripMenuItem("复制文本") { Font = BoldMenuFont };
                 copyText.Click += (_, _) => OpenSelectedEntry();
                 menu.Items.Add(copyText);
 
@@ -1547,6 +1545,8 @@ public sealed class MainPopup : Form
         }
 
         var faviconsToLoad = new List<string>();
+        var fileIconsToLoad = new List<(string IconKey, string Path)>();
+        var customIconsToLoad = new List<(string IconKey, string Path)>();
         var pathsToValidate = new List<QuickEntry>();
 
         _listView.BeginUpdate();
@@ -1558,33 +1558,32 @@ public sealed class MainPopup : Form
             if (entry.Type == EntryType.Url)
             {
                 var customKey = CustomIconKey(entry.Id);
-                if (!string.IsNullOrEmpty(entry.CustomIconPath) && EnsureCustomIcon(customKey, entry.CustomIconPath))
+                if (!string.IsNullOrEmpty(entry.CustomIconPath) && _iconImages.ContainsKey(customKey))
                 {
-                    // 用户自定义图标优先
+                    // 用户自定义图标（已在内存）
                     iconKey = customKey;
+                }
+                else if (!string.IsNullOrEmpty(entry.CustomIconPath))
+                {
+                    // 自定义图标走后台读盘，先用网页通用占位
+                    iconKey = EnsureUrlPlaceholderIcon();
+                    customIconsToLoad.Add((customKey, entry.CustomIconPath));
                 }
                 else
                 {
-                    // 否则使用已缓存的网站图标，未命中则用通用图标占位并触发后台加载
+                    // 仅查内存 favicon；磁盘/网络加载走后台，避免 UI 同步 I/O
                     var host = FaviconService.GetHost(entry.Path);
-                    var favicon = host != null ? _faviconService.TryGetCached(entry.Path) : null;
+                    var favicon = host != null ? _faviconService.TryGetMemoryCached(entry.Path) : null;
                     if (favicon != null && host != null)
                     {
                         iconKey = FaviconKey(host);
                         RegisterIcon(iconKey, favicon, clone: true);
                     }
-                    else if (_webEntryImage != null)
-                    {
-                        iconKey = "<URL_CUSTOM>";
-                        RegisterIcon(iconKey, _webEntryImage, clone: true);
-                        if (host != null) faviconsToLoad.Add(entry.Path);
-                    }
                     else
                     {
-                        iconKey = ".url";
-                        if (!_iconImages.ContainsKey(iconKey))
-                            RegisterIcon(iconKey, IconExtractor.GetIcon(".url", isDirectory: false, useLargeIcon: true)?.ToBitmap());
-                        if (host != null) faviconsToLoad.Add(entry.Path);
+                        iconKey = EnsureUrlPlaceholderIcon();
+                        if (host != null && !_faviconService.IsKnownMiss(entry.Path))
+                            faviconsToLoad.Add(entry.Path);
                     }
                 }
             }
@@ -1598,19 +1597,23 @@ public sealed class MainPopup : Form
             }
             else
             {
-                // .exe/.lnk 等图标嵌在文件自身，必须按完整路径区分；其它类型按扩展名共用
+                // .exe/.lnk 等：未缓存时用扩展名通用图标占位，后台补真实图标
                 if (IconExtractor.NeedsPerFileIcon(entry.Path))
                 {
-                    iconKey = FileIconKey(entry.Path);
-                    if (!_iconImages.ContainsKey(iconKey))
-                        RegisterIcon(iconKey, IconExtractor.GetIcon(entry.Path, isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                    var realKey = FileIconKey(entry.Path);
+                    if (_iconImages.ContainsKey(realKey))
+                    {
+                        iconKey = realKey;
+                    }
+                    else
+                    {
+                        iconKey = EnsureGenericExtensionIcon(entry.Path);
+                        fileIconsToLoad.Add((realKey, entry.Path));
+                    }
                 }
                 else
                 {
-                    iconKey = Path.GetExtension(entry.Path).ToLowerInvariant();
-                    if (string.IsNullOrEmpty(iconKey)) iconKey = "<NOEXT>";
-                    if (!_iconImages.ContainsKey(iconKey))
-                        RegisterIcon(iconKey, IconExtractor.GetIcon(entry.Path, isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                    iconKey = EnsureGenericExtensionIcon(entry.Path);
                 }
             }
 
@@ -1648,11 +1651,44 @@ public sealed class MainPopup : Form
         foreach (var url in faviconsToLoad.Distinct(StringComparer.OrdinalIgnoreCase))
             _ = LoadFaviconAsync(url);
 
+        foreach (var (iconKey, path) in fileIconsToLoad)
+            QueueFileIconLoad(iconKey, path);
+
+        foreach (var (iconKey, path) in customIconsToLoad)
+            QueueCustomIconLoad(iconKey, path);
+
         QueuePathValidation(pathsToValidate);
     }
 
     private static string FaviconKey(string host) => "<FAV:" + host + ">";
     private static string FileIconKey(string path) => "<FILE:" + path + ">";
+
+    private string EnsureUrlPlaceholderIcon()
+    {
+        if (_webEntryImage != null)
+        {
+            const string key = "<URL_CUSTOM>";
+            RegisterIcon(key, _webEntryImage, clone: true);
+            return key;
+        }
+
+        const string fallback = ".url";
+        if (!_iconImages.ContainsKey(fallback))
+            RegisterIcon(fallback, IconExtractor.GetGenericTypeIcon(".url", useLargeIcon: true)?.ToBitmap());
+        return fallback;
+    }
+
+    private string EnsureGenericExtensionIcon(string path)
+    {
+        var iconKey = Path.GetExtension(path).ToLowerInvariant();
+        if (string.IsNullOrEmpty(iconKey))
+            iconKey = "<NOEXT>";
+        if (!_iconImages.ContainsKey(iconKey))
+            RegisterIcon(iconKey, IconExtractor.GetGenericTypeIcon(
+                iconKey == "<NOEXT>" ? string.Empty : iconKey,
+                useLargeIcon: true)?.ToBitmap());
+        return iconKey;
+    }
 
     // 登记一张原图：_iconImages 供自绘高质量缩放，_imageList 仅用于撑行高
     private void RegisterIcon(string key, Image? image, bool clone = false)
@@ -1667,19 +1703,174 @@ public sealed class MainPopup : Form
             _imageList.Images.Add(key, ownedImage);
     }
 
+    /// <summary>覆盖登记图标（异步真图到达时替换占位）。</summary>
+    private void ReplaceIcon(string key, Image image)
+    {
+        RemoveCachedIcon(key);
+        RegisterIcon(key, image);
+    }
+
     private static string CustomIconKey(string id) => "<CUSTOM:" + id + ">";
 
-    private bool EnsureCustomIcon(string key, string path)
+    private void QueueFileIconLoad(string iconKey, string path)
     {
-        if (_iconImages.ContainsKey(key))
-            return true;
+        if (!_iconLoadsInFlight.TryAdd(iconKey, 0))
+            return;
 
-        var image = CustomIconStore.TryLoad(path);
-        if (image == null)
-            return false;
+        var token = _disposeCts.Token;
+        _iconLoader.Enqueue(() =>
+        {
+            try
+            {
+                if (token.IsCancellationRequested)
+                    return;
 
-        RegisterIcon(key, image);
-        return true;
+                // Icon 由 IconExtractor 全局缓存持有，不可 Dispose
+                var icon = IconExtractor.ExtractRealFileIcon(path, useLargeIcon: true);
+                if (icon == null)
+                    return;
+
+                var bitmap = icon.ToBitmap();
+                if (IsDisposed || !IsHandleCreated || token.IsCancellationRequested)
+                {
+                    bitmap.Dispose();
+                    return;
+                }
+
+                try
+                {
+                    BeginInvoke(() =>
+                    {
+                        try
+                        {
+                            if (IsDisposed || token.IsCancellationRequested)
+                            {
+                                bitmap.Dispose();
+                                return;
+                            }
+
+                            ReplaceIcon(iconKey, bitmap);
+                            ApplyIconKeyToItems(iconKey, match: tag =>
+                                tag is QuickEntry entry
+                                && entry.Type == EntryType.File
+                                && string.Equals(FileIconKey(entry.Path), iconKey, StringComparison.OrdinalIgnoreCase));
+                            ApplyIconKeyToRecentItems(iconKey, path);
+                        }
+                        catch
+                        {
+                            bitmap.Dispose();
+                        }
+                    });
+                }
+                catch
+                {
+                    bitmap.Dispose();
+                }
+            }
+            finally
+            {
+                _iconLoadsInFlight.TryRemove(iconKey, out _);
+            }
+        });
+    }
+
+    private void QueueCustomIconLoad(string iconKey, string path)
+    {
+        if (!_iconLoadsInFlight.TryAdd(iconKey, 0))
+            return;
+
+        var token = _disposeCts.Token;
+        _iconLoader.Enqueue(() =>
+        {
+            try
+            {
+                if (token.IsCancellationRequested)
+                    return;
+
+                var image = CustomIconStore.TryLoad(path);
+                if (image == null)
+                    return;
+
+                if (IsDisposed || !IsHandleCreated || token.IsCancellationRequested)
+                {
+                    image.Dispose();
+                    return;
+                }
+
+                try
+                {
+                    BeginInvoke(() =>
+                    {
+                        try
+                        {
+                            if (IsDisposed || token.IsCancellationRequested)
+                            {
+                                image.Dispose();
+                                return;
+                            }
+
+                            ReplaceIcon(iconKey, image);
+                            ApplyIconKeyToItems(iconKey, match: tag =>
+                                tag is QuickEntry entry
+                                && entry.Type == EntryType.Url
+                                && string.Equals(CustomIconKey(entry.Id), iconKey, StringComparison.OrdinalIgnoreCase));
+                        }
+                        catch
+                        {
+                            image.Dispose();
+                        }
+                    });
+                }
+                catch
+                {
+                    image.Dispose();
+                }
+            }
+            finally
+            {
+                _iconLoadsInFlight.TryRemove(iconKey, out _);
+            }
+        });
+    }
+
+    private void ApplyIconKeyToItems(string iconKey, Func<object?, bool> match)
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+
+        var changed = false;
+        foreach (ListViewItem item in _listView.Items)
+        {
+            if (match(item.Tag) && item.ImageKey != iconKey)
+            {
+                item.ImageKey = iconKey;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            _listView.Invalidate();
+    }
+
+    private void ApplyIconKeyToRecentItems(string iconKey, string path)
+    {
+        if (_activeTab != TabKind.RecentItems)
+            return;
+
+        var changed = false;
+        foreach (ListViewItem item in _listView.Items)
+        {
+            if (item.Tag is WindowsRecentItem recent
+                && string.Equals(recent.DisplayPath, path, StringComparison.OrdinalIgnoreCase)
+                && item.ImageKey != iconKey)
+            {
+                item.ImageKey = iconKey;
+                changed = true;
+            }
+        }
+
+        if (changed)
+            _listView.Invalidate();
     }
 
     // 清除某个 key 的图标缓存（编辑/删除后强制重新加载）
@@ -1693,6 +1884,8 @@ public sealed class MainPopup : Form
 
         if (_imageList.Images.ContainsKey(key))
             _imageList.Images.RemoveByKey(key);
+
+        _iconLoadsInFlight.TryRemove(key, out _);
     }
 
     private async Task LoadFaviconAsync(string url)
@@ -1799,6 +1992,7 @@ public sealed class MainPopup : Form
         }
         else
         {
+            var fileIconsToLoad = new List<(string IconKey, string Path)>();
             foreach (var recent in items)
             {
                 string iconKey;
@@ -1810,16 +2004,20 @@ public sealed class MainPopup : Form
                 }
                 else if (IconExtractor.NeedsPerFileIcon(recent.DisplayPath))
                 {
-                    iconKey = FileIconKey(recent.DisplayPath);
-                    if (!_iconImages.ContainsKey(iconKey))
-                        RegisterIcon(iconKey, IconExtractor.GetIcon(recent.DisplayPath, isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                    var realKey = FileIconKey(recent.DisplayPath);
+                    if (_iconImages.ContainsKey(realKey))
+                    {
+                        iconKey = realKey;
+                    }
+                    else
+                    {
+                        iconKey = EnsureGenericExtensionIcon(recent.DisplayPath);
+                        fileIconsToLoad.Add((realKey, recent.DisplayPath));
+                    }
                 }
                 else
                 {
-                    iconKey = Path.GetExtension(recent.DisplayPath).ToLowerInvariant();
-                    if (string.IsNullOrEmpty(iconKey)) iconKey = "<NOEXT>";
-                    if (!_iconImages.ContainsKey(iconKey))
-                        RegisterIcon(iconKey, IconExtractor.GetIcon(recent.DisplayPath, isDirectory: false, useLargeIcon: true)?.ToBitmap());
+                    iconKey = EnsureGenericExtensionIcon(recent.DisplayPath);
                 }
 
                 var item = new ListViewItem(recent.Name, iconKey)
@@ -1830,6 +2028,9 @@ public sealed class MainPopup : Form
                 };
                 _listView.Items.Add(item);
             }
+
+            foreach (var (iconKey, path) in fileIconsToLoad)
+                QueueFileIconLoad(iconKey, path);
         }
 
         _listView.EndUpdate();
@@ -2175,6 +2376,10 @@ public sealed class MainPopup : Form
         var key = (text, maxPx);
         if (_truncateCache.TryGetValue(key, out var cached))
             return cached;
+
+        // DPI/改名会让 (文本,宽度) 键不断积累；超上限整表清空
+        if (_truncateCache.Count > MaxTruncateCacheEntries)
+            _truncateCache.Clear();
 
         var result = MidTruncate(text, _listView.Font, maxPx);
         _truncateCache[key] = result;
@@ -2635,6 +2840,7 @@ public sealed class MainPopup : Form
             if (_clipboardHistory != null)
                 _clipboardHistory.Changed -= OnClipboardHistoryChanged;
             _disposeCts.Cancel();
+            _iconLoader.Dispose();
             _debounceTimer.Dispose();
             _toastTimer.Dispose();
             _toolTip.Dispose();

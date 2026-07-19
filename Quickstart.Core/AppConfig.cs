@@ -34,6 +34,11 @@ public sealed class AppConfig
     public string TotalCommanderPath { get; set; } = string.Empty;
     public string DirectoryOpusPath { get; set; } = string.Empty;
     public string EverythingPath { get; set; } = string.Empty;
+    /// <summary>
+    /// 上次对 TC/DOpus/Everything 做过自动探测的应用版本号。
+    /// 本版本探测过且未找到则不再重复探测；升级版本后重试一次。设置页「检测」按钮仍强制探测。
+    /// </summary>
+    public string ToolDetectionAttemptedVersion { get; set; } = string.Empty;
     public OpenWith DefaultOpenWith { get; set; } = OpenWith.TotalCommander;
     public bool StartWithWindows { get; set; }
     public bool ShellMenuEnabled { get; set; }

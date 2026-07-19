@@ -37,14 +37,26 @@ public sealed class ClipboardHistoryService : IDisposable
         ObjectDisposedException.ThrowIf(_disposed, this);
         _uiSync = uiSync;
 
-        LoadFromDiskIfNeeded();
-        ApplyMaxItems();
-
+        // 监听窗口必须在 UI 线程创建；落盘加载放到线程池，避免启动路径同步读大 JSON
         if (_listener == null)
         {
             _listener = new ClipboardListenerWindow(OnClipboardChanged);
             _listener.CreateHandle();
         }
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                LoadFromDiskIfNeeded();
+                ApplyMaxItems();
+                RaiseChanged();
+            }
+            catch
+            {
+                // 启动加载失败不影响监听
+            }
+        });
     }
 
     public IReadOnlyList<ClipboardHistoryItem> GetItems()
@@ -300,19 +312,39 @@ public sealed class ClipboardHistoryService : IDisposable
             if (file?.Items == null || file.Items.Count == 0)
                 return;
 
+            // 先在锁外规范化磁盘项
+            var diskItems = new List<ClipboardHistoryItem>();
+            foreach (var item in file.Items)
+            {
+                if (string.IsNullOrWhiteSpace(item.Text))
+                    continue;
+                item.Text = NormalizeText(item.Text, cfg.MaxTextLength);
+                if (string.IsNullOrEmpty(item.Text))
+                    continue;
+                if (string.IsNullOrWhiteSpace(item.Id))
+                    item.Id = Guid.NewGuid().ToString("N")[..8];
+                diskItems.Add(item);
+            }
+
+            if (diskItems.Count == 0)
+                return;
+
             lock (_lock)
             {
+                // 以磁盘项为底，启动后已入队的内存新项置顶（与首条剪贴板事件竞态安全）
+                var liveItems = _items.ToList();
                 _items.Clear();
-                foreach (var item in file.Items)
+                _items.AddRange(diskItems);
+
+                // 内存新项按时间倒序插到前面，并按文本去重
+                for (var i = liveItems.Count - 1; i >= 0; i--)
                 {
-                    if (string.IsNullOrWhiteSpace(item.Text))
-                        continue;
-                    item.Text = NormalizeText(item.Text, cfg.MaxTextLength);
-                    if (string.IsNullOrEmpty(item.Text))
-                        continue;
-                    if (string.IsNullOrWhiteSpace(item.Id))
-                        item.Id = Guid.NewGuid().ToString("N")[..8];
-                    _items.Add(item);
+                    var live = liveItems[i];
+                    var existing = _items.FindIndex(x =>
+                        string.Equals(x.Text, live.Text, StringComparison.Ordinal));
+                    if (existing >= 0)
+                        _items.RemoveAt(existing);
+                    _items.Insert(0, live);
                 }
 
                 TrimToMaxLocked(cfg.MaxItems);

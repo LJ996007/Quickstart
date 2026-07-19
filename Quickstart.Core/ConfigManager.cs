@@ -16,7 +16,6 @@ public sealed class ConfigManager : IDisposable
 
     private AppConfig _config = new();
     private readonly object _lock = new();
-    private readonly object _ioLock = new();
 
     // 高频低价值写入（如 LastUsedAt）走防抖，合并多次更新为一次后台写盘，避免阻塞 UI 线程
     private readonly System.Threading.Timer _saveDebounceTimer;
@@ -86,19 +85,38 @@ public sealed class ConfigManager : IDisposable
     }
 
     // 调用方须持有 _lock
-    private void SaveInternal()
+    private void SaveInternal(bool writeAsync = true)
     {
-        // 立即写盘视为已落地，撤销任何挂起的防抖保存
+        // 立即序列化视为状态已落地，撤销任何挂起的防抖保存
         _savePending = false;
         _pendingJson = null;
 
         var json = JsonSerializer.Serialize(_config, AppConfigJsonContext.Default.AppConfig);
-        WriteSnapshot(json);
+        if (writeAsync)
+            QueueWriteSnapshot(json);
+        else
+            WriteSnapshot(json);
     }
 
-    private void WriteSnapshot(string json)
+    private void QueueWriteSnapshot(string json)
     {
-        lock (_ioLock)
+        // 持锁已产出不可变 JSON 快照；落盘挪到线程池，避免 UI 被杀软/慢盘拖住
+        ThreadPool.QueueUserWorkItem(static state =>
+        {
+            try
+            {
+                WriteSnapshot((string)state!);
+            }
+            catch
+            {
+                // 写盘失败不在线程池上终止进程；下次显式保存仍会重试
+            }
+        }, json);
+    }
+
+    private static void WriteSnapshot(string json)
+    {
+        lock (_ioLockStatic)
         {
             Directory.CreateDirectory(AppDataDir);
 
@@ -114,6 +132,9 @@ public sealed class ConfigManager : IDisposable
             File.Move(tempPath, ConfigPath, overwrite: true);
         }
     }
+
+    // 静态锁：WriteSnapshot 可能从任意线程调用，与实例字段解耦
+    private static readonly object _ioLockStatic = new();
 
     // 标记有挂起改动并重置防抖计时器；到期后在后台线程写盘
     private void ScheduleSave()
@@ -149,6 +170,15 @@ public sealed class ConfigManager : IDisposable
         catch
         {
             // 防抖保存失败不应在 ThreadPool 线程终止进程；下次显式保存仍会重试。
+        }
+    }
+
+    /// <summary>同步落盘（退出路径使用，确保文件写完再结束）。</summary>
+    public void SaveSync()
+    {
+        lock (_lock)
+        {
+            SaveInternal(writeAsync: false);
         }
     }
 
@@ -282,6 +312,8 @@ public sealed class ConfigManager : IDisposable
     {
         _saveDebounceTimer.Dispose();
         FlushPendingSave();
+        // 等待任何仍在进行的异步写盘结束
+        lock (_ioLockStatic) { }
     }
 
     private bool NormalizeConfig()
@@ -316,6 +348,12 @@ public sealed class ConfigManager : IDisposable
         if (_config.EverythingPath == null)
         {
             _config.EverythingPath = string.Empty;
+            migrated = true;
+        }
+
+        if (_config.ToolDetectionAttemptedVersion == null)
+        {
+            _config.ToolDetectionAttemptedVersion = string.Empty;
             migrated = true;
         }
 

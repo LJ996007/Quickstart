@@ -20,7 +20,6 @@ public sealed class SettingsForm : Form
     private static readonly Color Accent = Color.FromArgb(96, 170, 255);
     private static readonly Color AccentSoft = Color.FromArgb(232, 242, 255);
     private static readonly Color AccentText = Color.FromArgb(36, 99, 168);
-    private static readonly Color NavHover = Color.FromArgb(236, 238, 242);
 
     private const string UiFont = "Microsoft YaHei UI";
 
@@ -53,11 +52,14 @@ public sealed class SettingsForm : Form
     private readonly Button _clipboardHistoryClearBtn;
     private readonly ClipboardHistoryService? _clipboardHistory;
 
-    private readonly ListBox _navList;
+    private readonly BufferedListBox _navList;
     private readonly Panel _contentHost;
     private readonly Label _pageTitleLabel;
     private readonly Label _pageSubtitleLabel;
     private readonly Panel[] _pages;
+    private Font? _navFontRegular;
+    private Font? _navFontBold;
+    private int _navSelectedIndex = -1;
 
     private readonly (string Title, string Subtitle)[] _pagesMeta =
     [
@@ -550,7 +552,11 @@ public sealed class SettingsForm : Form
         pageHeader.Controls.Add(_pageSubtitleLabel, 0, 1);
 
         // ── 左侧导航 ──────────────────────────────────────────────────
-        _navList = new ListBox
+        // BufferedListBox：双缓冲 + 抑制背景擦除，减少导航重绘闪烁
+        // 绘制用字体与 ListBox.Font 分开，避免 FormClosed 释放时与控件生命周期交叉
+        _navFontRegular = new Font(UiFont, 9.5f, FontStyle.Regular);
+        _navFontBold = new Font(UiFont, 9.5f, FontStyle.Bold);
+        _navList = new BufferedListBox
         {
             Dock = DockStyle.Fill,
             BorderStyle = BorderStyle.None,
@@ -567,19 +573,12 @@ public sealed class SettingsForm : Form
             _navList.Items.Add(meta.Title);
 
         _navList.DrawItem += OnNavDrawItem;
-        _navList.MouseMove += (_, e) =>
+        FormClosed += (_, _) =>
         {
-            var idx = _navList.IndexFromPoint(e.Location);
-            if (idx != _navHoverIndex)
-            {
-                _navHoverIndex = idx;
-                _navList.Invalidate();
-            }
-        };
-        _navList.MouseLeave += (_, _) =>
-        {
-            _navHoverIndex = -1;
-            _navList.Invalidate();
+            _navFontRegular?.Dispose();
+            _navFontBold?.Dispose();
+            _navFontRegular = null;
+            _navFontBold = null;
         };
 
         _contentHost = new Panel
@@ -592,7 +591,16 @@ public sealed class SettingsForm : Form
         foreach (var page in _pages)
             _contentHost.Controls.Add(page);
 
-        _navList.SelectedIndexChanged += (_, _) => ShowPage(_navList.SelectedIndex);
+        _navList.SelectedIndexChanged += (_, _) =>
+        {
+            var selectedIndex = _navList.SelectedIndex;
+            var previousIndex = _navSelectedIndex;
+            _navSelectedIndex = selectedIndex;
+
+            ShowPage(selectedIndex);
+            InvalidateNavItem(previousIndex);
+            InvalidateNavItem(selectedIndex);
+        };
         _navList.SelectedIndex = 0;
 
         var navHeader = new Label
@@ -941,24 +949,31 @@ public sealed class SettingsForm : Form
             ? "未知"
             : Application.ProductVersion.Split('+')[0];
 
-    private int _navHoverIndex = -1;
+    private void InvalidateNavItem(int index)
+    {
+        if (index < 0 || index >= _navList.Items.Count || !_navList.IsHandleCreated)
+            return;
+
+        _navList.Invalidate(_navList.GetItemRectangle(index));
+    }
 
     private void OnNavDrawItem(object? sender, DrawItemEventArgs e)
     {
         if (e.Index < 0)
             return;
 
-        var selected = (e.State & DrawItemState.Selected) == DrawItemState.Selected;
-        var hovered = !selected && e.Index == _navHoverIndex;
-
-        var bg = selected ? AccentSoft : hovered ? NavHover : BgNav;
+        // 导航只突出当前页；选中项变化时会同时重绘旧项和新项。
+        var selected = e.Index == _navSelectedIndex;
+        var bg = selected ? AccentSoft : BgNav;
         var fg = selected ? AccentText : TextSecondary;
+        // 复用缓存字体，避免每次 DrawItem new Font 带来的分配与绘制抖动
         var font = selected
-            ? new Font(UiFont, 9.5f, FontStyle.Bold)
-            : new Font(UiFont, 9.5f, FontStyle.Regular);
+            ? (_navFontBold ?? _navList.Font)
+            : (_navFontRegular ?? _navList.Font);
 
         e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
-        e.Graphics.FillRectangle(new SolidBrush(BgNav), e.Bounds);
+        using (var clearBrush = new SolidBrush(BgNav))
+            e.Graphics.FillRectangle(clearBrush, e.Bounds);
 
         var inset = UiScaleHelper.Scale(this, 4);
         var pill = Rectangle.Inflate(e.Bounds, -inset, -UiScaleHelper.Scale(this, 2));
@@ -980,7 +995,8 @@ public sealed class SettingsForm : Form
         }
 
         var text = _navList.Items[e.Index]?.ToString() ?? string.Empty;
-        var textPadL = UiScaleHelper.Scale(this, selected ? 18 : 14);
+        // 选中/未选中使用相同左内边距，避免切换时文字左右挪动造成「抖一下」的观感
+        var textPadL = UiScaleHelper.Scale(this, 18);
         var textRect = new Rectangle(
             pill.X + textPadL,
             pill.Y,
@@ -993,8 +1009,6 @@ public sealed class SettingsForm : Form
             textRect,
             fg,
             TextFormatFlags.Left | TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
-
-        font.Dispose();
     }
 
     private static System.Drawing.Drawing2D.GraphicsPath CreateRoundRect(Rectangle bounds, int radius)
