@@ -23,3 +23,8 @@ Quickstart.Mac/build/
 # Local agent workspace
 .workbuddy/
 
+.alma-snapshots
+
+# Local AI editor instructions
+AGENTS.md
+CLAUDE.md
