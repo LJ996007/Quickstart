@@ -249,11 +249,14 @@ scripts/build-macos-dmg.sh
 
 ---
 
-## 版本说明
+## 版本与发布
 
 - 当前 Windows 程序版本见 `Quickstart/Quickstart.csproj` 的 `<Version>`（现为 **1.0.13**）。
 - 应用内「程序信息」页展示 `AppReleaseNotes` 中的更新列表。
-- 改程序代码时需同步升版本号并更新版本说明；**纯文档变更不升版本**。
+- **默认不升版本号**：日常改动先记到 `docs/UNRELEASED.md`，不改 `<Version>`。
+- **需要发版时**：运行 `bump-version.cmd`，会把 `UNRELEASED.md` 的全部条目汇总成新版本说明，更新 csproj / 安装脚本 / README，然后重置变更池。
+- **升版后同步 GitHub**：运行 `sync-github.cmd`，自动提交推送、编译 Release、把便携版 / 安装包 / 校验文件上传到 GitHub Releases。
+- 完整规则见 [`docs/versioning.md`](./docs/versioning.md)。
 
 近期 Windows 侧已包含（摘要）：右滑「最近」与剪贴板历史、左滑 AI/工具面板与截图 OCR、Everything 与网页查询工具、全局热键与手势参数、Directory Opus 新标签打开修复、启动与鼠标钩子性能优化、设置页导航高亮与稳定性修复等。完整条目以应用内版本说明为准。
 
