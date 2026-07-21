@@ -91,24 +91,31 @@ public sealed class ProcessLauncher(ConfigManager configManager)
                 return;
             }
 
-            // 官方命令通道是 dopusrt.exe /cmd <内部命令>。
-            // 若对 dopus.exe 使用 ArgumentList 把 "Go" 单独作为参数，
-            // 主程序会把 "Go" 当成相对路径打开，落到安装目录下的
-            // "...\Directory Opus\Go"，所有文件夹都会指到那里。
-            var runner = ResolveDopusCommandRunner(dopusPath);
-            var escapedPath = path.Replace("\"", "\"\"", StringComparison.Ordinal);
-            // PATH= 可正确处理空格；NEWTAB=deflister,tofront 复用默认窗口并新建标签
-            var arguments = $"/cmd Go PATH=\"{escapedPath}\" NEWTAB=deflister,tofront";
+            // 不要用 dopusrt.exe /cmd Go PATH="..."：
+            // 1) 命令行参数拆分容易把 Go / PATH= / NEWTAB= 拆成多条伪命令；
+            // 2) 更关键的是路径里的「#」会被 DOpus 命令解析器当成命令码截断
+            //    （WPS 云盘等目录常以 # 开头），结果开出标题为 "Go PATH=\" 的无效位置。
+            // 直接把文件夹路径作为 dopus.exe 参数，走「打开文件夹」语义，可正确处理
+            // #、空格、中文；单实例下会复用已运行的 DOpus。
+            var exe = ResolveDopusExecutable(dopusPath);
+            if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
+            {
+                OpenInExplorer(path);
+                return;
+            }
 
             WindowActivator.ClaimForegroundRights();
             WindowActivator.AllowAnyForeground();
 
-            var process = Process.Start(new ProcessStartInfo
+            var psi = new ProcessStartInfo
             {
-                FileName = runner,
-                Arguments = arguments,
+                FileName = exe,
                 UseShellExecute = false
-            }) ?? throw new InvalidOperationException("Directory Opus 未返回启动进程。");
+            };
+            psi.ArgumentList.Add(path);
+
+            var process = Process.Start(psi)
+                ?? throw new InvalidOperationException("Directory Opus 未返回启动进程。");
 
             WindowActivator.BringToFrontAsync(process, windowClass: null, procName: "dopus");
         }
@@ -119,14 +126,14 @@ public sealed class ProcessLauncher(ConfigManager configManager)
     }
 
     /// <summary>
-    /// 解析用于发送 /cmd 的可执行文件：优先同目录 dopusrt.exe，其次用户配置路径。
+    /// 解析 dopus.exe：配置可能是 dopus.exe 或 dopusrt.exe，打开文件夹需要主程序。
     /// </summary>
-    private static string ResolveDopusCommandRunner(string dopusPath)
+    private static string ResolveDopusExecutable(string dopusPath)
     {
         if (string.IsNullOrWhiteSpace(dopusPath))
             return dopusPath;
 
-        if (string.Equals(Path.GetFileName(dopusPath), "dopusrt.exe", StringComparison.OrdinalIgnoreCase)
+        if (string.Equals(Path.GetFileName(dopusPath), "dopus.exe", StringComparison.OrdinalIgnoreCase)
             && File.Exists(dopusPath))
         {
             return dopusPath;
@@ -135,12 +142,12 @@ public sealed class ProcessLauncher(ConfigManager configManager)
         var dir = Path.GetDirectoryName(dopusPath);
         if (!string.IsNullOrEmpty(dir))
         {
-            var dopusrt = Path.Combine(dir, "dopusrt.exe");
-            if (File.Exists(dopusrt))
-                return dopusrt;
+            var dopus = Path.Combine(dir, "dopus.exe");
+            if (File.Exists(dopus))
+                return dopus;
         }
 
-        return dopusPath;
+        return File.Exists(dopusPath) ? dopusPath : string.Empty;
     }
 
     public static void OpenInExplorer(string path)

@@ -9,6 +9,7 @@
 
 ## 说明
 
-- 修 bug、加功能、改代码：往「变更」里追加一条，**不要**改 `Quickstart/Quickstart.csproj` 的 `<Version>`。
+- 修 bug、加功能、改代码：往「变更」里追加一条，**不要**改 Quickstart/Quickstart.csproj 的 Version。
 - 纯文档 / 脚本 / 仓库整理：可记一条，也可不记。
-- 升版本时由 `scripts/bump-version.ps1` 读取本文件，写入 `AppReleaseNotes.cs` 并重置本文件。
+- 升版本时由 scripts/bump-version.ps1 读取本文件，写入 AppReleaseNotes.cs 并重置本文件。
+

@@ -51,6 +51,8 @@ public sealed class AppConfig
     public string LastViewTab { get; set; } = "Folders";
     public string LastViewGroup { get; set; } = "全部";
     public bool SortByRecentUsage { get; set; }
+    /// <summary>右滑主面板左侧分类标签的显示顺序。</summary>
+    public List<string> MainPopupTabOrder { get; set; } = [];
     public ClipboardHistoryConfig ClipboardHistory { get; set; } = new();
 }
 

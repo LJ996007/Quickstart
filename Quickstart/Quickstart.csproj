@@ -1,4 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <OutputType>WinExe</OutputType>
@@ -28,7 +28,7 @@
     <!-- Assembly info -->
     <AssemblyName>Quickstart</AssemblyName>
     <RootNamespace>Quickstart</RootNamespace>
-    <Version>1.0.13</Version>
+    <Version>1.0.14</Version>
     <Description>Windows tray app for quick folder/file access</Description>
   </PropertyGroup>
 

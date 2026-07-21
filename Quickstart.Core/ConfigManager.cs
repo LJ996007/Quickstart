@@ -308,6 +308,23 @@ public sealed class ConfigManager : IDisposable
         }
     }
 
+    public void SetMainPopupTabOrder(IEnumerable<string> orderedTabs)
+    {
+        lock (_lock)
+        {
+            var normalizedOrder = orderedTabs
+                .Where(tab => !string.IsNullOrWhiteSpace(tab))
+                .Select(tab => tab.Trim())
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            if (_config.MainPopupTabOrder.SequenceEqual(normalizedOrder, StringComparer.OrdinalIgnoreCase))
+                return;
+
+            _config.MainPopupTabOrder = normalizedOrder;
+            Save();
+        }
+    }
+
     public void Dispose()
     {
         _saveDebounceTimer.Dispose();
@@ -436,6 +453,12 @@ public sealed class ConfigManager : IDisposable
         if (string.IsNullOrWhiteSpace(_config.LastViewGroup))
         {
             _config.LastViewGroup = "全部";
+            migrated = true;
+        }
+
+        if (_config.MainPopupTabOrder == null)
+        {
+            _config.MainPopupTabOrder = [];
             migrated = true;
         }
 

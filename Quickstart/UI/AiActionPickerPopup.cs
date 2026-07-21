@@ -8,7 +8,7 @@ internal sealed class AiActionPickerPopup : Form
 {
     private const string PromptHeader = "Prompt";
     private const string ToolHeader = "工具";
-    private const int MaxRecentChips = 6;
+    private const int MaxRecentChips = 3;
 
     // 逻辑像素（96 DPI）。高度只按「条目数 × 行高」估算，避免测量布局状态导致裁切。
     private const int PreferredWidth = 460;
@@ -59,6 +59,14 @@ internal sealed class AiActionPickerPopup : Form
     private readonly List<Control> _dragHandles = [];
     private readonly List<AiActionSelection> _allActions = [];
 
+    // 动作列表签名：未变则跳过整表销毁重建，只刷新「最近」chip，减少左滑首帧卡顿。
+    private string? _actionsSignature;
+    private string? _recentSignature;
+    private ActionItemControl? _lastHighlightedItem;
+    private RecentChipControl? _lastHighlightedChip;
+    private Size _lastPopupSize;
+    private int _lastPopupDpi;
+
     // 手势跟踪阶段：不抢前台；松手未选中后进入交互模式：可拖动、ESC 关闭。
     private bool _gestureMode = true;
     private bool _showWithoutActivation = true;
@@ -79,7 +87,13 @@ internal sealed class AiActionPickerPopup : Form
         KeyPreview = true;
         BackColor = Color.FromArgb(250, 250, 250);
         Padding = new Padding(1);
-        SetStyle(ControlStyles.ResizeRedraw, true);
+        SetStyle(
+            ControlStyles.ResizeRedraw
+            | ControlStyles.AllPaintingInWmPaint
+            | ControlStyles.OptimizedDoubleBuffer
+            | ControlStyles.UserPaint,
+            true);
+        DoubleBuffered = true;
         FormStyler.ApplyRounded(this);
 
         var border = new Panel
@@ -207,25 +221,31 @@ internal sealed class AiActionPickerPopup : Form
 
     public void ShowAtGesturePoint(Point screenPt)
     {
-        RefreshActions();
-        if (!HasActions)
-            return;
+        SuspendLayout();
+        try
+        {
+            RefreshActions();
+            if (!HasActions)
+                return;
 
-        EnterGestureMode();
+            EnterGestureMode();
 
-        var screen = Screen.FromPoint(screenPt);
-        EnsurePopupSizeForScreen(screen);
-        var workingArea = screen.WorkingArea;
-        var margin = UiScaleHelper.Scale(this, 8);
-        var x = Math.Max(workingArea.Left + margin, Math.Min(screenPt.X - Width + margin, workingArea.Right - Width - margin));
-        var y = Math.Max(workingArea.Top + margin, Math.Min(screenPt.Y - (Height / 2), workingArea.Bottom - Height - margin));
-        Location = new Point(x, y);
+            var screen = Screen.FromPoint(screenPt);
+            EnsurePopupSizeForScreen(screen);
+            var workingArea = screen.WorkingArea;
+            var margin = UiScaleHelper.Scale(this, 8);
+            var x = Math.Max(workingArea.Left + margin, Math.Min(screenPt.X - Width + margin, workingArea.Right - Width - margin));
+            var y = Math.Max(workingArea.Top + margin, Math.Min(screenPt.Y - (Height / 2), workingArea.Bottom - Height - margin));
+            Location = new Point(x, y);
+        }
+        finally
+        {
+            ResumeLayout(performLayout: true);
+        }
 
         // 手势阶段不抢前台：来源窗（微信等）保持激活，松手后 Ctrl+C 才能命中选区。
         if (!Visible)
             Show();
-        else
-            Invalidate();
         HighlightAtScreenPoint(screenPt);
     }
 
@@ -296,10 +316,21 @@ internal sealed class AiActionPickerPopup : Form
 
         var activeItem = GetItemAtScreenPoint(screenPt);
         var activeChip = GetChipAtScreenPoint(screenPt);
-        foreach (var item in _items)
-            item.SetHighlighted(ReferenceEquals(item, activeItem));
-        foreach (var chip in _chips)
-            chip.SetHighlighted(ReferenceEquals(chip, activeChip));
+
+        // 只切换前后两项，避免每帧 Invalidate 全部条目
+        if (!ReferenceEquals(_lastHighlightedItem, activeItem))
+        {
+            _lastHighlightedItem?.SetHighlighted(false);
+            activeItem?.SetHighlighted(true);
+            _lastHighlightedItem = activeItem;
+        }
+
+        if (!ReferenceEquals(_lastHighlightedChip, activeChip))
+        {
+            _lastHighlightedChip?.SetHighlighted(false);
+            activeChip?.SetHighlighted(true);
+            _lastHighlightedChip = activeChip;
+        }
     }
 
     public AiActionSelection? TryReleaseAtScreenPoint(Point screenPt)
@@ -362,11 +393,16 @@ internal sealed class AiActionPickerPopup : Form
         _gestureMode = true;
         _showWithoutActivation = true;
         ApplyNoActivateStyle(enabled: true);
-        foreach (var item in _items)
-            item.SetHighlighted(false);
-        foreach (var chip in _chips)
-            chip.SetHighlighted(false);
+        ClearHighlight();
         UpdateDragCursors();
+    }
+
+    private void ClearHighlight()
+    {
+        _lastHighlightedItem?.SetHighlighted(false);
+        _lastHighlightedChip?.SetHighlighted(false);
+        _lastHighlightedItem = null;
+        _lastHighlightedChip = null;
     }
 
     private void ApplyNoActivateStyle(bool enabled)
@@ -384,6 +420,24 @@ internal sealed class AiActionPickerPopup : Form
 
     private void RefreshActions()
     {
+        var config = _configManager.Config.Ai;
+        var actionsSignature = BuildActionsSignature();
+        var recentSignature = BuildRecentSignature(config.RecentAiActionIds);
+
+        // 动作列表未变：只刷新「最近」chip，避免整表销毁重建
+        if (string.Equals(_actionsSignature, actionsSignature, StringComparison.Ordinal)
+            && _items.Count > 0)
+        {
+            if (!string.Equals(_recentSignature, recentSignature, StringComparison.Ordinal))
+            {
+                RebuildRecentChips(config.RecentAiActionIds);
+                _recentSignature = recentSignature;
+            }
+
+            return;
+        }
+
+        ClearHighlight();
         _promptList.SuspendLayout();
         _toolList.SuspendLayout();
         _recentChips.SuspendLayout();
@@ -395,7 +449,6 @@ internal sealed class AiActionPickerPopup : Form
         _allActions.Clear();
         try
         {
-            var config = _configManager.Config.Ai;
             foreach (var prompt in config.PromptPresets)
             {
                 var selection = new AiActionSelection
@@ -466,6 +519,11 @@ internal sealed class AiActionPickerPopup : Form
                 _promptList.Controls.Add(CreateEmptyLabel("暂无 Prompt"));
 
             RebuildRecentChips(config.RecentAiActionIds);
+            _actionsSignature = actionsSignature;
+            _recentSignature = recentSignature;
+            // 动作集变了，强制下次重算尺寸
+            _lastPopupSize = Size.Empty;
+            _lastPopupDpi = 0;
         }
         finally
         {
@@ -475,8 +533,34 @@ internal sealed class AiActionPickerPopup : Form
         }
     }
 
+    private string BuildActionsSignature()
+    {
+        var cfg = _configManager.Config;
+        var ocr = cfg.Ocr?.Enabled != false ? "1" : "0";
+        var sb = new System.Text.StringBuilder(128);
+        sb.Append("ocr=").Append(ocr).Append('|');
+        foreach (var p in cfg.Ai.PromptPresets)
+            sb.Append("P:").Append(p.Id).Append(':').Append(p.Name).Append(';');
+        sb.Append("T:plain;T:ocr;T:everything;");
+        foreach (var tool in cfg.WebSearchTools.Where(t => t.Enabled))
+            sb.Append("W:").Append(tool.Id).Append(':').Append(tool.Name).Append(':').Append(tool.UrlTemplate).Append(';');
+        return sb.ToString();
+    }
+
+    private static string BuildRecentSignature(List<string>? recentKeys)
+    {
+        if (recentKeys == null || recentKeys.Count == 0)
+            return string.Empty;
+
+        // 只看前 MaxRecentChips 个有效 key 的顺序
+        var n = Math.Min(MaxRecentChips + 2, recentKeys.Count); // 多取一点，兼容失效 key
+        return string.Join('\u001f', recentKeys.Take(n));
+    }
+
     private void RebuildRecentChips(List<string>? recentKeys)
     {
+        _lastHighlightedChip?.SetHighlighted(false);
+        _lastHighlightedChip = null;
         _chips.Clear();
         DisposeChildControls(_recentChips);
 
@@ -484,6 +568,8 @@ internal sealed class AiActionPickerPopup : Form
         {
             _recentLabel.Visible = false;
             _recentChips.Visible = false;
+            // chip 变化可能影响顶栏宽度，下次强制重算尺寸
+            _lastPopupSize = Size.Empty;
             return;
         }
 
@@ -506,6 +592,7 @@ internal sealed class AiActionPickerPopup : Form
         var hasRecent = _chips.Count > 0;
         _recentLabel.Visible = hasRecent;
         _recentChips.Visible = hasRecent;
+        _lastPopupSize = Size.Empty;
     }
 
     private void AddRecentChip(AiActionSelection selection)
@@ -563,18 +650,61 @@ internal sealed class AiActionPickerPopup : Form
     }
 
     private ActionItemControl? GetItemAtScreenPoint(Point screenPt)
-        => _items.FirstOrDefault(item => item.RectangleToScreen(item.ClientRectangle).Contains(screenPt));
+    {
+        // 先用列表客户区快速剔除，再遍历（条目少时也比每次全量 RectangleToScreen 更稳）
+        if (_items.Count == 0)
+            return null;
+
+        if (_promptList.IsHandleCreated
+            && _promptList.RectangleToScreen(_promptList.ClientRectangle).Contains(screenPt))
+        {
+            foreach (var item in _items)
+            {
+                if (item.Parent != _promptList)
+                    continue;
+                if (item.RectangleToScreen(item.ClientRectangle).Contains(screenPt))
+                    return item;
+            }
+        }
+
+        if (_toolList.IsHandleCreated
+            && _toolList.RectangleToScreen(_toolList.ClientRectangle).Contains(screenPt))
+        {
+            foreach (var item in _items)
+            {
+                if (item.Parent != _toolList)
+                    continue;
+                if (item.RectangleToScreen(item.ClientRectangle).Contains(screenPt))
+                    return item;
+            }
+        }
+
+        return null;
+    }
 
     private RecentChipControl? GetChipAtScreenPoint(Point screenPt)
-        => _chips.FirstOrDefault(chip => chip.RectangleToScreen(chip.ClientRectangle).Contains(screenPt));
+    {
+        if (_chips.Count == 0 || !_recentChips.IsHandleCreated)
+            return null;
+        if (!_recentChips.RectangleToScreen(_recentChips.ClientRectangle).Contains(screenPt))
+            return null;
+
+        foreach (var chip in _chips)
+        {
+            if (chip.RectangleToScreen(chip.ClientRectangle).Contains(screenPt))
+                return chip;
+        }
+
+        return null;
+    }
 
     private void EnsurePopupSizeForScreen(Screen screen)
     {
         var dpi = UiScaleHelper.GetDpi(this);
         int S(int logical) => UiScaleHelper.Scale(logical, dpi);
 
-        var promptItems = _promptList.Controls.OfType<ActionItemControl>().ToList();
-        var toolItems = _toolList.Controls.OfType<ActionItemControl>().ToList();
+        var promptItems = _items.Where(i => i.Parent == _promptList).ToList();
+        var toolItems = _items.Where(i => i.Parent == _toolList).ToList();
         var hasBothColumns = promptItems.Count > 0 && toolItems.Count > 0;
 
         var logicalW = Math.Min(MaxWidth, hasBothColumns ? PreferredWidth : CompactWidth);
@@ -592,7 +722,7 @@ internal sealed class AiActionPickerPopup : Form
             listContentPx = rows * S(RowLogicalHeight) + Math.Max(0, rows - 1) * S(RowGap) + S(ListBottomPadding);
         }
 
-        // 窗体总高 = 顶栏 + 分组标题 + 列表 + 内边距 + 边框余量（全部一次换算，避免二次测量丢高度）
+        // 窗体总高 = 顶栏 + 分组标题 + 列表 + 内边距 + 边框余量
         var neededHeight =
             S(TopBarLogicalHeight + TopBarBottomGap)
             + S(GroupHeaderLogicalHeight)
@@ -601,36 +731,42 @@ internal sealed class AiActionPickerPopup : Form
             + S(ContentBottomSlack)
             + S(ChromeLogical);
 
-        // 最近 chip：先按文字真实宽度测量（不依赖尚未布局的 ClientSize，避免落到 72px 下限被截成「截…」）
+        // 最近 chip：先按文字真实宽度测量
         var chipNaturalWidths = MeasureRecentChipNaturalWidths(S(ChipMaxLogicalWidth));
         var recentNeededW = EstimateRecentBarWidth(chipNaturalWidths, dpi);
 
         var finalW = Math.Min(Math.Max(S(logicalW), recentNeededW), maxFormW);
         var finalH = Math.Clamp(neededHeight, S(MinHeight), Math.Min(S(MaxHeight), maxFormH));
-        Size = new Size(finalW, finalH);
+        var finalSize = new Size(finalW, finalH);
 
-        // 必须先出尺寸再布局，条目宽度才能对齐列宽
-        PerformLayout();
-        _root.PerformLayout();
-        _promptList.PerformLayout();
-        _toolList.PerformLayout();
-        _recentChips.PerformLayout();
-
-        var colGap = S(2);
-        foreach (var item in _items)
+        // 尺寸与 DPI 未变且动作列表未重建时，跳过重布局
+        var sizeUnchanged = finalSize == _lastPopupSize && dpi == _lastPopupDpi && Size == finalSize;
+        if (!sizeUnchanged)
         {
-            var hostWidth = item.Parent?.ClientSize.Width ?? 0;
-            item.Width = hostWidth > colGap
-                ? Math.Max(S(140), hostWidth - colGap)
-                : Math.Max(S(140), (finalW / 2) - S(RootPadding) - S(12));
+            Size = finalSize;
+            PerformLayout();
+            _root.PerformLayout();
+            _promptList.PerformLayout();
+            _toolList.PerformLayout();
+            _recentChips.PerformLayout();
+
+            var colGap = S(2);
+            foreach (var item in _items)
+            {
+                var hostWidth = item.Parent?.ClientSize.Width ?? 0;
+                item.Width = hostWidth > colGap
+                    ? Math.Max(S(140), hostWidth - colGap)
+                    : Math.Max(S(140), (finalW / 2) - S(RootPadding) - S(12));
+            }
+
+            ApplyListScrollMetrics(_promptList, promptItems);
+            ApplyListScrollMetrics(_toolList, toolItems);
+            _lastPopupSize = finalSize;
+            _lastPopupDpi = dpi;
         }
 
-        // 应用 chip 宽度：优先完整显示；仅当总宽仍超可用区域时再按比例压缩
+        // chip 宽度每次都应用（最近列表可能单独变了）
         ApplyRecentChipWidths(chipNaturalWidths, dpi);
-
-        // 始终允许滚动：高度被屏幕/上限截断时仍能看到全部条目
-        ApplyListScrollMetrics(_promptList, promptItems);
-        ApplyListScrollMetrics(_toolList, toolItems);
     }
 
     /// <summary>测量每个最近 chip 的自然宽度（完整文字），不依赖布局后的 ClientSize。</summary>
@@ -957,7 +1093,10 @@ internal sealed class AiActionPickerPopup : Form
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.Clear(Parent?.BackColor ?? Color.White);
-            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            // 悬停高亮时用高速抗锯齿，降低手势拖动时的重绘成本
+            e.Graphics.SmoothingMode = _highlighted
+                ? System.Drawing.Drawing2D.SmoothingMode.HighSpeed
+                : System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using var backBrush = new SolidBrush(_highlighted
@@ -1077,7 +1216,9 @@ internal sealed class AiActionPickerPopup : Form
         protected override void OnPaint(PaintEventArgs e)
         {
             e.Graphics.Clear(Parent?.BackColor ?? Color.FromArgb(250, 250, 250));
-            e.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+            e.Graphics.SmoothingMode = _highlighted
+                ? System.Drawing.Drawing2D.SmoothingMode.HighSpeed
+                : System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using var backBrush = new SolidBrush(_highlighted

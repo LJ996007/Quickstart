@@ -8,6 +8,11 @@ using Quickstart.Utils;
 public sealed class MainPopup : Form
 {
     private enum TabKind { Folders, Files, Urls, Texts, ClipboardHistory, RecentItems }
+    private static readonly TabKind[] DefaultTabOrder =
+    [
+        TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts,
+        TabKind.ClipboardHistory, TabKind.RecentItems
+    ];
     private readonly record struct PathStatus(bool Exists, DateTime CheckedAtUtc);
 
     private static readonly Size ExpandedPopupLogicalSize = new(380, 440);
@@ -39,7 +44,8 @@ public sealed class MainPopup : Form
     private readonly SemaphoreSlim _pathCheckGate = new(4);
     private readonly CancellationTokenSource _disposeCts = new();
     private readonly System.Windows.Forms.Timer _debounceTimer;
-    private readonly Label[] _tabLabels;
+    private readonly List<Label> _tabLabels = [];
+    private readonly List<TabKind> _tabOrder = [];
     private readonly TableLayoutPanel _tabLayout;
     private readonly FlowLayoutPanel _groupLayout;
     private readonly List<Label> _groupLabels = [];
@@ -61,6 +67,11 @@ public sealed class MainPopup : Form
     private TabKind _activeTab = TabKind.Folders;
     private string _activeGroup = AllGroupsLabel;
     private bool _isSearchExpanded;
+    private Label? _tabDragLabel;
+    private Point _tabDragStart;
+    private bool _tabDragging;
+    private int _tabDropIndex = -1;
+    private bool _suppressTabClick;
     private List<string>? _lastGroupSignature;
     private readonly Dictionary<(string Text, int Width), string> _truncateCache = new();
     // 嵌套计数：右键菜单 / 子对话框打开期间禁止失焦自动隐藏
@@ -75,6 +86,7 @@ public sealed class MainPopup : Form
         _launcher = launcher;
         _clipboardHistory = clipboardHistory;
         RestoreRememberedView();
+        _tabOrder.AddRange(CreateTabOrder(_configManager.Config.MainPopupTabOrder));
 
         AutoScaleMode = AutoScaleMode.Dpi;
 
@@ -211,45 +223,46 @@ public sealed class MainPopup : Form
         _listHost.Controls.Add(_listView);
         _listHost.Controls.Add(_toastLabel);
 
-        _tabLabels = new Label[6];
         _tabLayout = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
             ColumnCount = 1,
-            RowCount = 7,
+            RowCount = _tabOrder.Count + 1,
             Margin = new Padding(0),
             Padding = new Padding(0),
             BackColor = Color.FromArgb(240, 240, 240)
         };
         _tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (int i = 0; i < 6; i++)
+        for (var i = 0; i < _tabOrder.Count; i++)
             _tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
         _tabLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-        string[] tabTexts = ["文\n件\n夹", "文\n件", "网\n页", "文\n本", "历\n史", "最\n近"];
-        TabKind[] tabKinds =
-        [
-            TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts,
-            TabKind.ClipboardHistory, TabKind.RecentItems
-        ];
-        for (int i = 0; i < tabTexts.Length; i++)
+        for (var i = 0; i < _tabOrder.Count; i++)
         {
-            var kind = tabKinds[i];
+            var kind = _tabOrder[i];
             var label = new Label
             {
-                Text = tabTexts[i],
+                Text = GetTabText(kind),
+                Tag = kind,
                 TextAlign = ContentAlignment.MiddleCenter,
                 Font = new Font("Microsoft YaHei UI", 9f),
                 Dock = DockStyle.Fill,
                 Cursor = Cursors.Hand,
                 Margin = new Padding(0)
             };
-            label.Click += (_, _) => SwitchTab(kind);
-            if (kind == TabKind.ClipboardHistory)
-                _toolTip.SetToolTip(label, "剪贴板历史");
-            else if (kind == TabKind.RecentItems)
-                _toolTip.SetToolTip(label, "Windows 最近使用的文件和文件夹");
-            _tabLabels[i] = label;
+            label.Click += (_, _) => OnTabLabelClick(kind);
+            label.MouseDown += OnTabLabelMouseDown;
+            label.MouseMove += OnTabLabelMouseMove;
+            label.MouseUp += OnTabLabelMouseUp;
+
+            var tooltip = kind switch
+            {
+                TabKind.ClipboardHistory => "剪贴板历史",
+                TabKind.RecentItems => "Windows 最近使用的文件和文件夹",
+                _ => kind.ToString()
+            };
+            _toolTip.SetToolTip(label, $"{tooltip}\n按住并上下拖动可调整顺序");
+            _tabLabels.Add(label);
             _tabLayout.Controls.Add(label, 0, i);
         }
 
@@ -563,9 +576,9 @@ public sealed class MainPopup : Form
             tabHeight = Math.Max(tabHeight, measured.Height + UiScaleHelper.Scale(this, 8));
         }
 
-        for (int i = 0; i < _tabLabels.Length; i++)
+        for (int i = 0; i < _tabLabels.Count; i++)
             _tabLayout.RowStyles[i].Height = tabHeight;
-        _tabLayout.MinimumSize = new Size(tabWidth, tabHeight * _tabLabels.Length);
+        _tabLayout.MinimumSize = new Size(tabWidth, tabHeight * _tabLabels.Count);
         _tabLayout.Width = tabWidth;
 
         _groupLayout.Padding = UiScaleHelper.ScalePadding(this, new Padding(0));
@@ -736,6 +749,162 @@ public sealed class MainPopup : Form
         }
     }
 
+    private static string GetTabText(TabKind kind)
+        => kind switch
+        {
+            TabKind.Folders => "文\n件\n夹",
+            TabKind.Files => "文\n件",
+            TabKind.Urls => "网\n页",
+            TabKind.Texts => "文\n本",
+            TabKind.ClipboardHistory => "剪\n贴\n板",
+            TabKind.RecentItems => "最\n近",
+            _ => kind.ToString()
+        };
+
+    private static IEnumerable<TabKind> CreateTabOrder(IEnumerable<string>? savedOrder)
+    {
+        var included = new HashSet<TabKind>();
+        foreach (var savedTab in savedOrder ?? [])
+        {
+            if (Enum.TryParse<TabKind>(savedTab, ignoreCase: true, out var kind)
+                && Enum.IsDefined(kind)
+                && included.Add(kind))
+            {
+                yield return kind;
+            }
+        }
+
+        foreach (var kind in DefaultTabOrder)
+        {
+            if (included.Add(kind))
+                yield return kind;
+        }
+    }
+
+    private void OnTabLabelClick(TabKind kind)
+    {
+        if (_suppressTabClick)
+            return;
+
+        if (CanSwitchTab(kind))
+            SwitchTab(kind);
+    }
+
+    private void OnTabLabelMouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || sender is not Label label)
+            return;
+
+        _tabDragLabel = label;
+        _tabDragStart = Cursor.Position;
+        _tabDragging = false;
+        _tabDropIndex = -1;
+    }
+
+    private void OnTabLabelMouseMove(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || _tabDragLabel == null)
+            return;
+
+        if (!_tabDragging)
+        {
+            var dragSize = SystemInformation.DragSize;
+            var dragBounds = new Rectangle(
+                _tabDragStart.X - dragSize.Width / 2,
+                _tabDragStart.Y - dragSize.Height / 2,
+                dragSize.Width,
+                dragSize.Height);
+            if (dragBounds.Contains(Cursor.Position))
+                return;
+
+            _tabDragging = true;
+            _tabDragLabel.Cursor = Cursors.SizeNS;
+        }
+
+        var tabPoint = _tabLayout.PointToClient(Cursor.Position);
+        var targetIndex = _tabLabels.FindIndex(label => label.Bounds.Contains(tabPoint));
+        if (targetIndex < 0)
+        {
+            if (tabPoint.Y < 0)
+                targetIndex = 0;
+            else if (tabPoint.Y >= _tabLayout.ClientSize.Height)
+                targetIndex = _tabLabels.Count - 1;
+            else
+                return;
+        }
+
+        if (_tabDropIndex == targetIndex)
+            return;
+
+        _tabDropIndex = targetIndex;
+        ApplyTabStyles();
+        if (_tabLabels[targetIndex].Tag is TabKind targetKind && targetKind != _activeTab)
+            _tabLabels[targetIndex].BackColor = Color.FromArgb(220, 232, 246);
+    }
+
+    private void OnTabLabelMouseUp(object? sender, MouseEventArgs e)
+    {
+        if (_tabDragging)
+        {
+            _suppressTabClick = true;
+            BeginInvoke(() => _suppressTabClick = false);
+        }
+
+        var sourceIndex = _tabDragLabel == null ? -1 : _tabLabels.IndexOf(_tabDragLabel);
+        if (_tabDragging
+            && sourceIndex >= 0
+            && _tabDropIndex >= 0
+            && _tabDropIndex < _tabLabels.Count
+            && sourceIndex != _tabDropIndex)
+        {
+            MoveTabLabel(sourceIndex, _tabDropIndex);
+            _configManager.SetMainPopupTabOrder(_tabOrder.Select(kind => kind.ToString()));
+            ShowToast("标签顺序已保存");
+        }
+
+        ResetTabDragState();
+    }
+
+    private void MoveTabLabel(int sourceIndex, int targetIndex)
+    {
+        var label = _tabLabels[sourceIndex];
+        var kind = _tabOrder[sourceIndex];
+        _tabLabels.RemoveAt(sourceIndex);
+        _tabLabels.Insert(targetIndex, label);
+        _tabOrder.RemoveAt(sourceIndex);
+        _tabOrder.Insert(targetIndex, kind);
+
+        _tabLayout.SuspendLayout();
+        try
+        {
+            foreach (var tabLabel in _tabLabels)
+                _tabLayout.Controls.Remove(tabLabel);
+            for (var index = 0; index < _tabLabels.Count; index++)
+                _tabLayout.Controls.Add(_tabLabels[index], 0, index);
+        }
+        finally
+        {
+            _tabLayout.ResumeLayout(performLayout: true);
+        }
+
+        ApplyTabStyles();
+    }
+
+    private void ResetTabDragState()
+    {
+        if (_tabDragLabel != null)
+            _tabDragLabel.Cursor = Cursors.Hand;
+        _tabDragLabel = null;
+        _tabDragging = false;
+        _tabDropIndex = -1;
+        ApplyTabStyles();
+    }
+
+    private bool CanSwitchTab(TabKind kind)
+        => kind != TabKind.ClipboardHistory
+            || _configManager.Config.ClipboardHistory?.Enabled != false
+            || _activeTab == TabKind.ClipboardHistory;
+
     private void SwitchTab(TabKind kind)
     {
         if (_activeTab == kind) return;
@@ -749,21 +918,17 @@ public sealed class MainPopup : Form
 
     private void ApplyTabStyles()
     {
-        TabKind[] kinds =
-        [
-            TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts,
-            TabKind.ClipboardHistory, TabKind.RecentItems
-        ];
-        for (int i = 0; i < _tabLabels.Length; i++)
-        {
-            bool active = kinds[i] == _activeTab;
-            _tabLabels[i].BackColor = active ? Color.FromArgb(60, 60, 60) : Color.FromArgb(240, 240, 240);
-            _tabLabels[i].ForeColor = active ? Color.White : Color.FromArgb(80, 80, 80);
-        }
-
         var historyEnabled = _configManager.Config.ClipboardHistory?.Enabled != false;
-        if (_tabLabels.Length > 4)
-            _tabLabels[4].Enabled = historyEnabled || _activeTab == TabKind.ClipboardHistory;
+        foreach (var label in _tabLabels)
+        {
+            var kind = label.Tag is TabKind taggedKind ? taggedKind : TabKind.Folders;
+            var active = kind == _activeTab;
+            var available = kind != TabKind.ClipboardHistory || historyEnabled || active;
+            label.BackColor = active ? Color.FromArgb(60, 60, 60) : Color.FromArgb(240, 240, 240);
+            label.ForeColor = active
+                ? Color.White
+                : available ? Color.FromArgb(80, 80, 80) : Color.FromArgb(165, 165, 165);
+        }
     }
 
     private void ApplyGroupStyles()
@@ -819,10 +984,8 @@ public sealed class MainPopup : Form
             return;
         }
 
-        // 左键单击：历史/文本也可直接复制（双击与手势松手仍可用）
+        // 左键单击：与手势松手一致，直接打开/复制（拖拽排序走 ItemDrag，不会走到这里）
         if (e.Button != MouseButtons.Left)
-            return;
-        if (_activeTab != TabKind.ClipboardHistory && _activeTab != TabKind.Texts)
             return;
 
         hit.Selected = true;
@@ -2632,17 +2795,12 @@ public sealed class MainPopup : Form
         var tabClientPt = _tabLayout.PointToClient(screenPt);
         if (_tabLayout.ClientRectangle.Contains(tabClientPt))
         {
-            TabKind[] kinds =
-            [
-                TabKind.Folders, TabKind.Files, TabKind.Urls, TabKind.Texts,
-                TabKind.ClipboardHistory, TabKind.RecentItems
-            ];
-            for (int i = 0; i < _tabLabels.Length && i < kinds.Length; i++)
+            foreach (var label in _tabLabels)
             {
-                if (_tabLabels[i].Bounds.Contains(tabClientPt))
+                if (label.Bounds.Contains(tabClientPt) && label.Tag is TabKind kind)
                 {
-                    if (_activeTab != kinds[i])
-                        SwitchTab(kinds[i]);
+                    if (_activeTab != kind && CanSwitchTab(kind))
+                        SwitchTab(kind);
                     break;
                 }
             }
@@ -2821,7 +2979,10 @@ public sealed class MainPopup : Form
         get
         {
             var cp = base.CreateParams;
-            cp.ExStyle |= 0x00000080;
+            cp.ExStyle |= 0x00000080; // WS_EX_TOOLWINDOW
+            // 注意：不要在此处加 WS_EX_COMPOSITED（0x02000000）。它会继承到所有子控件，
+            // 与 OwnerDraw 的 BufferedListView / Label 命中检测不兼容，会让右滑松手打不开
+            // 文件夹/文件（HitTest/GetItemAt 返回 null）。BufferedListView 自身已开双缓冲。
             return cp;
         }
     }

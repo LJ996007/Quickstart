@@ -21,9 +21,27 @@ public sealed class BufferedListBox : ListBox
 
     protected override void WndProc(ref Message m)
     {
-        // OwnerDraw 已自行铺满 item 背景，跳过默认擦除可减少局部重绘时的闪白
+        // OwnerDraw 会铺满每个 item，但不会绘制最后一项下方的空闲区域。
+        // 只补绘这块背景，既避免列表底部残留系统默认白色，又不重新擦除
+        // item 区域，从而保留切换导航项时的低闪烁效果。
         if (m.Msg == WmEraseBkgnd)
         {
+            var emptyTop = 0;
+            if (Items.Count > 0)
+            {
+                var lastItemBounds = GetItemRectangle(Items.Count - 1);
+                emptyTop = Math.Clamp(lastItemBounds.Bottom, 0, ClientSize.Height);
+            }
+
+            if (emptyTop < ClientSize.Height && m.WParam != IntPtr.Zero)
+            {
+                using var graphics = Graphics.FromHdc(m.WParam);
+                using var brush = new SolidBrush(BackColor);
+                graphics.FillRectangle(
+                    brush,
+                    new Rectangle(0, emptyTop, ClientSize.Width, ClientSize.Height - emptyTop));
+            }
+
             m.Result = (IntPtr)1;
             return;
         }

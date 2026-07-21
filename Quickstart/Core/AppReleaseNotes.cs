@@ -7,6 +7,13 @@ internal static class AppReleaseNotes
     private static readonly ReleaseNote[] Releases =
     [
         new(
+            "1.0.14",
+            "2026-07-21",
+            [
+                "修复右滑主面板用 Directory Opus 打开收藏文件夹时失败的问题：路径中的 `#`（常见于 WPS 云盘目录名）会被 `dopusrt /cmd Go PATH=` 命令解析截断，改为直接把路径交给 `dopus.exe` 打开。",
+                "右滑列表左键单击文件夹/文件/网页/最近项也可直接打开（与文本、历史一致）；拖拽排序不受影响。"
+            ]),
+        new(
             "1.0.13",
             "2026-07-19",
             [
