@@ -5,7 +5,7 @@
 
 ## 变更
 
-- （暂无）
+- macOS 相关代码（Quickstart.Mac、macos Swift 原型、Mac 构建脚本与文档）抽离至独立仓库 `Quickstart-Mac`；本仓库仅保留 Windows 与跨平台 Core 项目。
 
 ## 说明
 

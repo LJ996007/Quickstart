@@ -1,6 +1,6 @@
 # Quickstart
 
-![Platform](https://img.shields.io/badge/platform-Windows%20%7C%20macOS-blue)
+![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![.NET](https://img.shields.io/badge/.NET-10.0-purple)
 ![Version](https://img.shields.io/badge/version-1.0.15-green)
 ![License](https://img.shields.io/github/license/LJ996007/Quickstart)
@@ -10,7 +10,7 @@ Quickstart 是一个常驻系统托盘 / 菜单栏的快捷启动与效率工具
 
 它不只是收藏夹：把**常用路径、网页、固定文本**收在一起，再用**右键拖动手势**在任意窗口秒级呼出。Windows 版还把 **AI 动作、Everything 搜索、截图 OCR、剪贴板历史、粘贴为纯文本** 接进同一套左滑手势里，尽量少点几下就能干完事。
 
-当前主线版本：**Windows 1.0.15**（.NET 10 / WinForms）。macOS 以 **Avalonia + 共享 Core** 推进；仓库里仍保留早期 Swift/AppKit 原型。
+当前主线版本：**Windows 1.0.15**（.NET 10 / WinForms）。
 
 ---
 
@@ -25,37 +25,12 @@ Quickstart 是一个常驻系统托盘 / 菜单栏的快捷启动与效率工具
 > **环境**：Windows 10/11。发布版已自带运行时，无需再装 .NET。  
 > 调试可用环境变量 `QUICKSTART_PERF=1`，启动打点会写到 `%LOCALAPPDATA%\Quickstart\startup-trace.log`。
 
-### macOS
-
-仓库内有两套实现：
-
-| 实现 | 路径 | 状态 |
-|------|------|------|
-| **Avalonia / .NET（推荐）** | `Quickstart.Mac/` | 与 Windows 共享 `Quickstart.Core`，持续跟进 |
-| Swift / AppKit（早期） | `macos/QuickstartMac/` | 功能停留在早期 MVP，迁移完成后计划归档 |
-
-**Avalonia 开发运行（在 Mac 上）：**
-
-```bash
-dotnet run --project Quickstart.Mac
-```
-
-**打包 .app / .dmg：**
-
-```bash
-scripts/build-mac-app.sh          # 默认 osx-arm64；Intel: RID=osx-x64
-scripts/build-mac-dmg.sh
-```
-
-全局右键拖拽需要在「系统设置 → 隐私与安全性」中授权**辅助功能 / 输入监控**。未签名包首次打开可能被 Gatekeeper 拦截，本机可用右键「打开」，分发请走 Developer ID 签名与公证。
-
----
 
 ## 软件功能
 
 ### 1. 托盘常驻，多种呼出方式
 
-- Windows：系统托盘；macOS：菜单栏 / Dock（视实现而定）。
+- Windows：系统托盘。
 - 点击托盘 / 菜单栏打开主弹窗。
 - **全局快捷键**（设置里配置，例如 `Ctrl+Shift+Space`；留空禁用）。
 - **右键拖动手势**（可开关，可调触发距离与垂直容差）：
@@ -176,9 +151,7 @@ Quickstart.sln
 │   ├── UI/                     # MainPopup、动作面板、AI、设置等
 │   └── Utils/                  # 图标、双缓冲控件、DPI 等
 ├── Quickstart.Core/            # 跨平台业务：配置、拼音、AI 客户端、协议…
-├── Quickstart.Mac/             # macOS Avalonia 客户端（共享 Core）
-├── macos/QuickstartMac/        # 早期 Swift/AppKit 原型（遗留）
-├── scripts/                    # macOS 构建 / DMG 脚本
+├── scripts/                    # Windows 构建 / 发布脚本
 ├── installer/                  # Windows Inno Setup
 ├── docs/                       # 设计与实现笔记（手势、OCR、剪贴板等）
 ├── debug.cmd / release.cmd     # Windows 本地构建
@@ -218,25 +191,6 @@ artifacts/
 
 `release.cmd` 默认尝试打安装包；只要便携版加 `-SkipInstaller`。
 
-### macOS（Avalonia）
-
-```bash
-dotnet run --project Quickstart.Mac
-scripts/build-mac-app.sh
-scripts/build-mac-dmg.sh
-```
-
-### macOS（遗留 Swift 原型）
-
-```bash
-scripts/build-macos.sh
-ARCHS="arm64 x86_64" scripts/build-macos.sh
-scripts/build-macos-dmg.sh
-```
-
-本地多为 ad-hoc 签名，仅适合本机验证。
-
----
 
 ## 命令行与协议
 

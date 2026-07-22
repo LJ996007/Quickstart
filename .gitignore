@@ -15,10 +15,6 @@ ai-secrets.local.json
 .quickstart-local/
 Quickstart.local/
 
-# macOS build output
-macos/QuickstartMac/build/
-Quickstart.Mac/build/
-.omx/
 
 # Local agent workspace
 .workbuddy/
