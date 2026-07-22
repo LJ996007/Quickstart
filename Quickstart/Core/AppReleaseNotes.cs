@@ -6,6 +6,13 @@ internal static class AppReleaseNotes
 {
     private static readonly ReleaseNote[] Releases =
     [
+        
+        new(
+            "1.0.15",
+            "2026-07-22",
+            [
+                "右滑用 Directory Opus 打开收藏文件夹时，若 DOpus 已在运行，改为通过 `dopusrt.exe /acmd Go \"路径\" NEWTAB=deflister,findexisting,tofront` 在现有文件窗口新建标签打开，不再额外启动一个新的 DOpus 窗口；路径含 `#`、空格、中文均可正确处理（含 `%` 的目录名仍回退 `dopus.exe` 按字面打开）。"
+            ]),
         new(
             "1.0.14",
             "2026-07-21",

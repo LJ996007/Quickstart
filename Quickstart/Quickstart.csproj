@@ -28,7 +28,7 @@
     <!-- Assembly info -->
     <AssemblyName>Quickstart</AssemblyName>
     <RootNamespace>Quickstart</RootNamespace>
-    <Version>1.0.14</Version>
+    <Version>1.0.15</Version>
     <Description>Windows tray app for quick folder/file access</Description>
   </PropertyGroup>
 

@@ -1,11 +1,15 @@
 namespace Quickstart.Core;
 
 using System.Diagnostics;
+using System.Text.RegularExpressions;
 using Quickstart.Models;
 using Quickstart.Utils;
 
 public sealed class ProcessLauncher(ConfigManager configManager)
 {
+    /// <summary>匹配「%xxx%」形式、可能被 Go 命令当环境变量展开的路径片段。</summary>
+    private static readonly Regex ExpandableEnvPattern = new("%[^%]+%", RegexOptions.Compiled);
+
     public void Open(QuickEntry entry, OpenWith? overrideWith = null)
     {
         var config = configManager.Config;
@@ -91,12 +95,6 @@ public sealed class ProcessLauncher(ConfigManager configManager)
                 return;
             }
 
-            // 不要用 dopusrt.exe /cmd Go PATH="..."：
-            // 1) 命令行参数拆分容易把 Go / PATH= / NEWTAB= 拆成多条伪命令；
-            // 2) 更关键的是路径里的「#」会被 DOpus 命令解析器当成命令码截断
-            //    （WPS 云盘等目录常以 # 开头），结果开出标题为 "Go PATH=\" 的无效位置。
-            // 直接把文件夹路径作为 dopus.exe 参数，走「打开文件夹」语义，可正确处理
-            // #、空格、中文；单实例下会复用已运行的 DOpus。
             var exe = ResolveDopusExecutable(dopusPath);
             if (string.IsNullOrWhiteSpace(exe) || !File.Exists(exe))
             {
@@ -107,6 +105,21 @@ public sealed class ProcessLauncher(ConfigManager configManager)
             WindowActivator.ClaimForegroundRights();
             WindowActivator.AllowAnyForeground();
 
+            // DOpus 已在运行时，通过同目录 dopusrt.exe 发送 Go NEWTAB 命令，
+            // 在现有文件窗口的活动标签栏新建标签打开目标文件夹，而不是再次启动 dopus.exe
+            // （直接给 dopus.exe 传路径会新开一个独立窗口）。
+            // 说明：
+            // 1) 路径必须用双引号包裹，空格、中文、#（WPS 云盘目录常见）均可正确处理——
+            //    早期版本失败的根因是命令行拼接不当导致引号丢失，而非 # 本身；
+            // 2) 路径含可展开的 %xxx% 片段时回退到 dopus.exe：Go 命令会把 %VAR% 当环境变量
+            //    展开，导致形如「%TEMP%」的目录名被错误替换，dopus.exe 则按字面路径打开；
+            //    仅含单个 % 的名称（如「100% done」）Go 不会展开，仍走新标签。
+            if (!ExpandableEnvPattern.IsMatch(path) && IsDopusRunning() && TryOpenInExistingDopusTab(exe, path))
+            {
+                return;
+            }
+
+            // 回退：DOpus 未运行（冷启动）或路径含 %，直接把路径交给 dopus.exe 打开。
             var psi = new ProcessStartInfo
             {
                 FileName = exe,
@@ -123,6 +136,67 @@ public sealed class ProcessLauncher(ConfigManager configManager)
         {
             OpenInExplorer(path);
         }
+    }
+
+    /// <summary>
+    /// 检测当前会话是否有正在运行的 dopus.exe 主进程。
+    /// </summary>
+    private static bool IsDopusRunning()
+    {
+        int session;
+        using (var self = Process.GetCurrentProcess())
+        {
+            session = self.SessionId;
+        }
+
+        foreach (var p in Process.GetProcessesByName("dopus"))
+        {
+            try
+            {
+                if (p.SessionId == session)
+                    return true;
+            }
+            catch { }
+            finally
+            {
+                p.Dispose();
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 通过 dopusrt.exe /acmd 发送 Go NEWTAB 命令，在现有 DOpus 窗口新建标签打开文件夹。
+    /// NEWTAB 参数：deflister（无窗口时打开默认窗口）、findexisting（文件夹已打开则激活该标签，避免重复）、
+    /// tofront（把文件窗口置前）。
+    /// </summary>
+    private static bool TryOpenInExistingDopusTab(string dopusExePath, string path)
+    {
+        var dir = Path.GetDirectoryName(dopusExePath);
+        if (string.IsNullOrEmpty(dir))
+            return false;
+
+        var rt = Path.Combine(dir, "dopusrt.exe");
+        if (!File.Exists(rt))
+            return false;
+
+        // Windows 目录名不可能包含双引号，直接用双引号包裹路径即可安全拼接。
+        var psi = new ProcessStartInfo
+        {
+            FileName = rt,
+            UseShellExecute = false,
+            Arguments = $"/acmd Go \"{path}\" NEWTAB=deflister,findexisting,tofront"
+        };
+
+        var process = Process.Start(psi);
+        if (process == null)
+            return false;
+
+        // dopusrt 是发送完命令即退出的瞬时进程，真正的文件窗口在 dopus 进程，
+        // 因此按进程名兜底查找并置前。
+        WindowActivator.BringToFrontAsync(process, windowClass: null, procName: "dopus");
+        return true;
     }
 
     /// <summary>
