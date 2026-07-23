@@ -2,7 +2,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![.NET](https://img.shields.io/badge/.NET-10.0-purple)
-![Version](https://img.shields.io/badge/version-1.0.15-green)
+![Version](https://img.shields.io/badge/version-1.0.16-green)
 ![License](https://img.shields.io/github/license/LJ996007/Quickstart)
 ![Release](https://img.shields.io/github/v/release/LJ996007/Quickstart)
 
@@ -10,7 +10,7 @@ Quickstart 是一个常驻系统托盘 / 菜单栏的快捷启动与效率工具
 
 它不只是收藏夹：把**常用路径、网页、固定文本**收在一起，再用**右键拖动手势**在任意窗口秒级呼出。Windows 版还把 **AI 动作、Everything 搜索、截图 OCR、剪贴板历史、粘贴为纯文本** 接进同一套左滑手势里，尽量少点几下就能干完事。
 
-当前主线版本：**Windows 1.0.15**（.NET 10 / WinForms）。
+当前主线版本：**Windows 1.0.16**（.NET 10 / WinForms）。
 
 ---
 
@@ -205,7 +205,7 @@ artifacts/
 
 ## 版本与发布
 
-- 当前 Windows 程序版本见 `Quickstart/Quickstart.csproj` 的 `<Version>`（现为 **1.0.15**）。
+- 当前 Windows 程序版本见 `Quickstart/Quickstart.csproj` 的 `<Version>`（现为 **1.0.16**）。
 - 应用内「程序信息」页展示 `AppReleaseNotes` 中的更新列表。
 - **默认不升版本号**：日常改动先记到 `docs/UNRELEASED.md`，不改 `<Version>`。
 - **需要发版时**：运行 `bump-version.cmd`，会把 `UNRELEASED.md` 的全部条目汇总成新版本说明，更新 csproj / 安装脚本 / README，然后重置变更池。

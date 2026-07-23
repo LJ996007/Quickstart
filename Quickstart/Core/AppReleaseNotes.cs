@@ -7,6 +7,15 @@ internal static class AppReleaseNotes
     private static readonly ReleaseNote[] Releases =
     [
         
+        
+        new(
+            "1.0.16",
+            "2026-07-23",
+            [
+                "macOS 相关代码（Quickstart.Mac、macos Swift 原型、Mac 构建脚本与文档）抽离至独立仓库 `Quickstart-Mac`；本仓库仅保留 Windows 与跨平台 Core 项目。",
+                "拖拽排序：移除搜索和「最近使用优先」对条目拖拽排序的限制，现在所有标签（除剪贴板历史和最近项目外）均支持拖拽调整顺序。",
+                "拖拽排序：修复反向拖拽（后往前）误触打开条目的问题，增加蓝色插入提示线实时显示拖拽位置。"
+            ]),
         new(
             "1.0.15",
             "2026-07-22",

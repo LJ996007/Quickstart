@@ -21,6 +21,9 @@ public sealed class MainPopup : Form
     private const string AllGroupsLabel = "全部";
     private const string EntryReorderDataFormat = "Quickstart.EntryReorder";
 
+    private int _dragInsertIndex = -1;
+    private bool _justFinishedDrag;
+
     private readonly ConfigManager _configManager;
     private readonly ProcessLauncher _launcher;
     private readonly ClipboardHistoryService? _clipboardHistory;
@@ -189,11 +192,7 @@ public sealed class MainPopup : Form
         _listView.Columns.Add("名称", 100);
         _listView.OwnerDraw = true;
         _listView.DrawColumnHeader += (_, e) => e.DrawDefault = true;
-        _listView.DrawItem += (_, e) =>
-        {
-            using var bg = new SolidBrush(e.Item.Selected ? Color.FromArgb(235, 245, 255) : _listView.BackColor);
-            e.Graphics.FillRectangle(bg, e.Bounds);
-        };
+        _listView.DrawItem += OnDrawListItem;
         _listView.DrawSubItem += OnDrawSubItem;
 
         _toastLabel = new Label
@@ -475,6 +474,7 @@ public sealed class MainPopup : Form
         _listView.DragEnter += OnDragEnter;
         _listView.DragOver += OnDragOver;
         _listView.DragDrop += OnDragDrop;
+        _listView.DragLeave += OnDragLeave;
 
         Resize += (_, _) =>
         {
@@ -987,6 +987,13 @@ public sealed class MainPopup : Form
         // 左键单击：与手势松手一致，直接打开/复制（拖拽排序走 ItemDrag，不会走到这里）
         if (e.Button != MouseButtons.Left)
             return;
+
+        // 刚结束拖拽排序，抑制本次 MouseUp 的打开动作
+        if (_justFinishedDrag)
+        {
+            _justFinishedDrag = false;
+            return;
+        }
 
         hit.Selected = true;
         OpenSelectedEntry();
@@ -1703,7 +1710,7 @@ public sealed class MainPopup : Form
         else
         {
             entries = _configManager.Config.SortByRecentUsage
-                ? entries.OrderByDescending(e => e.LastUsedAt).ThenBy(e => e.SortOrder).ToList()
+                ? entries.OrderBy(e => e.SortOrder).ThenByDescending(e => e.LastUsedAt).ToList()
                 : entries.OrderBy(e => e.SortOrder).ToList();
         }
 
@@ -2468,6 +2475,33 @@ public sealed class MainPopup : Form
         }
     }
 
+    private void OnDrawListItem(object? sender, DrawListViewItemEventArgs e)
+    {
+        using var bg = new SolidBrush(e.Item.Selected ? Color.FromArgb(235, 245, 255) : _listView.BackColor);
+        e.Graphics.FillRectangle(bg, e.Bounds);
+
+        // 拖拽插入提示线
+        if (_dragInsertIndex >= 0)
+        {
+            var clientWidth = _listView.ClientSize.Width;
+            if (e.ItemIndex == _dragInsertIndex)
+                DrawDragInsertionLine(e.Graphics, e.Bounds.Top, clientWidth);
+            else if (e.ItemIndex == _listView.Items.Count - 1 && _dragInsertIndex > e.ItemIndex)
+                DrawDragInsertionLine(e.Graphics, e.Bounds.Bottom, clientWidth);
+        }
+    }
+
+    private static void DrawDragInsertionLine(Graphics g, int y, int width)
+    {
+        var color = Color.FromArgb(59, 130, 246);
+        using var pen = new Pen(color, 2);
+        g.DrawLine(pen, 2, y, width - 2, y);
+        // 两端小三角箭头
+        using var brush = new SolidBrush(color);
+        g.FillPolygon(brush, new Point[] { new(0, y - 3), new(6, y - 3), new(3, y) });
+        g.FillPolygon(brush, new Point[] { new(width - 7, y - 3), new(width - 1, y - 3), new(width - 4, y) });
+    }
+
     private void OnDrawSubItem(object? sender, DrawListViewSubItemEventArgs e)
     {
         var g = e.Graphics;
@@ -2662,22 +2696,27 @@ public sealed class MainPopup : Form
             return;
 
         if (!CanReorderEntries())
-        {
-            ShowToast(_configManager.Config.SortByRecentUsage
-                ? "最近使用排序下不能手动调整顺序"
-                : "搜索时不能调整顺序");
             return;
-        }
 
         var data = new DataObject();
         data.SetData(EntryReorderDataFormat, entry.Id);
-        _listView.DoDragDrop(data, DragDropEffects.Move);
+        _justFinishedDrag = true;
+        _dragInsertIndex = -1;
+        SuspendAutoHide();
+        try
+        {
+            _listView.DoDragDrop(data, DragDropEffects.Move);
+        }
+        finally
+        {
+            ResumeAutoHide();
+            _dragInsertIndex = -1;
+            _listView.Invalidate();
+        }
     }
 
     private bool CanReorderEntries()
-        => _activeTab is not (TabKind.ClipboardHistory or TabKind.RecentItems)
-            && string.IsNullOrWhiteSpace(_searchBox.Text)
-            && !_configManager.Config.SortByRecentUsage;
+        => _activeTab is not (TabKind.ClipboardHistory or TabKind.RecentItems);
 
     private static bool HasEntryReorderData(IDataObject? data)
         => data?.GetDataPresent(EntryReorderDataFormat) == true;
@@ -2950,11 +2989,52 @@ public sealed class MainPopup : Form
     private void OnDragOver(object? sender, DragEventArgs e)
     {
         if (sender == _listView && HasEntryReorderData(e.Data) && CanReorderEntries())
+        {
             e.Effect = DragDropEffects.Move;
+            UpdateDragInsertIndex(e);
+        }
         else if (_activeTab is TabKind.Folders or TabKind.Files && e.Data?.GetDataPresent(DataFormats.FileDrop) == true)
             e.Effect = DragDropEffects.Link;
         else
             e.Effect = DragDropEffects.None;
+    }
+
+    private void OnDragLeave(object? sender, EventArgs e)
+    {
+        if (_dragInsertIndex >= 0)
+        {
+            _dragInsertIndex = -1;
+            _listView.Invalidate();
+        }
+    }
+
+    private void UpdateDragInsertIndex(DragEventArgs e)
+    {
+        var clientPoint = _listView.PointToClient(new Point(e.X, e.Y));
+        var targetItem = _listView.GetItemAt(clientPoint.X, clientPoint.Y);
+        int newIndex;
+
+        if (targetItem != null)
+        {
+            newIndex = targetItem.Index;
+            if (clientPoint.Y > targetItem.Bounds.Top + targetItem.Bounds.Height / 2)
+                newIndex++;
+        }
+        else if (_listView.Items.Count > 0 && clientPoint.Y > _listView.Items[_listView.Items.Count - 1].Bounds.Bottom)
+        {
+            // 鼠标在所有条目下方→插入到末尾
+            newIndex = _listView.Items.Count;
+        }
+        else
+        {
+            newIndex = -1;
+        }
+
+        if (newIndex != _dragInsertIndex)
+        {
+            _dragInsertIndex = newIndex;
+            _listView.Invalidate();
+        }
     }
 
     private void OnDragDrop(object? sender, DragEventArgs e)
