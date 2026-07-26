@@ -11,8 +11,7 @@ public static class CustomIconStore
 {
     private const int MaxSize = 128;
 
-    private static readonly string Dir =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Quickstart", "custom-icons");
+    private static string Dir => AppPaths.CustomIconsDir;
 
     public static string GetPath(string id)
         => Path.Combine(Dir, SafeName(id) + ".png");

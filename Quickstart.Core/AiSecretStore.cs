@@ -4,12 +4,16 @@ using System.Text.Json;
 
 public static class AiSecretStore
 {
-    private static readonly string SecretPath = Path.Combine(
-        Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-        "Quickstart",
-        "ai-secrets.local.json");
-
     private static readonly object Lock = new();
+
+    private static string SecretPath
+    {
+        get
+        {
+            AppPaths.EnsureInitialized();
+            return AppPaths.SecretsPath;
+        }
+    }
 
     /// <summary>平台密钥保护器，由各端在启动时设置（Windows=DPAPI，macOS=Keychain）。</summary>
     public static ISecretProtector Protector { get; set; } = new NullSecretProtector();

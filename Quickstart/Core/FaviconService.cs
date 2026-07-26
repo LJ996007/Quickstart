@@ -17,8 +17,7 @@ public sealed class FaviconService : IDisposable
     private static readonly TimeSpan HitTtl = TimeSpan.FromDays(30);
     private static readonly TimeSpan MissTtl = TimeSpan.FromDays(7);
 
-    private static readonly string CacheDir =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Quickstart", "favicons");
+    private static string CacheDir => AppPaths.FaviconsDir;
 
     private readonly HttpClient _http;
     private readonly SemaphoreSlim _downloadGate = new(4);

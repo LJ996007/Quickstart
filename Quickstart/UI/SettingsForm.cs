@@ -671,10 +671,7 @@ public sealed class SettingsForm : Form
         AcceptButton = okBtn;
         CancelButton = cancelBtn;
 
-        var configPath = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-            "Quickstart",
-            "config.json");
+        var configPath = Quickstart.Core.AppPaths.ConfigPath;
         var infoLabel = new Label
         {
             Text = $"配置文件：{configPath}",

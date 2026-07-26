@@ -8,12 +8,6 @@ public sealed class ConfigManager : IDisposable
     private const int LegacyFileEntryType = 4;
     private const int SaveDebounceMs = 1500;
 
-    private static readonly string AppDataDir =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Quickstart");
-
-    private static readonly string ConfigPath = Path.Combine(AppDataDir, "config.json");
-    private static readonly string BackupPath = Path.Combine(AppDataDir, "config.json.bak");
-
     private AppConfig _config = new();
     private readonly object _lock = new();
 
@@ -22,8 +16,13 @@ public sealed class ConfigManager : IDisposable
     private bool _savePending;
     private string? _pendingJson;
 
+    private static string AppDataDir => AppPaths.Root;
+    private static string ConfigPath => AppPaths.ConfigPath;
+    private static string BackupPath => AppPaths.ConfigBackupPath;
+
     public ConfigManager()
     {
+        AppPaths.EnsureInitialized();
         _saveDebounceTimer = new System.Threading.Timer(_ => FlushPendingSave(), null, Timeout.Infinite, Timeout.Infinite);
     }
 

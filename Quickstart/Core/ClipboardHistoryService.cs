@@ -8,10 +8,8 @@ using System.Text.Json;
 /// </summary>
 public sealed class ClipboardHistoryService : IDisposable
 {
-    private static readonly string AppDataDir =
-        Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData), "Quickstart");
-
-    private static readonly string HistoryPath = Path.Combine(AppDataDir, "clipboard-history.json");
+    private static string AppDataDir => AppPaths.Root;
+    private static string HistoryPath => AppPaths.ClipboardHistoryPath;
 
     private readonly ConfigManager _configManager;
     private readonly object _lock = new();
