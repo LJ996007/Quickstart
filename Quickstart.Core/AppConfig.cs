@@ -24,6 +24,15 @@ public enum LeftDragAction
     EverythingSearch
 }
 
+/// <summary>右滑呼出主启动器的呈现方式。</summary>
+public enum RightSwipePresentation
+{
+    /// <summary>经典矩形列表面板（默认）。</summary>
+    ClassicPanel = 0,
+    /// <summary>圆环轮：内环标签，外圈条目烟花式炸开。</summary>
+    RadialRing = 1
+}
+
 public sealed class AppConfig
 {
     public List<QuickEntry> Entries { get; set; } = [];
@@ -45,6 +54,8 @@ public sealed class AppConfig
     public string HotKey { get; set; } = string.Empty;
     public bool RightDragEnabled { get; set; } = true;
     public LeftDragAction LeftDragAction { get; set; } = LeftDragAction.AiActionPicker;
+    /// <summary>右滑呼出：经典列表面板，或圆环轮（标签 + 烟花列表）。</summary>
+    public RightSwipePresentation RightSwipePresentation { get; set; } = RightSwipePresentation.ClassicPanel;
     public int RightDragTriggerDistance { get; set; } = 120;
     public int RightDragVerticalTolerance { get; set; } = 50;
     public bool RememberLastView { get; set; } = true;

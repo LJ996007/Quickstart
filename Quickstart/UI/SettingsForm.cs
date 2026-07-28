@@ -35,9 +35,14 @@ public sealed class SettingsForm : Form
     private readonly NumericUpDown _gestureDistanceBox;
     private readonly NumericUpDown _gestureToleranceBox;
     private readonly ComboBox _leftDragActionBox;
+    private readonly ComboBox _rightSwipePresentationBox;
     private readonly Button _manageWebSearchToolsBtn;
     private readonly CheckBox _rememberLastViewCheck;
     private readonly CheckBox _sortRecentCheck;
+    private readonly ListBox _tabOrderList;
+    private readonly Button _tabOrderUpBtn;
+    private readonly Button _tabOrderDownBtn;
+    private readonly Button _tabOrderResetBtn;
     private readonly Label _websiteHintLabel;
     private readonly Button _copyBookmarkletBtn;
     private readonly Button _repairProtocolBtn;
@@ -65,7 +70,7 @@ public sealed class SettingsForm : Form
     [
         ("常规", "路径、默认打开方式与系统集成"),
         ("快捷启动", "全局快捷键与右键拖动手势"),
-        ("列表与工具", "列表行为、工具列与浏览器添加"),
+        ("列表与工具", "列表行为、标签顺序、工具列与浏览器添加"),
         ("AI", "模型、Prompt 与 Skill 配置入口"),
         ("截图 OCR", "百度通用文字识别"),
         ("剪贴板", "剪贴板历史记录"),
@@ -181,7 +186,7 @@ public sealed class SettingsForm : Form
         _rightDragCheck = CreateCheckBox("启用右键拖动手势", config.RightDragEnabled);
         _rightDragCheck.Margin = new Padding(0, 4, 0, 2);
 
-        var gestureHintLabel = CreateHintLabel("向右拖动打开启动器；向左拖动执行下方动作");
+        var gestureHintLabel = CreateHintLabel("向右拖动打开启动器（经典面板或圆环轮，见「向右呼出」）；向左拖动执行下方动作");
         gestureHintLabel.Margin = new Padding(22, 0, 0, 8);
 
         _leftDragActionBox = new ComboBox
@@ -195,6 +200,19 @@ public sealed class SettingsForm : Form
         _leftDragActionBox.Items.AddRange(["动作面板（AI + Everything）", "直接用 Everything 搜索"]);
         _leftDragActionBox.SelectedIndex = config.LeftDragAction == LeftDragAction.EverythingSearch ? 1 : 0;
         var leftDragActionRow = CreateLabeledFieldRow("向左动作", _leftDragActionBox, labelWidth: 88);
+
+        _rightSwipePresentationBox = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0),
+            FlatStyle = FlatStyle.System,
+            Font = new Font(UiFont, 9f)
+        };
+        _rightSwipePresentationBox.Items.AddRange(["经典列表面板", "圆环轮（标签 + 烟花列表）"]);
+        _rightSwipePresentationBox.SelectedIndex =
+            config.RightSwipePresentation == RightSwipePresentation.RadialRing ? 1 : 0;
+        var rightSwipePresentationRow = CreateLabeledFieldRow("向右呼出", _rightSwipePresentationBox, labelWidth: 88);
 
         _gestureDistanceBox = CreateNumericUpDown(40, 600, 10, Math.Clamp(config.RightDragTriggerDistance, 40, 600));
         _gestureToleranceBox = CreateNumericUpDown(10, 300, 10, Math.Clamp(config.RightDragVerticalTolerance, 10, 300));
@@ -225,8 +243,9 @@ public sealed class SettingsForm : Form
             Padding = new Padding(0)
         };
         gestureOptionsPanel.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        gestureOptionsPanel.Controls.Add(leftDragActionRow, 0, 0);
-        gestureOptionsPanel.Controls.Add(gestureMetricsRow, 0, 1);
+        gestureOptionsPanel.Controls.Add(rightSwipePresentationRow, 0, 0);
+        gestureOptionsPanel.Controls.Add(leftDragActionRow, 0, 1);
+        gestureOptionsPanel.Controls.Add(gestureMetricsRow, 0, 2);
 
         void UpdateGestureControlsEnabled()
         {
@@ -256,6 +275,75 @@ public sealed class SettingsForm : Form
         };
         listBehaviorRow.Controls.Add(_rememberLastViewCheck);
         listBehaviorRow.Controls.Add(_sortRecentCheck);
+
+        // 标签顺序（经典列表面板 + 圆环轮扇区共用）
+        var tabOrderHint = CreateHintLabel("上→下 / 圆环扇区上→下；经典面板左侧标签与圆环轮顺序一致。也可在经典面板里拖拽标签排序。");
+        tabOrderHint.Margin = new Padding(0, 0, 0, 6);
+
+        _tabOrderList = new ListBox
+        {
+            IntegralHeight = false,
+            Height = 148,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(0),
+            Font = new Font(UiFont, 9f),
+            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = Color.White
+        };
+        PopulateTabOrderList(config.MainPopupTabOrder);
+
+        _tabOrderUpBtn = new RoundedButton { Text = "上移", Margin = new Padding(0, 0, 0, 6), Font = new Font(UiFont, 9f) };
+        _tabOrderDownBtn = new RoundedButton { Text = "下移", Margin = new Padding(0, 0, 0, 6), Font = new Font(UiFont, 9f) };
+        _tabOrderResetBtn = new RoundedButton { Text = "恢复默认", Margin = new Padding(0), Font = new Font(UiFont, 9f) };
+        ButtonStyler.ApplySecondary(_tabOrderUpBtn);
+        ButtonStyler.ApplySecondary(_tabOrderDownBtn);
+        ButtonStyler.ApplySecondary(_tabOrderResetBtn);
+        _tabOrderUpBtn.Click += (_, _) => MoveTabOrderItem(-1);
+        _tabOrderDownBtn.Click += (_, _) => MoveTabOrderItem(1);
+        _tabOrderResetBtn.Click += (_, _) => PopulateTabOrderList(null);
+
+        var tabOrderBtnCol = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.TopDown,
+            WrapContents = false,
+            Dock = DockStyle.Fill,
+            Margin = new Padding(8, 0, 0, 0),
+            Padding = new Padding(0),
+            BackColor = Color.Transparent
+        };
+        tabOrderBtnCol.Controls.Add(_tabOrderUpBtn);
+        tabOrderBtnCol.Controls.Add(_tabOrderDownBtn);
+        tabOrderBtnCol.Controls.Add(_tabOrderResetBtn);
+
+        var tabOrderRow = new TableLayoutPanel
+        {
+            AutoSize = true,
+            Dock = DockStyle.Top,
+            ColumnCount = 2,
+            RowCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        tabOrderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        tabOrderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        tabOrderRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        tabOrderRow.Controls.Add(_tabOrderList, 0, 0);
+        tabOrderRow.Controls.Add(tabOrderBtnCol, 1, 0);
+
+        var tabOrderLayout = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            Dock = DockStyle.Top,
+            ColumnCount = 1,
+            Margin = new Padding(0),
+            Padding = new Padding(0)
+        };
+        tabOrderLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        tabOrderLayout.Controls.Add(tabOrderHint, 0, 0);
+        tabOrderLayout.Controls.Add(tabOrderRow, 0, 1);
 
         _manageWebSearchToolsBtn = new RoundedButton
         {
@@ -465,6 +553,7 @@ public sealed class SettingsForm : Form
 
         var listToolsPage = CreatePagePanel(
             CreateCard("列表行为", listBehaviorRow),
+            CreateCard("标签顺序", tabOrderLayout),
             CreateCard("工具列", searchToolsRow),
             CreateCard("浏览器一键添加网站",
                 _websiteHintLabel, websiteActionsRow));
@@ -1057,6 +1146,97 @@ public sealed class SettingsForm : Form
         }
     }
 
+    private sealed class TabOrderItem
+    {
+        public required string Key { get; init; }
+        public required string DisplayName { get; init; }
+        public override string ToString() => DisplayName;
+    }
+
+    private static readonly (string Key, string Name)[] DefaultTabOrderItems =
+    [
+        ("Folders", "文件夹"),
+        ("Files", "文件"),
+        ("Urls", "网页"),
+        ("Texts", "文本"),
+        ("ClipboardHistory", "历史（剪贴板）"),
+        ("RecentItems", "最近")
+    ];
+
+    private void PopulateTabOrderList(IEnumerable<string>? savedOrder)
+    {
+        var byKey = DefaultTabOrderItems.ToDictionary(x => x.Key, x => x.Name, StringComparer.OrdinalIgnoreCase);
+        var ordered = new List<TabOrderItem>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
+        foreach (var key in savedOrder ?? [])
+        {
+            if (string.IsNullOrWhiteSpace(key) || !byKey.TryGetValue(key.Trim(), out var name) || !seen.Add(key.Trim()))
+                continue;
+            ordered.Add(new TabOrderItem { Key = key.Trim(), DisplayName = name });
+        }
+
+        foreach (var (key, name) in DefaultTabOrderItems)
+        {
+            if (seen.Add(key))
+                ordered.Add(new TabOrderItem { Key = key, DisplayName = name });
+        }
+
+        var selectedKey = (_tabOrderList.SelectedItem as TabOrderItem)?.Key;
+        _tabOrderList.BeginUpdate();
+        _tabOrderList.Items.Clear();
+        foreach (var item in ordered)
+            _tabOrderList.Items.Add(item);
+        _tabOrderList.EndUpdate();
+
+        if (selectedKey != null)
+        {
+            for (var i = 0; i < _tabOrderList.Items.Count; i++)
+            {
+                if (_tabOrderList.Items[i] is TabOrderItem t && t.Key.Equals(selectedKey, StringComparison.OrdinalIgnoreCase))
+                {
+                    _tabOrderList.SelectedIndex = i;
+                    break;
+                }
+            }
+        }
+        else if (_tabOrderList.Items.Count > 0)
+        {
+            _tabOrderList.SelectedIndex = 0;
+        }
+    }
+
+    private void MoveTabOrderItem(int delta)
+    {
+        var index = _tabOrderList.SelectedIndex;
+        if (index < 0)
+            return;
+
+        var target = index + delta;
+        if (target < 0 || target >= _tabOrderList.Items.Count)
+            return;
+
+        var item = _tabOrderList.Items[index];
+        _tabOrderList.Items.RemoveAt(index);
+        _tabOrderList.Items.Insert(target, item);
+        _tabOrderList.SelectedIndex = target;
+    }
+
+    private List<string> CollectTabOrderFromList()
+    {
+        var list = new List<string>();
+        foreach (var obj in _tabOrderList.Items)
+        {
+            if (obj is TabOrderItem item)
+                list.Add(item.Key);
+        }
+
+        // 兜底：若列表异常为空，写回默认顺序
+        if (list.Count == 0)
+            list.AddRange(DefaultTabOrderItems.Select(x => x.Key));
+        return list;
+    }
+
     private static Panel CreatePagePanel(params Control[] controls)
     {
         var layout = new TableLayoutPanel
@@ -1261,10 +1441,14 @@ public sealed class SettingsForm : Form
         config.LeftDragAction = _leftDragActionBox.SelectedIndex == 1
             ? LeftDragAction.EverythingSearch
             : LeftDragAction.AiActionPicker;
+        config.RightSwipePresentation = _rightSwipePresentationBox.SelectedIndex == 1
+            ? RightSwipePresentation.RadialRing
+            : RightSwipePresentation.ClassicPanel;
         config.RightDragTriggerDistance = Decimal.ToInt32(_gestureDistanceBox.Value);
         config.RightDragVerticalTolerance = Decimal.ToInt32(_gestureToleranceBox.Value);
         config.RememberLastView = _rememberLastViewCheck.Checked;
         config.SortByRecentUsage = _sortRecentCheck.Checked;
+        config.MainPopupTabOrder = CollectTabOrderFromList();
 
         config.Ocr ??= new OcrConfig();
         config.Ocr.Enabled = _ocrEnabledCheck.Checked;

@@ -567,18 +567,41 @@ public sealed class MainPopup : Form
         _countLabel.Padding = new Padding(0);
         _toolbarLayout.MinimumSize = new Size(0, Math.Max(_addButton.Height, _settingsButton.Height));
 
+        // 宽度保持原逻辑：按竖排多行文本测量（单字宽），不改为整词横向宽度
+        // 高度按行数测算，紧凑但不挤
         var tabWidth = 0;
-        var tabHeight = 0;
-        foreach (var label in _tabLabels)
+        var lineHeight = TextRenderer.MeasureText("国", _tabLabels.Count > 0 ? _tabLabels[0].Font : Font).Height;
+        var tabPadY = UiScaleHelper.Scale(this, 10);
+        var tabMinH = UiScaleHelper.Scale(this, 40);
+        var totalTabHeight = 0;
+
+        // 保证 RowStyles 数量与标签一致（顺序重载后可能刚重建）
+        while (_tabLayout.RowStyles.Count < _tabLabels.Count + 1)
+            _tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, tabMinH));
+        while (_tabLayout.RowStyles.Count > _tabLabels.Count + 1)
+            _tabLayout.RowStyles.RemoveAt(_tabLayout.RowStyles.Count - 2);
+
+        for (var i = 0; i < _tabLabels.Count; i++)
         {
+            var label = _tabLabels[i];
+            var lines = Math.Max(1, label.Text.Split('\n').Length);
+            // 与改动前一致：MeasureText 含 \n 时宽度约为单字宽
             var measured = TextRenderer.MeasureText(label.Text, label.Font);
             tabWidth = Math.Max(tabWidth, measured.Width + UiScaleHelper.Scale(this, 10));
-            tabHeight = Math.Max(tabHeight, measured.Height + UiScaleHelper.Scale(this, 8));
+
+            var tabHeight = Math.Max(tabMinH, lines * lineHeight + tabPadY);
+            _tabLayout.RowStyles[i].SizeType = SizeType.Absolute;
+            _tabLayout.RowStyles[i].Height = tabHeight;
+            totalTabHeight += tabHeight;
         }
 
-        for (int i = 0; i < _tabLabels.Count; i++)
-            _tabLayout.RowStyles[i].Height = tabHeight;
-        _tabLayout.MinimumSize = new Size(tabWidth, tabHeight * _tabLabels.Count);
+        if (_tabLayout.RowStyles.Count > _tabLabels.Count)
+        {
+            _tabLayout.RowStyles[_tabLabels.Count].SizeType = SizeType.Percent;
+            _tabLayout.RowStyles[_tabLabels.Count].Height = 100;
+        }
+
+        _tabLayout.MinimumSize = new Size(tabWidth, totalTabHeight);
         _tabLayout.Width = tabWidth;
 
         _groupLayout.Padding = UiScaleHelper.ScalePadding(this, new Padding(0));
@@ -888,6 +911,99 @@ public sealed class MainPopup : Form
         }
 
         ApplyTabStyles();
+    }
+
+    /// <summary>设置保存后重载标签顺序（与圆环轮共用 MainPopupTabOrder）。</summary>
+    public void ReloadTabOrderFromConfig()
+    {
+        var newOrder = CreateTabOrder(_configManager.Config.MainPopupTabOrder).ToList();
+        if (newOrder.Count == 0)
+            return;
+
+        if (_tabOrder.Count == newOrder.Count
+            && _tabOrder.Zip(newOrder, (a, b) => a == b).All(eq => eq))
+        {
+            ApplyTabStyles();
+            return;
+        }
+
+        // 按新顺序重排已有 Label，避免销毁重建事件
+        var byKind = _tabLabels
+            .Where(l => l.Tag is TabKind)
+            .ToDictionary(l => (TabKind)l.Tag!, l => l);
+
+        _tabOrder.Clear();
+        _tabOrder.AddRange(newOrder);
+        _tabLabels.Clear();
+        foreach (var kind in _tabOrder)
+        {
+            if (byKind.TryGetValue(kind, out var label))
+                _tabLabels.Add(label);
+        }
+
+        // 若有缺失标签则补建
+        if (_tabLabels.Count != _tabOrder.Count)
+        {
+            _tabLabels.Clear();
+            foreach (var kind in _tabOrder)
+            {
+                if (byKind.TryGetValue(kind, out var existing))
+                {
+                    _tabLabels.Add(existing);
+                    continue;
+                }
+
+                var label = new Label
+                {
+                    Text = GetTabText(kind),
+                    Tag = kind,
+                    TextAlign = ContentAlignment.MiddleCenter,
+                    Font = new Font("Microsoft YaHei UI", 9f),
+                    Dock = DockStyle.Fill,
+                    Cursor = Cursors.Hand,
+                    Margin = new Padding(0)
+                };
+                var captured = kind;
+                label.Click += (_, _) => OnTabLabelClick(captured);
+                label.MouseDown += OnTabLabelMouseDown;
+                label.MouseMove += OnTabLabelMouseMove;
+                label.MouseUp += OnTabLabelMouseUp;
+                var tooltip = kind switch
+                {
+                    TabKind.ClipboardHistory => "剪贴板历史",
+                    TabKind.RecentItems => "Windows 最近使用的文件和文件夹",
+                    _ => kind.ToString()
+                };
+                _toolTip.SetToolTip(label, $"{tooltip}\n按住并上下拖动可调整顺序");
+                _tabLabels.Add(label);
+            }
+        }
+
+        _tabLayout.SuspendLayout();
+        try
+        {
+            _tabLayout.Controls.Clear();
+            _tabLayout.RowCount = _tabOrder.Count + 1;
+            _tabLayout.RowStyles.Clear();
+            // 占位行高，真正尺寸由 ApplyScaledMetrics 按文字重算
+            var placeholderH = UiScaleHelper.Scale(this, 44);
+            for (var i = 0; i < _tabOrder.Count; i++)
+                _tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, placeholderH));
+            _tabLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+            for (var i = 0; i < _tabLabels.Count; i++)
+                _tabLayout.Controls.Add(_tabLabels[i], 0, i);
+        }
+        finally
+        {
+            _tabLayout.ResumeLayout(performLayout: true);
+        }
+
+        if (!_tabOrder.Contains(_activeTab) && _tabOrder.Count > 0)
+            _activeTab = _tabOrder[0];
+
+        ApplyScaledMetrics();
+        UpdateSearchPlaceholder();
+        RefreshList();
     }
 
     private void ResetTabDragState()

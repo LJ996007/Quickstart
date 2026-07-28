@@ -74,6 +74,7 @@ static class Program
 
         // UI
         MainPopup? mainPopup = null;
+        RadialMenuPopup? radialMenuPopup = null;
         AiPopup? aiPopup = null;
         AiActionPickerPopup? aiActionPicker = null;
         IntPtr leftGestureSourceWindow = IntPtr.Zero;
@@ -98,6 +99,17 @@ static class Program
             }
 
             return mainPopup;
+        }
+
+        RadialMenuPopup EnsureRadialMenuPopup()
+        {
+            if (radialMenuPopup == null || radialMenuPopup.IsDisposed)
+            {
+                radialMenuPopup = new RadialMenuPopup(configManager, launcher, clipboardHistory);
+                _ = radialMenuPopup.Handle;
+            }
+
+            return radialMenuPopup;
         }
 
         AiPopup EnsureAiPopup()
@@ -228,10 +240,17 @@ static class Program
             var direction = (RightDragDirection)Volatile.Read(ref gestureMove.Direction);
             var point = GestureMoveState.UnpackPoint(Interlocked.Read(ref gestureMove.PackedPoint));
 
-            if (direction == RightDragDirection.Right && mainPopup is { Visible: true })
-                mainPopup.HighlightAtScreenPoint(point);
+            if (direction == RightDragDirection.Right)
+            {
+                if (radialMenuPopup is { Visible: true })
+                    radialMenuPopup.HighlightAtScreenPoint(point);
+                else if (mainPopup is { Visible: true })
+                    mainPopup.HighlightAtScreenPoint(point);
+            }
             else if (direction == RightDragDirection.Left && aiActionPicker is { Visible: true })
+            {
                 aiActionPicker.HighlightAtScreenPoint(point);
+            }
         }
 
         gestureMoveTimer.Tick += (_, _) => ProcessPendingGestureMove();
@@ -274,6 +293,7 @@ static class Program
                 if (direction == RightDragDirection.Left)
                 {
                     if (mainPopup is { Visible: true }) mainPopup.Hide();
+                    if (radialMenuPopup is { Visible: true }) radialMenuPopup.Hide();
                     if (aiPopup is { Visible: true }) aiPopup.Hide();
 
                     leftGestureSourceWindow = sourceWindow;
@@ -293,7 +313,16 @@ static class Program
                 {
                     if (aiPopup is { Visible: true }) aiPopup.Hide();
                     if (aiActionPicker is { Visible: true }) aiActionPicker.Hide();
-                    EnsureMainPopup().ShowAtGesturePoint(pt);
+                    if (configManager.Config.RightSwipePresentation == RightSwipePresentation.RadialRing)
+                    {
+                        if (mainPopup is { Visible: true }) mainPopup.Hide();
+                        EnsureRadialMenuPopup().ShowAtGesturePoint(pt);
+                    }
+                    else
+                    {
+                        if (radialMenuPopup is { Visible: true }) radialMenuPopup.Hide();
+                        EnsureMainPopup().ShowAtGesturePoint(pt);
+                    }
                 }
             });
         };
@@ -313,7 +342,9 @@ static class Program
                 Interlocked.Exchange(ref gestureMove.Pending, 1);
                 ProcessPendingGestureMove();
 
-                if (direction == RightDragDirection.Right && mainPopup is { Visible: true })
+                if (direction == RightDragDirection.Right && radialMenuPopup is { Visible: true })
+                    radialMenuPopup.TryReleaseAtScreenPoint(pt);
+                else if (direction == RightDragDirection.Right && mainPopup is { Visible: true })
                     mainPopup.TryReleaseAtScreenPoint(pt);
                 else if (direction == RightDragDirection.Left
                     && configManager.Config.LeftDragAction == LeftDragAction.EverythingSearch)
@@ -341,6 +372,7 @@ static class Program
                 Interlocked.Exchange(ref gestureMove.Pending, 0);
                 gestureMoveTimer.Stop();
                 if (mainPopup is { Visible: true }) mainPopup.Hide();
+                if (radialMenuPopup is { Visible: true }) radialMenuPopup.Hide();
                 if (aiActionPicker is { Visible: true }) aiActionPicker.Hide();
             });
         };
@@ -710,7 +742,10 @@ static class Program
                     ApplyRuntimeInputSettings(showRegistrationError: true);
                     clipboardHistory.ApplyConfigLimits();
                     if (mainPopup is { IsDisposed: false })
+                    {
+                        mainPopup.ReloadTabOrderFromConfig();
                         mainPopup.RefreshList();
+                    }
                 }
             }
             finally
