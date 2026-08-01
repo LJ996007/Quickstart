@@ -316,12 +316,12 @@ static class Program
                     if (configManager.Config.RightSwipePresentation == RightSwipePresentation.RadialRing)
                     {
                         if (mainPopup is { Visible: true }) mainPopup.Hide();
-                        EnsureRadialMenuPopup().ShowAtGesturePoint(pt);
+                        EnsureRadialMenuPopup().ShowAtGesturePoint(pt, sourceWindow);
                     }
                     else
                     {
                         if (radialMenuPopup is { Visible: true }) radialMenuPopup.Hide();
-                        EnsureMainPopup().ShowAtGesturePoint(pt);
+                        EnsureMainPopup().ShowAtGesturePoint(pt, sourceWindow);
                     }
                 }
             });

@@ -34,3 +34,6 @@ clipboard-*.png
 
 # Local AI / editor dirs
 .agents/
+
+# Local agent conversation attachments (not product code)
+conversations/

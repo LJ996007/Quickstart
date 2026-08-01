@@ -31,25 +31,112 @@ internal static class PlainTextPasteService
             if (!hasText)
                 return false;
 
-            token.ThrowIfCancellationRequested();
-            Quickstart.Utils.WindowActivator.AllowAnyForeground();
-            Quickstart.Utils.WindowActivator.TryForceForeground(sourceWindow);
-            for (var attempt = 0; attempt < 8 && GetForegroundWindow() != sourceWindow; attempt++)
-            {
-                Quickstart.Utils.WindowActivator.TryForceForeground(sourceWindow);
-                await Task.Delay(25, token);
-            }
-
-            if (GetForegroundWindow() != sourceWindow)
-                throw new InvalidOperationException("无法切换回手势发起窗口。");
-
-            SendPasteShortcut();
-            return true;
+            return await ActivateAndPasteAsync(sourceWindow, token);
         }
         finally
         {
             PasteGate.Release();
         }
+    }
+
+    /// <summary>
+    /// 将指定纯文本写入剪贴板，并模拟 Ctrl+V 粘贴到目标窗口光标处。
+    /// 用于文本收藏 / 剪贴板历史的「直接粘贴」模式。
+    /// </summary>
+    public static async Task<bool> PasteTextAsync(string text, IntPtr targetWindow, CancellationToken token = default)
+    {
+        if (string.IsNullOrEmpty(text))
+            return false;
+
+        await PasteGate.WaitAsync(token);
+        try
+        {
+            token.ThrowIfCancellationRequested();
+
+            if (targetWindow == IntPtr.Zero || !IsWindow(targetWindow))
+                throw new InvalidOperationException("目标窗口已经关闭。");
+
+            await SetClipboardUnicodeTextAsync(text, token);
+            return await ActivateAndPasteAsync(targetWindow, token);
+        }
+        finally
+        {
+            PasteGate.Release();
+        }
+    }
+
+    public static bool IsValidTargetWindow(IntPtr hwnd)
+        => hwnd != IntPtr.Zero && IsWindow(hwnd);
+
+    private static async Task<bool> ActivateAndPasteAsync(IntPtr targetWindow, CancellationToken token)
+    {
+        token.ThrowIfCancellationRequested();
+        Quickstart.Utils.WindowActivator.AllowAnyForeground();
+        Quickstart.Utils.WindowActivator.TryForceForeground(targetWindow);
+        for (var attempt = 0; attempt < 8 && GetForegroundWindow() != targetWindow; attempt++)
+        {
+            Quickstart.Utils.WindowActivator.TryForceForeground(targetWindow);
+            await Task.Delay(25, token);
+        }
+
+        if (GetForegroundWindow() != targetWindow)
+            throw new InvalidOperationException("无法切换到目标窗口。");
+
+        SendPasteShortcut();
+        return true;
+    }
+
+    private static async Task SetClipboardUnicodeTextAsync(string text, CancellationToken token)
+    {
+        Exception? lastError = null;
+        for (var attempt = 0; attempt < ClipboardRetryCount; attempt++)
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
+                {
+                    Clipboard.SetText(text, TextDataFormat.UnicodeText);
+                    return;
+                }
+
+                await SetClipboardOnStaThreadAsync(text, token);
+                return;
+            }
+            catch (ExternalException ex)
+            {
+                lastError = ex;
+            }
+
+            await Task.Delay(ClipboardRetryDelayMs, token);
+        }
+
+        throw new InvalidOperationException("剪贴板正被其他程序占用，请稍后重试。", lastError);
+    }
+
+    private static Task SetClipboardOnStaThreadAsync(string text, CancellationToken token)
+    {
+        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var thread = new Thread(() =>
+        {
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                Clipboard.SetText(text, TextDataFormat.UnicodeText);
+                tcs.TrySetResult();
+            }
+            catch (Exception ex)
+            {
+                tcs.TrySetException(ex);
+            }
+        })
+        {
+            IsBackground = true,
+            Name = "Quickstart 文本粘贴剪贴板"
+        };
+        thread.SetApartmentState(ApartmentState.STA);
+        thread.Start();
+        return tcs.Task.WaitAsync(token);
     }
 
     private static async Task<bool> ConvertClipboardToPlainTextAsync(CancellationToken token)

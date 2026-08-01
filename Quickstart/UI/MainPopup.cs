@@ -1,6 +1,7 @@
 namespace Quickstart.UI;
 
 using System.Globalization;
+using System.Runtime.InteropServices;
 using Quickstart.Core;
 using Quickstart.Models;
 using Quickstart.Utils;
@@ -80,6 +81,8 @@ public sealed class MainPopup : Form
     // 嵌套计数：右键菜单 / 子对话框打开期间禁止失焦自动隐藏
     private int _autoHideSuspendCount;
     private bool SuppressAutoHide => _autoHideSuspendCount > 0;
+    /// <summary>呼出前的目标窗口，用于「直接粘贴到光标处」。</summary>
+    private IntPtr _deliveryTargetWindow;
 
     public event Action? ShowSettings;
 
@@ -1241,7 +1244,14 @@ public sealed class MainPopup : Form
                 return menu;
 
             var copy = new ToolStripMenuItem("复制为纯文本") { Font = BoldMenuFont };
-            copy.Click += (_, _) => OpenSelectedEntry();
+            copy.Click += (_, _) =>
+            {
+                var selected = GetSelectedHistoryItem();
+                if (selected == null || string.IsNullOrEmpty(selected.Text))
+                    return;
+                ShowToast("已复制");
+                _ = CopyHistoryItemAsync(selected.Text);
+            };
             menu.Items.Add(copy);
 
             menu.Items.Add(new ToolStripSeparator());
@@ -1360,19 +1370,32 @@ public sealed class MainPopup : Form
 
             case EntryType.Text:
             {
+                // 右键「复制」始终只写剪贴板；主点击才走设置里的复制/粘贴策略
                 var copyText = new ToolStripMenuItem("复制文本") { Font = BoldMenuFont };
-                copyText.Click += (_, _) => OpenSelectedEntry();
+                copyText.Click += (_, _) =>
+                {
+                    var selected = GetSelectedEntry();
+                    if (selected == null)
+                        return;
+                    if (!DynamicTextEntries.IsDynamic(selected))
+                        _configManager.TouchEntry(selected.Id);
+                    CopyToClipboard(DynamicTextEntries.ResolveContent(selected));
+                };
                 menu.Items.Add(copyText);
 
-                menu.Items.Add(new ToolStripSeparator());
+                // 内置动态条目：仅可复制，不可编辑/删除
+                if (!DynamicTextEntries.IsDynamic(entry))
+                {
+                    menu.Items.Add(new ToolStripSeparator());
 
-                var editText = new ToolStripMenuItem("编辑(&E)");
-                editText.Click += (_, _) => EditSelectedEntry();
-                menu.Items.Add(editText);
+                    var editText = new ToolStripMenuItem("编辑(&E)");
+                    editText.Click += (_, _) => EditSelectedEntry();
+                    menu.Items.Add(editText);
 
-                var deleteText = new ToolStripMenuItem("删除(&D)");
-                deleteText.Click += (_, _) => DeleteSelectedEntry();
-                menu.Items.Add(deleteText);
+                    var deleteText = new ToolStripMenuItem("删除(&D)");
+                    deleteText.Click += (_, _) => DeleteSelectedEntry();
+                    menu.Items.Add(deleteText);
+                }
                 break;
             }
         }
@@ -1395,6 +1418,7 @@ public sealed class MainPopup : Form
 
     private void ShowPopup(TabKind kind, bool focusList = true, bool preserveGroup = false)
     {
+        CaptureDeliveryTarget();
         _activeTab = kind;
         if (!preserveGroup)
             _activeGroup = AllGroupsLabel;
@@ -1498,7 +1522,7 @@ public sealed class MainPopup : Form
     private void EditSelectedEntry()
     {
         var entry = GetSelectedEntry();
-        if (entry == null) return;
+        if (entry == null || DynamicTextEntries.IsDynamic(entry)) return;
 
         var originalPath = entry.Path;
         using var form = new EntryEditForm(entry, BuildGroupSuggestions());
@@ -1517,7 +1541,7 @@ public sealed class MainPopup : Form
     private void DeleteSelectedEntry()
     {
         var entry = GetSelectedEntry();
-        if (entry == null) return;
+        if (entry == null || DynamicTextEntries.IsDynamic(entry)) return;
 
         DialogResult result;
         SuspendAutoHide();
@@ -1575,12 +1599,11 @@ public sealed class MainPopup : Form
         if (_clipboardHistory == null || string.IsNullOrEmpty(item.Text))
             return;
 
-        // 先 Toast + 关窗，复制走服务（STA 重试 + 纯文本）
-        ShowToast("已复制");
-        if (hideFirst)
-            Hide();
-
-        _ = CopyHistoryItemAsync(item.Text);
+        DeliverText(
+            item.Text,
+            _configManager.Config.ClipboardHistoryAction,
+            fromHistory: true,
+            hideFirst);
     }
 
     private async Task CopyHistoryItemAsync(string text)
@@ -1589,8 +1612,8 @@ public sealed class MainPopup : Form
         {
             if (_clipboardHistory != null)
                 await _clipboardHistory.CopyPlainTextAsync(text);
-            else
-                CopyToClipboard(text);
+            else if (!string.IsNullOrEmpty(text))
+                Clipboard.SetText(text);
         }
         catch
         {
@@ -1600,13 +1623,17 @@ public sealed class MainPopup : Form
 
     private void ExecuteEntry(QuickEntry entry, OpenWith? overrideWith = null, bool hideFirst = false)
     {
-        // 文本复制必须在 UI 线程；先复制再关窗，避免剪贴板/Toast 异常。
+        // 文本：按设置复制或直接粘贴到呼出前的光标窗口
         if (entry.Type == EntryType.Text)
         {
-            _configManager.TouchEntry(entry.Id);
-            CopyToClipboard(entry.Path);
-            if (hideFirst)
-                Hide();
+            // 动态条目不落盘、不 Touch；内容取实时日期
+            if (!DynamicTextEntries.IsDynamic(entry))
+                _configManager.TouchEntry(entry.Id);
+            DeliverText(
+                DynamicTextEntries.ResolveContent(entry),
+                _configManager.Config.TextEntryAction,
+                fromHistory: false,
+                hideFirst);
             return;
         }
 
@@ -1645,6 +1672,103 @@ public sealed class MainPopup : Form
         if (!string.IsNullOrEmpty(text))
             Clipboard.SetText(text);
         ShowToast();
+    }
+
+    /// <summary>
+    /// 按配置投递文本：仅复制，或写入剪贴板后 Ctrl+V 到目标窗口。
+    /// 右键菜单「复制」始终走 CopyToClipboard，不经过此方法。
+    /// </summary>
+    private void DeliverText(string text, TextDeliveryAction action, bool fromHistory, bool hideFirst)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        var canPaste = action == TextDeliveryAction.PasteAtCursor
+            && PlainTextPasteService.IsValidTargetWindow(_deliveryTargetWindow)
+            && _deliveryTargetWindow != Handle;
+
+        if (canPaste)
+        {
+            var target = _deliveryTargetWindow;
+            if (hideFirst)
+                Hide();
+            else
+                ShowToast("已粘贴");
+
+            _ = PasteTextToTargetAsync(text, target, fromHistory);
+            return;
+        }
+
+        // 复制模式，或粘贴目标无效时回退为仅复制
+        if (fromHistory)
+        {
+            ShowToast(action == TextDeliveryAction.PasteAtCursor ? "已复制（无法粘贴）" : "已复制");
+            if (hideFirst)
+                Hide();
+            _ = CopyHistoryItemAsync(text);
+            return;
+        }
+
+        CopyToClipboard(text);
+        if (action == TextDeliveryAction.PasteAtCursor)
+            ShowToast("已复制（无法粘贴）");
+        if (hideFirst)
+            Hide();
+    }
+
+    private async Task PasteTextToTargetAsync(string text, IntPtr targetWindow, bool fromHistory)
+    {
+        try
+        {
+            // 历史项：先入队刷新「最近」，再粘贴；普通文本直接写剪贴板+粘贴
+            if (fromHistory && _clipboardHistory != null)
+                await _clipboardHistory.CopyPlainTextAsync(text);
+
+            await PlainTextPasteService.PasteTextAsync(text, targetWindow);
+        }
+        catch
+        {
+            // 粘贴失败时至少保证剪贴板里有内容
+            try
+            {
+                if (fromHistory && _clipboardHistory != null)
+                    await _clipboardHistory.CopyPlainTextAsync(text);
+                else if (!string.IsNullOrEmpty(text))
+                    Clipboard.SetText(text);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
+    }
+
+    private void CaptureDeliveryTarget(IntPtr preferred = default)
+    {
+        if (PlainTextPasteService.IsValidTargetWindow(preferred) && preferred != Handle)
+        {
+            _deliveryTargetWindow = preferred;
+            return;
+        }
+
+        try
+        {
+            var fg = GetForegroundWindow();
+            if (PlainTextPasteService.IsValidTargetWindow(fg) && fg != Handle)
+            {
+                _deliveryTargetWindow = fg;
+                return;
+            }
+        }
+        catch
+        {
+            // ignore
+        }
+
+        // 保留上一次有效目标；无效则清空
+        if (!PlainTextPasteService.IsValidTargetWindow(_deliveryTargetWindow)
+            || _deliveryTargetWindow == Handle)
+            _deliveryTargetWindow = IntPtr.Zero;
     }
 
     private void ShowToast(string message = "已复制")
@@ -1829,6 +1953,10 @@ public sealed class MainPopup : Form
                 ? entries.OrderBy(e => e.SortOrder).ThenByDescending(e => e.LastUsedAt).ToList()
                 : entries.OrderBy(e => e.SortOrder).ToList();
         }
+
+        // 文本分类：置顶内置「今天日期」动态条目（不落盘，内容随系统日期刷新）
+        if (_activeTab == TabKind.Texts && DynamicTextEntries.MatchesSearch(query))
+            entries.Insert(0, DynamicTextEntries.CreateTodayDateEntry());
 
         var faviconsToLoad = new List<string>();
         var fileIconsToLoad = new List<(string IconKey, string Path)>();
@@ -2811,7 +2939,8 @@ public sealed class MainPopup : Form
         if (e.Item is not ListViewItem { Tag: QuickEntry entry })
             return;
 
-        if (!CanReorderEntries())
+        // 内置动态条目固定置顶，不可拖拽排序
+        if (DynamicTextEntries.IsDynamic(entry) || !CanReorderEntries())
             return;
 
         var data = new DataObject();
@@ -2843,7 +2972,9 @@ public sealed class MainPopup : Form
     private bool TryReorderEntryFromDrop(DragEventArgs e)
     {
         var draggedId = GetEntryReorderId(e.Data);
-        if (string.IsNullOrWhiteSpace(draggedId) || !CanReorderEntries())
+        if (string.IsNullOrWhiteSpace(draggedId)
+            || DynamicTextEntries.IsDynamic(draggedId)
+            || !CanReorderEntries())
             return false;
 
         var scopeEntries = GetDisplayedEntries().ToList();
@@ -2857,11 +2988,19 @@ public sealed class MainPopup : Form
 
         if (targetItem?.Tag is QuickEntry targetEntry)
         {
-            insertIndex = scopeEntries.FindIndex(entry => string.Equals(entry.Id, targetEntry.Id, StringComparison.OrdinalIgnoreCase));
-            if (insertIndex < 0)
-                insertIndex = scopeEntries.Count;
-            else if (clientPoint.Y > targetItem.Bounds.Top + targetItem.Bounds.Height / 2)
-                insertIndex++;
+            // 动态项固定置顶；拖到其上视为插到用户列表最前
+            if (DynamicTextEntries.IsDynamic(targetEntry))
+            {
+                insertIndex = 0;
+            }
+            else
+            {
+                insertIndex = scopeEntries.FindIndex(entry => string.Equals(entry.Id, targetEntry.Id, StringComparison.OrdinalIgnoreCase));
+                if (insertIndex < 0)
+                    insertIndex = scopeEntries.Count;
+                else if (clientPoint.Y > targetItem.Bounds.Top + targetItem.Bounds.Height / 2)
+                    insertIndex++;
+            }
         }
 
         var draggedEntry = scopeEntries[oldIndex];
@@ -2872,14 +3011,17 @@ public sealed class MainPopup : Form
         insertIndex = Math.Clamp(insertIndex, 0, scopeEntries.Count);
         scopeEntries.Insert(insertIndex, draggedEntry);
 
+        // 排序只针对用户条目；动态项不写入 config
         var fullCategoryEntries = GetEntriesForActiveTab()
+            .Where(e => !DynamicTextEntries.IsDynamic(e))
             .OrderBy(e => e.SortOrder)
             .ThenBy(e => e.AddedAt)
             .ToList();
 
+        var userScope = scopeEntries.Where(e => !DynamicTextEntries.IsDynamic(e)).ToList();
         var orderedEntries = string.Equals(_activeGroup, AllGroupsLabel, StringComparison.OrdinalIgnoreCase)
-            ? scopeEntries
-            : MergeReorderedGroupEntries(fullCategoryEntries, scopeEntries);
+            ? userScope
+            : MergeReorderedGroupEntries(fullCategoryEntries, userScope);
 
         _configManager.ReorderEntries(orderedEntries.Select(entry => entry.Id));
         RefreshList();
@@ -2916,8 +3058,9 @@ public sealed class MainPopup : Form
     private bool IsEntryInActiveGroup(QuickEntry entry)
         => string.Equals(NormalizeGroupName(entry.Group), _activeGroup, StringComparison.OrdinalIgnoreCase);
 
-    public void ShowAtGesturePoint(Point screenPt)
+    public void ShowAtGesturePoint(Point screenPt, IntPtr sourceWindow = default)
     {
+        CaptureDeliveryTarget(sourceWindow);
         if (_configManager.Config.RememberLastView)
             RestoreRememberedView();
         else
@@ -2944,6 +3087,9 @@ public sealed class MainPopup : Form
 
         Show();
     }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
 
     public void HighlightAtScreenPoint(Point screenPt)
     {

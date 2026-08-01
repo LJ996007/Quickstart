@@ -11,8 +11,8 @@ using Quickstart.Utils;
 
 /// <summary>
 /// 右滑圆环轮：透明分层窗体。
-/// 中心圆 + 右侧扇形分类环（参考图镜像），再往右横向列表；
-/// 手势持续右移：扇区 → 列表项 → 松手执行。
+/// 中心圆 + 右侧扇形分类环，再往右横向列表。
+/// 手势：继续右滑选中条目并松手执行；在中心松手则停靠，可用鼠标点选，点外部或执行后关闭。
 /// </summary>
 internal sealed class RadialMenuPopup : Form
 {
@@ -49,25 +49,34 @@ internal sealed class RadialMenuPopup : Form
         TabKind.ClipboardHistory, TabKind.RecentItems
     ];
 
+    // 平面 UI 色板：无阴影，靠细线与轻填充分层
     private static readonly Color HubFill = Color.FromArgb(255, 255, 255);
-    private static readonly Color Accent = Color.FromArgb(91, 155, 230);
-    private static readonly Color AccentSoft = Color.FromArgb(210, 230, 252);
-    private static readonly Color SegmentFill = Color.FromArgb(255, 255, 255);
-    private static readonly Color SegmentBorder = Color.FromArgb(228, 232, 238);
-    private static readonly Color SegmentText = Color.FromArgb(48, 52, 58);
-    private static readonly Color SegmentCount = Color.FromArgb(120, 126, 136);
-    private static readonly Color SegmentTextHot = Color.FromArgb(36, 90, 160);
+    private static readonly Color HubRing = Color.FromArgb(55, 138, 221);
+    private static readonly Color Accent = Color.FromArgb(55, 138, 221);
+    private static readonly Color AccentSoft = Color.FromArgb(232, 242, 255);
+    private static readonly Color AccentMuted = Color.FromArgb(180, 210, 245);
+    private static readonly Color SegmentFill = Color.FromArgb(252, 253, 255);
+    private static readonly Color SegmentBorder = Color.FromArgb(222, 228, 236);
+    private static readonly Color SegmentDivider = Color.FromArgb(210, 216, 224);
+    private static readonly Color SegmentText = Color.FromArgb(42, 48, 58);
+    private static readonly Color SegmentCount = Color.FromArgb(130, 136, 148);
+    private static readonly Color SegmentTextHot = Color.FromArgb(28, 96, 180);
     private static readonly Color RowFill = Color.FromArgb(255, 255, 255);
-    private static readonly Color RowFillHot = Color.FromArgb(245, 249, 255);
-    private static readonly Color RowBorder = Color.FromArgb(226, 230, 236);
+    private static readonly Color RowFillHot = Color.FromArgb(236, 244, 255);
+    private static readonly Color RowBorder = Color.FromArgb(230, 234, 240);
     private static readonly Color RowBorderHot = Color.FromArgb(55, 138, 221);
-    private static readonly Color TitleColor = Color.FromArgb(32, 33, 36);
-    private static readonly Color SubColor = Color.FromArgb(138, 143, 152);
-    private static readonly Color HintColor = Color.FromArgb(150, 155, 162);
-    private static readonly Color ListPanelFill = Color.FromArgb(248, 250, 252);
-    private static readonly Color ListPanelBorder = Color.FromArgb(220, 225, 232);
+    private static readonly Color TitleColor = Color.FromArgb(28, 32, 40);
+    private static readonly Color SubColor = Color.FromArgb(132, 138, 148);
+    private static readonly Color HintColor = Color.FromArgb(148, 154, 164);
+    private static readonly Color ListPanelFill = Color.FromArgb(250, 251, 253);
+    private static readonly Color ListPanelBorder = Color.FromArgb(218, 224, 232);
+    private static readonly Color ScrollTrack = Color.FromArgb(230, 234, 240);
+    private static readonly Color ScrollThumb = Color.FromArgb(160, 170, 185);
 
-    private const int MaxOuterItems = 8;
+    /// <summary>右侧列表可视行数（面板高度固定）；超出可用滚轮上下滑动。</summary>
+    private const int MaxVisibleItems = 8;
+    /// <summary>单次载入上限，避免收藏极多时一次建上千图标。</summary>
+    private const int MaxLoadedItems = 80;
     // 扇区缩小，为右侧列表让出空间，避免互相遮挡
     private const float HubRadiusLogical = 40f;
     private const float FanInnerRadiusLogical = 48f;
@@ -77,14 +86,15 @@ internal sealed class RadialMenuPopup : Form
     private const float FanTotalSweepDeg = 180f;
     private const float ListGapFromFanLogical = 14f;
     private const float ListRowWidthLogical = 260f;
-    private const float ListRowHeightLogical = 46f;
-    private const float ListRowGapLogical = 6f;
+    private const float ListRowHeightLogical = 44f;
+    private const float ListRowGapLogical = 5f;
     private const float ListPanelPadLogical = 8f;
     private const float IconLogical = 20f;
     private const float FormPadLogical = 12f;
     private const int AnimDurationMs = 180;
     private const int AnimFrameMs = 12;
 
+    private const int GWL_EXSTYLE = -20;
     private const int WS_EX_LAYERED = 0x00080000;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const int WS_EX_NOACTIVATE = 0x08000000;
@@ -120,6 +130,9 @@ internal sealed class RadialMenuPopup : Form
     private float _fanInnerR;
     private float _fanOuterR;
     private RectangleF _listPanelBounds;
+    private RectangleF _listClipBounds;
+    /// <summary>列表首个可见项下标；仅当 _items.Count &gt; MaxVisibleItems 时可滚动。</summary>
+    private int _scrollIndex;
     private bool _renderPending;
     private Bitmap? _layerBmp;
     private Graphics? _layerGfx;
@@ -131,6 +144,13 @@ internal sealed class RadialMenuPopup : Form
     private TabKind? _cachedActiveForStatic;
     private TabKind? _cachedHoverForStatic;
     private Bitmap? _staticLayer; // 扇区+中心缓存，动画时只重绘列表
+
+    // 手势跟踪阶段：NOACTIVATE；中心松手后进入交互模式：可点选 / ESC / 点外部关闭。
+    private bool _gestureMode = true;
+    private bool _showWithoutActivation = true;
+    private bool _suppressAutoHide;
+    /// <summary>呼出前的目标窗口，用于「直接粘贴到光标处」。</summary>
+    private IntPtr _deliveryTargetWindow;
 
     public RadialMenuPopup(ConfigManager configManager, ProcessLauncher launcher, ClipboardHistoryService? clipboardHistory = null)
     {
@@ -184,13 +204,24 @@ internal sealed class RadialMenuPopup : Form
             if (_layerReady && Visible)
                 PushLayeredBitmap();
         };
+        Deactivate += (_, _) =>
+        {
+            if (Visible && !_gestureMode && !_suppressAutoHide)
+                Hide();
+        };
+        MouseMove += OnInteractiveMouseMove;
+        MouseDown += OnInteractiveMouseDown;
+        MouseWheel += OnListMouseWheel;
     }
 
-    public void ShowAtGesturePoint(Point screenPt)
+    public void ShowAtGesturePoint(Point screenPt, IntPtr sourceWindow = default)
     {
+        CaptureDeliveryTarget(sourceWindow);
         UpdateDpiScale();
         ApplyContentSize();
         _center = ComputeWheelCenter();
+
+        EnterGestureMode();
 
         RebuildTabs();
         _activeTab = ResolveInitialTab();
@@ -213,43 +244,44 @@ internal sealed class RadialMenuPopup : Form
         RequestRender();
     }
 
-    public void HighlightAtScreenPoint(Point screenPt)
+    private void CaptureDeliveryTarget(IntPtr preferred = default)
     {
-        if (!Visible)
+        if (PlainTextPasteService.IsValidTargetWindow(preferred) && preferred != Handle)
+        {
+            _deliveryTargetWindow = preferred;
             return;
-
-        var client = PointToClient(screenPt);
-        HitTest(client, out var tab, out var itemIndex);
-
-        var needRender = false;
-
-        if (tab != _hoverTab)
-        {
-            _hoverTab = tab;
-            InvalidateStaticLayer();
-            needRender = true;
         }
 
-        // 右滑进入扇区即切换分类（连贯）
-        if (tab.HasValue && tab != _activeTab)
+        try
         {
-            _activeTab = tab;
-            _hoverItemIndex = -1;
-            PersistLastViewTab(tab.Value);
-            InvalidateStaticLayer();
-            LoadItemsForActiveTab(restartAnim: true);
-            needRender = true;
+            var fg = GetForegroundWindow();
+            if (PlainTextPasteService.IsValidTargetWindow(fg) && fg != Handle)
+            {
+                _deliveryTargetWindow = fg;
+                return;
+            }
         }
-        else if (itemIndex != _hoverItemIndex)
+        catch
         {
-            _hoverItemIndex = itemIndex;
-            needRender = true;
+            // ignore
         }
 
-        if (needRender)
-            RequestRender();
+        if (!PlainTextPasteService.IsValidTargetWindow(_deliveryTargetWindow)
+            || _deliveryTargetWindow == Handle)
+            _deliveryTargetWindow = IntPtr.Zero;
     }
 
+    public void HighlightAtScreenPoint(Point screenPt)
+    {
+        if (!Visible || !_gestureMode)
+            return;
+
+        ApplyPointerAtScreenPoint(screenPt, switchTabOnHover: true);
+    }
+
+    /// <summary>
+    /// 手势松手：命中列表项则执行并关闭；落在中心圆则进入可点选交互模式；其它位置关闭。
+    /// </summary>
     public bool TryReleaseAtScreenPoint(Point screenPt)
     {
         if (!Visible)
@@ -265,18 +297,76 @@ internal sealed class RadialMenuPopup : Form
             return true;
         }
 
+        // 中心圆松手：停靠，允许鼠标点选；点界面外或执行动作后再退出
+        if (IsOverHub(client))
+        {
+            EnterInteractiveMode();
+            return false;
+        }
+
         Hide();
         return false;
     }
 
-    protected override bool ShowWithoutActivation => true;
+    /// <summary>
+    /// 中心松手后：抢前台，支持 ESC / 点击外部关闭，以及鼠标悬停与点击选择。
+    /// </summary>
+    public void EnterInteractiveMode()
+    {
+        if (!Visible || IsDisposed)
+            return;
+
+        _gestureMode = false;
+        _showWithoutActivation = false;
+        ApplyNoActivateStyle(enabled: false);
+
+        _suppressAutoHide = true;
+        try
+        {
+            if (IsHandleCreated)
+                WindowActivator.TryForceForeground(Handle);
+            else
+            {
+                WindowActivator.ClaimForegroundRights();
+                Activate();
+            }
+
+            if (!Focused)
+                Focus();
+        }
+        finally
+        {
+            BeginInvoke(() =>
+            {
+                _suppressAutoHide = false;
+                if (Visible && !ContainsFocus && Form.ActiveForm != this)
+                {
+                    WindowActivator.TryForceForeground(Handle);
+                    Focus();
+                }
+            });
+        }
+
+        // 松手瞬间清掉悬停高亮，避免中心松手后仍显示拖过的高亮
+        if (_hoverItemIndex != -1 || _hoverTab != _activeTab)
+        {
+            _hoverItemIndex = -1;
+            _hoverTab = _activeTab;
+            InvalidateStaticLayer();
+            RequestRender();
+        }
+    }
+
+    protected override bool ShowWithoutActivation => _showWithoutActivation;
 
     protected override CreateParams CreateParams
     {
         get
         {
             var cp = base.CreateParams;
-            cp.ExStyle |= WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            cp.ExStyle |= WS_EX_LAYERED | WS_EX_TOOLWINDOW;
+            if (_showWithoutActivation)
+                cp.ExStyle |= WS_EX_NOACTIVATE;
             return cp;
         }
     }
@@ -299,10 +389,158 @@ internal sealed class RadialMenuPopup : Form
         {
             Hide();
             e.Handled = true;
+            e.SuppressKeyPress = true;
             return;
         }
 
+        if (!_gestureMode && CanScrollList)
+        {
+            if (e.KeyCode is Keys.Up or Keys.PageUp)
+            {
+                TryScrollList(e.KeyCode == Keys.PageUp ? -MaxVisibleItems : -1);
+                e.Handled = true;
+                return;
+            }
+
+            if (e.KeyCode is Keys.Down or Keys.PageDown)
+            {
+                TryScrollList(e.KeyCode == Keys.PageDown ? MaxVisibleItems : 1);
+                e.Handled = true;
+                return;
+            }
+
+            if (e.KeyCode == Keys.Home)
+            {
+                TryScrollList(-_scrollIndex);
+                e.Handled = true;
+                return;
+            }
+
+            if (e.KeyCode == Keys.End)
+            {
+                TryScrollList(MaxScrollIndex - _scrollIndex);
+                e.Handled = true;
+                return;
+            }
+        }
+
         base.OnKeyDown(e);
+    }
+
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
+    {
+        if (keyData == Keys.Escape)
+        {
+            Hide();
+            return true;
+        }
+
+        return base.ProcessCmdKey(ref msg, keyData);
+    }
+
+    private void EnterGestureMode()
+    {
+        _gestureMode = true;
+        _showWithoutActivation = true;
+        _suppressAutoHide = false;
+        ApplyNoActivateStyle(enabled: true);
+    }
+
+    private void ApplyNoActivateStyle(bool enabled)
+    {
+        if (!IsHandleCreated)
+            return;
+
+        var ex = GetWindowLong(Handle, GWL_EXSTYLE);
+        var next = enabled
+            ? ex | WS_EX_NOACTIVATE
+            : ex & ~WS_EX_NOACTIVATE;
+        if (next != ex)
+            SetWindowLong(Handle, GWL_EXSTYLE, next);
+    }
+
+    private void OnInteractiveMouseMove(object? sender, MouseEventArgs e)
+    {
+        if (!Visible || _gestureMode)
+            return;
+
+        // 交互模式：仅高亮，不因悬停切换分类（点击扇区才切换）
+        ApplyPointerAtClientPoint(e.Location, switchTabOnHover: false);
+    }
+
+    private void OnInteractiveMouseDown(object? sender, MouseEventArgs e)
+    {
+        if (!Visible || _gestureMode)
+            return;
+        if (e.Button != MouseButtons.Left && e.Button != MouseButtons.Right)
+            return;
+
+        HitTest(e.Location, out var tab, out var itemIndex);
+
+        if (itemIndex >= 0 && itemIndex < _items.Count)
+        {
+            ExecutePayload(_items[itemIndex].Payload);
+            Hide();
+            return;
+        }
+
+        if (tab.HasValue && tab != _activeTab && !IsOverHub(e.Location))
+        {
+            _activeTab = tab;
+            _hoverTab = tab;
+            _hoverItemIndex = -1;
+            PersistLastViewTab(tab.Value);
+            InvalidateStaticLayer();
+            LoadItemsForActiveTab(restartAnim: true);
+            RequestRender();
+            return;
+        }
+
+        // 点在中心或当前扇区：保持打开；点在窗体透明区不会进到这里（分层窗体 hit-test 透明穿透）
+    }
+
+    private void ApplyPointerAtScreenPoint(Point screenPt, bool switchTabOnHover)
+        => ApplyPointerAtClientPoint(PointToClient(screenPt), switchTabOnHover);
+
+    private void ApplyPointerAtClientPoint(Point client, bool switchTabOnHover)
+    {
+        HitTest(client, out var tab, out var itemIndex);
+
+        var needRender = false;
+
+        if (tab != _hoverTab)
+        {
+            _hoverTab = tab;
+            InvalidateStaticLayer();
+            needRender = true;
+        }
+
+        if (switchTabOnHover && tab.HasValue && tab != _activeTab)
+        {
+            _activeTab = tab;
+            _hoverItemIndex = -1;
+            PersistLastViewTab(tab.Value);
+            InvalidateStaticLayer();
+            LoadItemsForActiveTab(restartAnim: true);
+            needRender = true;
+        }
+        else if (itemIndex != _hoverItemIndex)
+        {
+            _hoverItemIndex = itemIndex;
+            needRender = true;
+        }
+
+        if (needRender)
+            RequestRender();
+    }
+
+    private bool IsOverHub(Point client)
+    {
+        var dx = client.X - _center.X;
+        var dy = client.Y - _center.Y;
+        // 略放宽容差：中心松手不必精确压在圆边内
+        var r = _hubR + S(6);
+        return dx * dx + dy * dy <= r * r;
     }
 
     protected override void Dispose(bool disposing)
@@ -348,8 +586,8 @@ internal sealed class RadialMenuPopup : Form
         var listW = S(ListRowWidthLogical + ListPanelPadLogical * 2);
         var gap = S(ListGapFromFanLogical);
         var pad = S(FormPadLogical);
-        var maxListH = MaxOuterItems * S(ListRowHeightLogical)
-            + Math.Max(0, MaxOuterItems - 1) * S(ListRowGapLogical)
+        var maxListH = MaxVisibleItems * S(ListRowHeightLogical)
+            + Math.Max(0, MaxVisibleItems - 1) * S(ListRowGapLogical)
             + S(ListPanelPadLogical) * 2;
 
         // 中心靠左：pad + hub；扇区外沿 = centerX + fanOuter；列表在外沿右侧
@@ -528,8 +766,8 @@ internal sealed class RadialMenuPopup : Form
         if (_staticLayer != null)
             g.DrawImageUnscaled(_staticLayer, 0, 0);
 
-        DrawListPanel(g, drawShadow: !fast);
-        DrawItems(g, drawShadow: !fast);
+        DrawListPanel(g);
+        DrawItems(g);
 
         SyncLayerBitmapToHbitmap();
         PushLayeredBitmap();
@@ -555,8 +793,8 @@ internal sealed class RadialMenuPopup : Form
         g.CompositingQuality = fast ? CompositingQuality.HighSpeed : CompositingQuality.HighQuality;
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-        DrawSegments(g, drawShadow: !fast);
-        DrawHub(g, drawShadow: !fast);
+        DrawSegments(g);
+        DrawHub(g);
 
         _cachedActiveForStatic = _activeTab;
         _cachedHoverForStatic = _hoverTab;
@@ -611,7 +849,8 @@ internal sealed class RadialMenuPopup : Form
             TabKind.Folders => _configManager.Config.Entries.Count(e => e.Type == EntryType.Folder),
             TabKind.Files => _configManager.Config.Entries.Count(e => e.Type == EntryType.File),
             TabKind.Urls => _configManager.Config.Entries.Count(e => e.Type == EntryType.Url),
-            TabKind.Texts => _configManager.Config.Entries.Count(e => e.Type == EntryType.Text),
+            // +1：内置「今天日期」动态条目
+            TabKind.Texts => _configManager.Config.Entries.Count(e => e.Type == EntryType.Text) + 1,
             TabKind.ClipboardHistory => _clipboardHistory?.GetItems().Count ?? 0,
             TabKind.RecentItems => WindowsRecentItemsService.GetItems().Count,
             _ => 0
@@ -639,21 +878,29 @@ internal sealed class RadialMenuPopup : Form
         LayoutItemList();
     }
 
-    /// <summary>列表固定在扇区更右侧，与扇区硬分隔，绝不遮挡。</summary>
+    /// <summary>列表固定在扇区更右侧；高度按最多 MaxVisibleItems 行，超出靠 _scrollIndex 滑动。</summary>
     private void LayoutItemList()
     {
         _listPanelBounds = RectangleF.Empty;
+        _listClipBounds = RectangleF.Empty;
         if (_items.Count == 0)
+        {
+            _scrollIndex = 0;
             return;
+        }
 
         var rowW = S(ListRowWidthLogical);
         var rowH = S(ListRowHeightLogical);
         var gap = S(ListRowGapLogical);
         var pad = S(ListPanelPadLogical);
         var n = _items.Count;
+        var visible = Math.Min(n, MaxVisibleItems);
+        _scrollIndex = ClampScrollIndex(_scrollIndex, n, visible);
 
-        var totalH = n * rowH + Math.Max(0, n - 1) * gap;
-        var panelW = rowW + pad * 2;
+        var totalH = visible * rowH + Math.Max(0, visible - 1) * gap;
+        // 可滚动时右侧预留细滚动条
+        var scrollGutter = n > MaxVisibleItems ? S(8) : 0f;
+        var panelW = rowW + pad * 2 + scrollGutter;
         var panelH = totalH + pad * 2;
 
         var margin = S(8);
@@ -675,17 +922,86 @@ internal sealed class RadialMenuPopup : Form
         listTop = Math.Clamp(listTop, margin, Math.Max(margin, Height - panelH - margin));
 
         _listPanelBounds = new RectangleF(listLeft, listTop, panelW, panelH);
+        _listClipBounds = new RectangleF(listLeft + pad, listTop + pad, rowW, totalH);
 
         for (var i = 0; i < n; i++)
         {
+            var visRow = i - _scrollIndex;
+            if (visRow < 0 || visRow >= visible)
+            {
+                _items[i].TargetBounds = RectangleF.Empty;
+                _items[i].Stagger = 0f;
+                continue;
+            }
+
             _items[i].TargetBounds = new RectangleF(
                 listLeft + pad,
-                listTop + pad + i * (rowH + gap),
+                listTop + pad + visRow * (rowH + gap),
                 rowW,
                 rowH);
-            // 更小错峰，动画更干脆
-            _items[i].Stagger = i * 0.02f;
+            // 更小错峰，动画更干脆（仅当前视口内）
+            _items[i].Stagger = visRow * 0.02f;
         }
+    }
+
+    private static int ClampScrollIndex(int scroll, int itemCount, int visibleCount)
+    {
+        if (itemCount <= visibleCount)
+            return 0;
+        return Math.Clamp(scroll, 0, itemCount - visibleCount);
+    }
+
+    private bool CanScrollList => _items.Count > MaxVisibleItems;
+
+    private int MaxScrollIndex => Math.Max(0, _items.Count - MaxVisibleItems);
+
+    private bool TryScrollList(int deltaRows, Point? screenPtForHover = null)
+    {
+        if (!CanScrollList || deltaRows == 0)
+            return false;
+
+        var next = ClampScrollIndex(_scrollIndex + deltaRows, _items.Count, MaxVisibleItems);
+        if (next == _scrollIndex)
+            return false;
+
+        _scrollIndex = next;
+        LayoutItemList();
+
+        // 滚动后按当前指针位置刷新高亮（手势/交互共用）
+        if (screenPtForHover.HasValue)
+            ApplyPointerAtScreenPoint(screenPtForHover.Value, switchTabOnHover: _gestureMode);
+        else if (_hoverItemIndex >= 0
+                 && (_hoverItemIndex < _scrollIndex || _hoverItemIndex >= _scrollIndex + MaxVisibleItems))
+        {
+            _hoverItemIndex = -1;
+        }
+
+        // 滚动不重跑入场动画
+        foreach (var item in _items)
+        {
+            if (!item.TargetBounds.IsEmpty)
+                item.AnimT = 1f;
+        }
+
+        RequestRender();
+        return true;
+    }
+
+    private void OnListMouseWheel(object? sender, MouseEventArgs e)
+    {
+        if (!Visible || _items.Count == 0 || !CanScrollList)
+            return;
+
+        // 仅当指针在列表区域（或整窗在交互模式）时滚动，避免误触
+        var client = e.Location;
+        var overList = !_listPanelBounds.IsEmpty && _listPanelBounds.Contains(client);
+        if (!overList && _gestureMode)
+            return;
+
+        // WinForms：Delta>0 为向上滚 → 列表内容上移 → 减小首行下标
+        var steps = Math.Max(1, Math.Abs(e.Delta) / 120);
+        var deltaRows = e.Delta > 0 ? -steps : steps;
+        TryScrollList(deltaRows, PointToScreen(client));
     }
 
     private void ClearItems(bool disposeOwned)
@@ -702,12 +1018,15 @@ internal sealed class RadialMenuPopup : Form
         _items.Clear();
         _faviconInflight.Clear();
         _listPanelBounds = RectangleF.Empty;
+        _listClipBounds = RectangleF.Empty;
+        _scrollIndex = 0;
     }
 
     private void LoadItemsForActiveTab(bool restartAnim)
     {
         ClearItems(disposeOwned: true);
         _hoverItemIndex = -1;
+        _scrollIndex = 0;
 
         if (!_activeTab.HasValue)
         {
@@ -722,7 +1041,7 @@ internal sealed class RadialMenuPopup : Form
         switch (_activeTab.Value)
         {
             case TabKind.ClipboardHistory:
-                foreach (var hist in (_clipboardHistory?.GetItems() ?? []).Take(MaxOuterItems))
+                foreach (var hist in (_clipboardHistory?.GetItems() ?? []).Take(MaxLoadedItems))
                 {
                     _items.Add(new ItemSlot
                     {
@@ -736,7 +1055,7 @@ internal sealed class RadialMenuPopup : Form
                 break;
 
             case TabKind.RecentItems:
-                foreach (var recent in WindowsRecentItemsService.GetItems().Take(MaxOuterItems))
+                foreach (var recent in WindowsRecentItemsService.GetItems().Take(MaxLoadedItems))
                 {
                     _items.Add(new ItemSlot
                     {
@@ -750,7 +1069,7 @@ internal sealed class RadialMenuPopup : Form
                 break;
 
             default:
-                foreach (var entry in GetEntriesForTab(_activeTab.Value).Take(MaxOuterItems))
+                foreach (var entry in GetEntriesForTab(_activeTab.Value).Take(MaxLoadedItems))
                 {
                     var slot = new ItemSlot
                     {
@@ -807,13 +1126,29 @@ internal sealed class RadialMenuPopup : Form
         if (string.IsNullOrWhiteSpace(path))
             return GetCachedGlyphIcon(isDirectory ? "folder" : "file");
 
-        var key = (isDirectory ? "dir:" : "file:") + path.ToLowerInvariant();
+        // 文件夹共用同一壳图标；普通扩展名共用；exe/lnk 等按完整路径
+        string key;
+        if (isDirectory)
+        {
+            key = "dir:";
+        }
+        else if (IconExtractor.NeedsPerFileIcon(path))
+        {
+            key = "file:" + path.ToLowerInvariant();
+        }
+        else
+        {
+            var ext = Path.GetExtension(path);
+            key = "ext:" + (string.IsNullOrEmpty(ext) ? "<noext>" : ext.ToLowerInvariant());
+        }
+
         if (_iconCache.TryGetValue(key, out var cached))
             return cached;
 
         try
         {
-            using var icon = IconExtractor.GetIcon(path, isDirectory, useLargeIcon: false);
+            // Icon 由 IconExtractor 全局缓存持有，不可 Dispose（using 会拆掉后续项的图标）
+            var icon = IconExtractor.GetIcon(path, isDirectory, useLargeIcon: false);
             if (icon != null)
             {
                 var bmp = icon.ToBitmap();
@@ -947,9 +1282,15 @@ internal sealed class RadialMenuPopup : Form
         };
 
         var typeEntries = EntryQueries.ByType(_configManager.Config.Entries, type);
-        return _configManager.Config.SortByRecentUsage
+        IEnumerable<QuickEntry> ordered = _configManager.Config.SortByRecentUsage
             ? typeEntries.OrderBy(e => e.SortOrder).ThenByDescending(e => e.LastUsedAt)
             : typeEntries.OrderBy(e => e.SortOrder);
+
+        // 文本分类置顶内置「今天日期」动态条目
+        if (kind == TabKind.Texts)
+            ordered = ordered.Prepend(DynamicTextEntries.CreateTodayDateEntry());
+
+        return ordered;
     }
 
     private void StartFireworkAnim()
@@ -957,7 +1298,10 @@ internal sealed class RadialMenuPopup : Form
         _animStartTick = Environment.TickCount64;
         _animating = true;
         foreach (var item in _items)
-            item.AnimT = 0f;
+        {
+            // 仅视口内做入场动画；屏外项保持就绪，滚到时直接显示
+            item.AnimT = item.TargetBounds.IsEmpty ? 1f : 0f;
+        }
 
         // 先出一帧静态层，再进动画
         EnsureStaticLayer(fast: false);
@@ -976,9 +1320,17 @@ internal sealed class RadialMenuPopup : Form
 
         var elapsed = Environment.TickCount64 - _animStartTick;
         var allDone = true;
+        var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
 
-        foreach (var item in _items)
+        for (var i = _scrollIndex; i < end; i++)
         {
+            var item = _items[i];
+            if (item.TargetBounds.IsEmpty)
+            {
+                item.AnimT = 1f;
+                continue;
+            }
+
             var local = (elapsed / (float)AnimDurationMs) - item.Stagger;
             if (local < 0f)
             {
@@ -1003,7 +1355,7 @@ internal sealed class RadialMenuPopup : Form
             _animTimer.Stop();
             foreach (var item in _items)
                 item.AnimT = 1f;
-            // 结束时高质量补一帧（含阴影）
+            // 结束时高质量补一帧
             RenderLayered(fast: false);
         }
     }
@@ -1013,18 +1365,26 @@ internal sealed class RadialMenuPopup : Form
         tab = null;
         itemIndex = -1;
 
-        // 1) 列表（最右，继续右滑命中）
-        for (var i = 0; i < _items.Count; i++)
+        // 1) 列表（当前视口内可见行）
+        if (!_listPanelBounds.IsEmpty && _listPanelBounds.Contains(client))
         {
-            var item = _items[i];
-            if (item.AnimT < 0.28f)
-                continue;
-            if (GetAnimatedItemBounds(item).Contains(client))
+            var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
+            for (var i = _scrollIndex; i < end; i++)
             {
-                itemIndex = i;
-                tab = _activeTab;
-                return;
+                var item = _items[i];
+                if (item.TargetBounds.IsEmpty || item.AnimT < 0.28f)
+                    continue;
+                if (GetAnimatedItemBounds(item).Contains(client))
+                {
+                    itemIndex = i;
+                    tab = _activeTab;
+                    return;
+                }
             }
+
+            // 在列表面板上但未命中具体行：仍算落在当前分类，不再测扇区
+            tab = _activeTab;
+            return;
         }
 
         var dx = client.X - _center.X;
@@ -1079,8 +1439,11 @@ internal sealed class RadialMenuPopup : Form
 
     private RectangleF GetAnimatedItemBounds(ItemSlot item)
     {
-        var t = Math.Clamp(item.AnimT, 0f, 1f);
         var target = item.TargetBounds;
+        if (target.IsEmpty)
+            return RectangleF.Empty;
+
+        var t = Math.Clamp(item.AnimT, 0f, 1f);
         if (t >= 0.999f)
             return target;
 
@@ -1089,39 +1452,58 @@ internal sealed class RadialMenuPopup : Form
         return new RectangleF(target.X - slide, target.Y, target.Width, target.Height);
     }
 
-    private void DrawSegments(Graphics g, bool drawShadow)
+    private void DrawSegments(Graphics g)
     {
         if (_tabs.Count == 0)
             return;
 
-        if (drawShadow)
+        // 外环底：整块浅底 + 细描边，平面分割
+        using (var fanPath = CreateDonutSegmentPath(_center, _fanInnerR, _fanOuterR, FanStartDeg, FanTotalSweepDeg))
         {
-            using var shadowPath = CreateDonutFanPath(_center, _fanInnerR, _fanOuterR + S(1), FanStartDeg, FanTotalSweepDeg);
-            using var shadowBrush = new SolidBrush(Color.FromArgb(22, 0, 0, 0));
-            var state = g.Save();
-            g.TranslateTransform(0, S(1.5f));
-            g.FillPath(shadowBrush, shadowPath);
-            g.Restore(state);
+            using (var brush = new SolidBrush(SegmentFill))
+                g.FillPath(brush, fanPath);
+            using (var pen = new Pen(SegmentBorder, Math.Max(1f, S(1.1f))))
+                g.DrawPath(pen, fanPath);
         }
 
         foreach (var slot in _tabs)
         {
-            var active = slot.Kind == _activeTab || slot.Kind == _hoverTab;
+            var active = slot.Kind == _activeTab;
+            var hot = slot.Kind == _hoverTab && !active;
             using var path = CreateDonutSegmentPath(_center, _fanInnerR, _fanOuterR, slot.StartDeg, slot.SweepDeg);
 
-            using (var brush = new SolidBrush(active ? AccentSoft : SegmentFill))
+            if (active || hot)
+            {
+                using var brush = new SolidBrush(active ? AccentSoft : Color.FromArgb(245, 249, 255));
                 g.FillPath(brush, path);
+            }
 
-            using (var pen = new Pen(active ? Accent : SegmentBorder, active ? Math.Max(1.4f, S(1.6f)) : Math.Max(1f, S(1.1f))))
-                g.DrawPath(pen, path);
+            // 扇区分割线（平面 UI：细线而非描边块）
+            DrawSegmentDivider(g, slot.StartDeg);
+            if (slot == _tabs[^1])
+                DrawSegmentDivider(g, slot.StartDeg + slot.SweepDeg);
+
+            if (active)
+            {
+                // 外弧强调条，替代阴影
+                const float degPad = 0.6f;
+                using var outerAccent = CreateDonutSegmentPath(
+                    _center,
+                    _fanOuterR - S(3.2f),
+                    _fanOuterR - S(0.4f),
+                    slot.StartDeg + degPad,
+                    Math.Max(1f, slot.SweepDeg - degPad * 2f));
+                using var accentBrush = new SolidBrush(Accent);
+                g.FillPath(accentBrush, outerAccent);
+            }
 
             var midR = (_fanInnerR + _fanOuterR) / 2f;
             var rad = slot.MidDeg * MathF.PI / 180f;
             var tx = _center.X + MathF.Cos(rad) * midR;
             var ty = _center.Y + MathF.Sin(rad) * midR;
 
-            var titleColor = active ? SegmentTextHot : SegmentText;
-            var countColor = active ? Color.FromArgb(70, 110, 170) : SegmentCount;
+            var titleColor = active || hot ? SegmentTextHot : SegmentText;
+            var countColor = active || hot ? Color.FromArgb(70, 118, 180) : SegmentCount;
 
             var title = slot.Label;
             var count = $"{slot.Count} 项";
@@ -1139,19 +1521,46 @@ internal sealed class RadialMenuPopup : Form
         }
     }
 
-    private void DrawHub(Graphics g, bool drawShadow)
+    private void DrawSegmentDivider(Graphics g, float deg)
+    {
+        var rad = deg * MathF.PI / 180f;
+        var cos = MathF.Cos(rad);
+        var sin = MathF.Sin(rad);
+        var x1 = _center.X + cos * (_fanInnerR + S(1));
+        var y1 = _center.Y + sin * (_fanInnerR + S(1));
+        var x2 = _center.X + cos * (_fanOuterR - S(1));
+        var y2 = _center.Y + sin * (_fanOuterR - S(1));
+        using var pen = new Pen(SegmentDivider, Math.Max(1f, S(1f)));
+        g.DrawLine(pen, x1, y1, x2, y2);
+    }
+
+    private void DrawHub(Graphics g)
     {
         var rect = new RectangleF(_center.X - _hubR, _center.Y - _hubR, _hubR * 2, _hubR * 2);
-        if (drawShadow)
-            DrawSoftShadowEllipse(g, rect, 28);
 
         using (var path = new GraphicsPath())
         {
             path.AddEllipse(rect);
             using var brush = new SolidBrush(HubFill);
             g.FillPath(brush, path);
-            using var pen = new Pen(SegmentBorder, Math.Max(1.1f, S(1.25f)));
-            g.DrawPath(pen, path);
+
+            // 内圈细线 + 外圈强调环：扁平层次
+            using var borderPen = new Pen(SegmentBorder, Math.Max(1f, S(1.15f)));
+            g.DrawPath(borderPen, path);
+
+            var ringInset = S(3.5f);
+            var ringRect = RectangleF.Inflate(rect, -ringInset, -ringInset);
+            using var ringPen = new Pen(AccentMuted, Math.Max(1.2f, S(1.5f)));
+            g.DrawEllipse(ringPen, ringRect);
+        }
+
+        // 顶部小点：当前分类指示
+        if (_activeTab.HasValue)
+        {
+            var dotR = S(3.2f);
+            var dotCenter = new PointF(_center.X, rect.Y + S(11));
+            using var dotBrush = new SolidBrush(HubRing);
+            g.FillEllipse(dotBrush, dotCenter.X - dotR, dotCenter.Y - dotR, dotR * 2, dotR * 2);
         }
 
         var title = _activeTab.HasValue ? GetTabLabel(_activeTab.Value) : "Quickstart";
@@ -1169,36 +1578,66 @@ internal sealed class RadialMenuPopup : Form
         }
         else
         {
-            var titleRect = new RectangleF(rect.X, rect.Y + rect.Height * 0.28f, rect.Width, rect.Height * 0.32f);
-            var countRect = new RectangleF(rect.X, rect.Y + rect.Height * 0.55f, rect.Width, rect.Height * 0.25f);
+            var titleRect = new RectangleF(rect.X, rect.Y + rect.Height * 0.30f, rect.Width, rect.Height * 0.32f);
+            var countRect = new RectangleF(rect.X, rect.Y + rect.Height * 0.56f, rect.Width, rect.Height * 0.24f);
             g.DrawString(title, _hubTitleFont, titleBrush, titleRect, sf);
             g.DrawString(count, _hubCountFont, countBrush, countRect, sf);
         }
     }
 
-    private void DrawListPanel(Graphics g, bool drawShadow)
+    private void DrawListPanel(Graphics g)
     {
         if (_listPanelBounds.IsEmpty || _items.Count == 0)
             return;
 
         var maxT = 0f;
-        foreach (var item in _items)
-            if (item.AnimT > maxT) maxT = item.AnimT;
+        var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
+        for (var i = _scrollIndex; i < end; i++)
+            if (_items[i].AnimT > maxT) maxT = _items[i].AnimT;
         if (maxT < 0.04f)
             return;
 
         var alpha = (int)(Math.Clamp(maxT, 0f, 1f) * 255);
-        if (drawShadow)
-            DrawSoftShadow(g, _listPanelBounds, S(12), Math.Min(alpha, 40));
 
-        using var path = CreateRoundRect(_listPanelBounds, S(14));
-        using (var brush = new SolidBrush(Color.FromArgb(Math.Min(250, alpha), ListPanelFill)))
+        using var path = CreateRoundRect(_listPanelBounds, S(12));
+        using (var brush = new SolidBrush(Color.FromArgb(Math.Min(255, alpha), ListPanelFill)))
             g.FillPath(brush, path);
-        using (var pen = new Pen(Color.FromArgb(Math.Min(230, alpha), ListPanelBorder), Math.Max(1f, S(1.05f))))
+        using (var pen = new Pen(Color.FromArgb(Math.Min(255, alpha), ListPanelBorder), Math.Max(1f, S(1f))))
             g.DrawPath(pen, path);
+
+        if (CanScrollList)
+            DrawListScrollbar(g, alpha);
     }
 
-    private void DrawItems(Graphics g, bool drawShadow)
+    private void DrawListScrollbar(Graphics g, int alpha)
+    {
+        if (_listClipBounds.IsEmpty || _items.Count <= MaxVisibleItems)
+            return;
+
+        var trackW = S(3.5f);
+        var trackPad = S(3f);
+        var trackX = _listPanelBounds.Right - trackPad - trackW;
+        var trackY = _listClipBounds.Y;
+        var trackH = _listClipBounds.Height;
+        var track = new RectangleF(trackX, trackY, trackW, trackH);
+
+        using (var brush = new SolidBrush(Color.FromArgb(Math.Min(200, alpha), ScrollTrack)))
+        using (var path = CreateRoundRect(track, trackW / 2f))
+            g.FillPath(brush, path);
+
+        var visibleRatio = MaxVisibleItems / (float)_items.Count;
+        var thumbH = Math.Max(S(18f), trackH * visibleRatio);
+        var maxScroll = MaxScrollIndex;
+        var thumbT = maxScroll <= 0 ? 0f : _scrollIndex / (float)maxScroll;
+        var thumbY = trackY + (trackH - thumbH) * thumbT;
+        var thumb = new RectangleF(trackX, thumbY, trackW, thumbH);
+
+        using (var brush = new SolidBrush(Color.FromArgb(Math.Min(230, alpha), ScrollThumb)))
+        using (var path = CreateRoundRect(thumb, trackW / 2f))
+            g.FillPath(brush, path);
+    }
+
+    private void DrawItems(Graphics g)
     {
         if (_items.Count == 0)
         {
@@ -1214,41 +1653,53 @@ internal sealed class RadialMenuPopup : Form
         }
 
         var iconSize = S(IconLogical);
-        var corner = S(11f);
+        var corner = S(10f);
+        var accentBarW = S(3f);
+        var visStart = _scrollIndex;
+        var visEnd = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
 
         // 单遍绘制；高亮项最后画
         var hotIndex = _hoverItemIndex;
         for (var pass = 0; pass < 2; pass++)
         {
-            for (var i = 0; i < _items.Count; i++)
+            for (var i = visStart; i < visEnd; i++)
             {
                 var hot = i == hotIndex;
                 if (pass == 0 && hot) continue;
                 if (pass == 1 && !hot) continue;
 
                 var item = _items[i];
-                if (item.AnimT <= 0.02f)
+                if (item.TargetBounds.IsEmpty || item.AnimT <= 0.02f)
                     continue;
 
                 var bounds = GetAnimatedItemBounds(item);
+                if (bounds.IsEmpty)
+                    continue;
                 var alpha = (int)(Math.Clamp(item.AnimT, 0f, 1f) * 255);
-                if (drawShadow && item.AnimT > 0.85f)
-                    DrawSoftShadow(g, bounds, corner, Math.Min(alpha / 4, 28));
 
                 using (var path = CreateRoundRect(bounds, Math.Min(corner, bounds.Height / 2f)))
                 using (var brush = new SolidBrush(Color.FromArgb(alpha, hot ? RowFillHot : RowFill)))
                 using (var pen = new Pen(
-                    Color.FromArgb(Math.Min(255, alpha + 20), hot ? RowBorderHot : RowBorder),
-                    hot ? Math.Max(1.4f, S(1.5f)) : Math.Max(1f, S(1.05f))))
+                    Color.FromArgb(Math.Min(255, alpha), hot ? RowBorderHot : RowBorder),
+                    hot ? Math.Max(1.2f, S(1.25f)) : Math.Max(1f, S(1f))))
                 {
                     g.FillPath(brush, path);
                     g.DrawPath(pen, path);
                 }
 
+                // 高亮左侧色条：平面强调
+                if (hot && item.AnimT > 0.4f)
+                {
+                    var bar = new RectangleF(bounds.X + S(1), bounds.Y + S(8), accentBarW, bounds.Height - S(16));
+                    using var barPath = CreateRoundRect(bar, accentBarW / 2f);
+                    using var barBrush = new SolidBrush(Color.FromArgb(alpha, Accent));
+                    g.FillPath(barBrush, barPath);
+                }
+
                 if (item.AnimT < 0.2f)
                     continue;
 
-                var contentLeft = bounds.X + S(10);
+                var contentLeft = bounds.X + S(hot ? 12 : 10);
                 if (item.Icon != null)
                 {
                     var ix = contentLeft;
@@ -1294,28 +1745,6 @@ internal sealed class RadialMenuPopup : Form
         }
     }
 
-    private void DrawSoftShadow(Graphics g, RectangleF rect, float radius, int alpha)
-    {
-        if (alpha <= 0)
-            return;
-
-        var shadow = RectangleF.Inflate(rect, S(2.5f), S(3.5f));
-        shadow.Offset(0, S(2));
-        using var path = CreateRoundRect(shadow, Math.Max(radius, S(4f)));
-        using var brush = new SolidBrush(Color.FromArgb(Math.Clamp(alpha, 0, 70), 0, 0, 0));
-        g.FillPath(brush, path);
-    }
-
-    private void DrawSoftShadowEllipse(Graphics g, RectangleF rect, int alpha)
-    {
-        var shadow = RectangleF.Inflate(rect, S(3), S(4));
-        shadow.Offset(0, S(2));
-        using var path = new GraphicsPath();
-        path.AddEllipse(shadow);
-        using var brush = new SolidBrush(Color.FromArgb(Math.Clamp(alpha, 0, 60), 0, 0, 0));
-        g.FillPath(brush, path);
-    }
-
     /// <summary>环形扇区路径（GDI+ 角度：0=右，顺时针）。</summary>
     private static GraphicsPath CreateDonutSegmentPath(PointF center, float innerR, float outerR, float startDeg, float sweepDeg)
     {
@@ -1331,9 +1760,6 @@ internal sealed class RadialMenuPopup : Form
         path.CloseFigure();
         return path;
     }
-
-    private static GraphicsPath CreateDonutFanPath(PointF center, float innerR, float outerR, float startDeg, float sweepDeg)
-        => CreateDonutSegmentPath(center, innerR, outerR, startDeg, sweepDeg);
 
     private static GraphicsPath CreateRoundRect(RectangleF rect, float radius)
     {
@@ -1377,16 +1803,12 @@ internal sealed class RadialMenuPopup : Form
     {
         if (entry.Type == EntryType.Text)
         {
-            _configManager.TouchEntry(entry.Id);
-            try
-            {
-                if (!string.IsNullOrEmpty(entry.Path))
-                    Clipboard.SetText(entry.Path);
-            }
-            catch
-            {
-                // ignore
-            }
+            if (!DynamicTextEntries.IsDynamic(entry))
+                _configManager.TouchEntry(entry.Id);
+            DeliverText(
+                DynamicTextEntries.ResolveContent(entry),
+                _configManager.Config.TextEntryAction,
+                fromHistory: false);
             return;
         }
 
@@ -1413,7 +1835,48 @@ internal sealed class RadialMenuPopup : Form
     {
         if (_clipboardHistory == null || string.IsNullOrEmpty(item.Text))
             return;
-        _ = CopyHistoryAsync(item.Text);
+        DeliverText(item.Text, _configManager.Config.ClipboardHistoryAction, fromHistory: true);
+    }
+
+    private void DeliverText(string text, TextDeliveryAction action, bool fromHistory)
+    {
+        if (string.IsNullOrEmpty(text))
+            return;
+
+        var canPaste = action == TextDeliveryAction.PasteAtCursor
+            && PlainTextPasteService.IsValidTargetWindow(_deliveryTargetWindow)
+            && _deliveryTargetWindow != Handle;
+
+        if (canPaste)
+        {
+            var target = _deliveryTargetWindow;
+            _ = PasteTextToTargetAsync(text, target, fromHistory);
+            return;
+        }
+
+        _ = CopyHistoryAsync(text);
+    }
+
+    private async Task PasteTextToTargetAsync(string text, IntPtr targetWindow, bool fromHistory)
+    {
+        try
+        {
+            if (fromHistory && _clipboardHistory != null)
+                await _clipboardHistory.CopyPlainTextAsync(text);
+
+            await PlainTextPasteService.PasteTextAsync(text, targetWindow);
+        }
+        catch
+        {
+            try
+            {
+                await CopyHistoryAsync(text);
+            }
+            catch
+            {
+                // ignore
+            }
+        }
     }
 
     private async Task CopyHistoryAsync(string text)
@@ -1422,7 +1885,7 @@ internal sealed class RadialMenuPopup : Form
         {
             if (_clipboardHistory != null)
                 await _clipboardHistory.CopyPlainTextAsync(text);
-            else
+            else if (!string.IsNullOrEmpty(text))
                 Clipboard.SetText(text);
         }
         catch
@@ -1480,7 +1943,7 @@ internal sealed class RadialMenuPopup : Form
             TabKind.Files => "文件",
             TabKind.Urls => "网页",
             TabKind.Texts => "文本",
-            TabKind.ClipboardHistory => "历史",
+            TabKind.ClipboardHistory => "剪贴板",
             TabKind.RecentItems => "最近",
             _ => kind.ToString()
         };
@@ -1530,6 +1993,9 @@ internal sealed class RadialMenuPopup : Form
         public byte AlphaFormat;
     }
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UpdateLayeredWindow(
         IntPtr hwnd,
@@ -1547,6 +2013,12 @@ internal sealed class RadialMenuPopup : Form
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern int ReleaseDC(IntPtr hWnd, IntPtr hDC);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
     [DllImport("gdi32.dll", SetLastError = true)]
     private static extern IntPtr CreateCompatibleDC(IntPtr hDC);

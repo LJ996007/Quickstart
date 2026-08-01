@@ -55,6 +55,8 @@ public sealed class SettingsForm : Form
     private readonly CheckBox _clipboardHistoryPersistCheck;
     private readonly NumericUpDown _clipboardHistoryMaxBox;
     private readonly Button _clipboardHistoryClearBtn;
+    private readonly ComboBox _textEntryActionBox;
+    private readonly ComboBox _clipboardHistoryActionBox;
     private readonly ClipboardHistoryService? _clipboardHistory;
 
     private readonly BufferedListBox _navList;
@@ -70,10 +72,10 @@ public sealed class SettingsForm : Form
     [
         ("常规", "路径、默认打开方式与系统集成"),
         ("快捷启动", "全局快捷键与右键拖动手势"),
-        ("列表与工具", "列表行为、标签顺序、工具列与浏览器添加"),
+        ("列表与工具", "列表行为、文本点击动作、标签顺序、工具列与浏览器添加"),
         ("AI", "模型、Prompt 与 Skill 配置入口"),
         ("截图 OCR", "百度通用文字识别"),
-        ("剪贴板", "剪贴板历史记录"),
+        ("剪贴板", "剪贴板历史与点击动作"),
         ("程序信息", "版本信息与修改记录")
     ];
 
@@ -199,7 +201,9 @@ public sealed class SettingsForm : Form
         };
         _leftDragActionBox.Items.AddRange(["动作面板（AI + Everything）", "直接用 Everything 搜索"]);
         _leftDragActionBox.SelectedIndex = config.LeftDragAction == LeftDragAction.EverythingSearch ? 1 : 0;
-        var leftDragActionRow = CreateLabeledFieldRow("向左动作", _leftDragActionBox, labelWidth: 88);
+        // 手势区标签统一略宽，避免「向右呼出」等四字在窄列里折行
+        const int gestureLabelWidth = 100;
+        var leftDragActionRow = CreateLabeledFieldRow("向左动作", _leftDragActionBox, labelWidth: gestureLabelWidth);
 
         _rightSwipePresentationBox = new ComboBox
         {
@@ -212,7 +216,8 @@ public sealed class SettingsForm : Form
         _rightSwipePresentationBox.Items.AddRange(["经典列表面板", "圆环轮（标签 + 烟花列表）"]);
         _rightSwipePresentationBox.SelectedIndex =
             config.RightSwipePresentation == RightSwipePresentation.RadialRing ? 1 : 0;
-        var rightSwipePresentationRow = CreateLabeledFieldRow("向右呼出", _rightSwipePresentationBox, labelWidth: 88);
+        var rightSwipePresentationRow = CreateLabeledFieldRow("向右呼出", _rightSwipePresentationBox, labelWidth: gestureLabelWidth);
+        rightSwipePresentationRow.Margin = new Padding(0, 0, 0, 8);
 
         _gestureDistanceBox = CreateNumericUpDown(40, 600, 10, Math.Clamp(config.RightDragTriggerDistance, 40, 600));
         _gestureToleranceBox = CreateNumericUpDown(10, 300, 10, Math.Clamp(config.RightDragVerticalTolerance, 10, 300));
@@ -220,13 +225,14 @@ public sealed class SettingsForm : Form
         var gestureMetricsRow = new TableLayoutPanel
         {
             AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
             ColumnCount = 4,
             Margin = new Padding(0, 8, 0, 0)
         };
-        gestureMetricsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
+        gestureMetricsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, gestureLabelWidth));
         gestureMetricsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
-        gestureMetricsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 88));
+        gestureMetricsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, gestureLabelWidth));
         gestureMetricsRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
         gestureMetricsRow.Controls.Add(CreateFieldLabel("触发距离"), 0, 0);
         gestureMetricsRow.Controls.Add(_gestureDistanceBox, 1, 0);
@@ -280,21 +286,41 @@ public sealed class SettingsForm : Form
         var tabOrderHint = CreateHintLabel("上→下 / 圆环扇区上→下；经典面板左侧标签与圆环轮顺序一致。也可在经典面板里拖拽标签排序。");
         tabOrderHint.Margin = new Padding(0, 0, 0, 6);
 
+        // 约显示 4 项，其余滚动查看，避免整卡被列表撑得过高
         _tabOrderList = new ListBox
         {
             IntegralHeight = false,
-            Height = 148,
+            Height = 96,
             Dock = DockStyle.Fill,
             Margin = new Padding(0),
             Font = new Font(UiFont, 9f),
             BorderStyle = BorderStyle.FixedSingle,
-            BackColor = Color.White
+            BackColor = Color.White,
+            ScrollAlwaysVisible = false
         };
         PopulateTabOrderList(config.MainPopupTabOrder);
 
-        _tabOrderUpBtn = new RoundedButton { Text = "上移", Margin = new Padding(0, 0, 0, 6), Font = new Font(UiFont, 9f) };
-        _tabOrderDownBtn = new RoundedButton { Text = "下移", Margin = new Padding(0, 0, 0, 6), Font = new Font(UiFont, 9f) };
-        _tabOrderResetBtn = new RoundedButton { Text = "恢复默认", Margin = new Padding(0), Font = new Font(UiFont, 9f) };
+        _tabOrderUpBtn = new RoundedButton
+        {
+            Text = "上移",
+            AutoSize = false,
+            Margin = new Padding(0, 0, 0, 6),
+            Font = new Font(UiFont, 9f)
+        };
+        _tabOrderDownBtn = new RoundedButton
+        {
+            Text = "下移",
+            AutoSize = false,
+            Margin = new Padding(0, 0, 0, 6),
+            Font = new Font(UiFont, 9f)
+        };
+        _tabOrderResetBtn = new RoundedButton
+        {
+            Text = "恢复默认",
+            AutoSize = false,
+            Margin = new Padding(0),
+            Font = new Font(UiFont, 9f)
+        };
         ButtonStyler.ApplySecondary(_tabOrderUpBtn);
         ButtonStyler.ApplySecondary(_tabOrderDownBtn);
         ButtonStyler.ApplySecondary(_tabOrderResetBtn);
@@ -302,14 +328,16 @@ public sealed class SettingsForm : Form
         _tabOrderDownBtn.Click += (_, _) => MoveTabOrderItem(1);
         _tabOrderResetBtn.Click += (_, _) => PopulateTabOrderList(null);
 
+        // 右侧按钮列顶对齐列表顶部，宽度在 ApplyScaledMetrics 中统一为「恢复默认」
         var tabOrderBtnCol = new FlowLayoutPanel
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
             FlowDirection = FlowDirection.TopDown,
             WrapContents = false,
-            Dock = DockStyle.Fill,
-            Margin = new Padding(8, 0, 0, 0),
+            Dock = DockStyle.Top,
+            Anchor = AnchorStyles.Top | AnchorStyles.Left,
+            Margin = new Padding(10, 0, 0, 0),
             Padding = new Padding(0),
             BackColor = Color.Transparent
         };
@@ -320,6 +348,7 @@ public sealed class SettingsForm : Form
         var tabOrderRow = new TableLayoutPanel
         {
             AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Top,
             ColumnCount = 2,
             RowCount = 1,
@@ -328,7 +357,8 @@ public sealed class SettingsForm : Form
         };
         tabOrderRow.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         tabOrderRow.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        tabOrderRow.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        // 固定行高 = 列表高度，避免 Dock.Fill + AutoSize 行把按钮列垂直居中拉开
+        tabOrderRow.RowStyles.Add(new RowStyle(SizeType.Absolute, 96));
         tabOrderRow.Controls.Add(_tabOrderList, 0, 0);
         tabOrderRow.Controls.Add(tabOrderBtnCol, 1, 0);
 
@@ -446,11 +476,21 @@ public sealed class SettingsForm : Form
         var ocrAkRow = CreateLabeledFieldRow("API Key", _ocrApiKeyBox, labelWidth: 88);
         var ocrSkRow = CreateLabeledFieldRow("Secret Key", _ocrSecretKeyBox, labelWidth: 88);
 
+        // 文本 / 剪贴板点击后的投递方式（可分别自定义）
+        _textEntryActionBox = CreateTextDeliveryActionBox(config.TextEntryAction);
+        _clipboardHistoryActionBox = CreateTextDeliveryActionBox(config.ClipboardHistoryAction);
+        var textEntryActionRow = CreateLabeledFieldRow("点击后", _textEntryActionBox, labelWidth: 88);
+        var clipboardActionRow = CreateLabeledFieldRow("点击后", _clipboardHistoryActionBox, labelWidth: 88);
+        var textDeliveryHint = CreateHintLabel(
+            "点击「文本」收藏条目后的默认动作。「直接粘贴」会写回呼出启动器前的窗口光标处；失败时退回仅复制。右键「复制文本」始终只写剪贴板。");
+        var clipboardActionHint = CreateHintLabel(
+            "点击「剪贴板」历史条目后的默认动作。「直接粘贴」写回呼出前窗口光标处；失败时退回仅复制。右键「复制为纯文本」始终只写剪贴板。");
+
         // 剪贴板
         var hist = config.ClipboardHistory ?? new ClipboardHistoryConfig();
-        _clipboardHistoryEnabledCheck = CreateCheckBox("启用剪贴板历史（右滑「历史」Tab）", hist.Enabled);
+        _clipboardHistoryEnabledCheck = CreateCheckBox("启用剪贴板历史（右滑「剪贴板」Tab）", hist.Enabled);
         var histHint = CreateHintLabel(
-            "系统复制的文本会自动记入历史。右滑点选后再次复制为纯文本，可到别处 Ctrl+V。");
+            "系统复制的文本会自动记入历史。点选后的动作见下方「点击后动作」。");
         _clipboardHistoryPersistCheck = CreateCheckBox("退出后保存到本地", hist.Persist);
 
         _clipboardHistoryMaxBox = CreateNumericUpDown(5, 200, 1, Math.Clamp(hist.MaxItems, 5, 200));
@@ -553,6 +593,7 @@ public sealed class SettingsForm : Form
 
         var listToolsPage = CreatePagePanel(
             CreateCard("列表行为", listBehaviorRow),
+            CreateCard("文本点击后动作", textDeliveryHint, textEntryActionRow),
             CreateCard("标签顺序", tabOrderLayout),
             CreateCard("工具列", searchToolsRow),
             CreateCard("浏览器一键添加网站",
@@ -565,7 +606,9 @@ public sealed class SettingsForm : Form
             CreateCard("百度 OCR",
                 _ocrEnabledCheck, _ocrHintLabel, ocrAkRow, ocrSkRow));
 
-        var histPage = CreatePagePanel(CreateCard("剪贴板历史", histLayout));
+        var histPage = CreatePagePanel(
+            CreateCard("剪贴板历史", histLayout),
+            CreateCard("点击后动作", clipboardActionHint, clipboardActionRow));
 
         var productVersion = GetProductVersion();
         var productNameLabel = new Label
@@ -878,6 +921,9 @@ public sealed class SettingsForm : Form
             var leftDragComboHeight = UiScaleHelper.GetInputHeight(_leftDragActionBox, 28);
             _leftDragActionBox.MinimumSize = new Size(0, leftDragComboHeight);
             _leftDragActionBox.Height = leftDragComboHeight;
+            var rightSwipeComboHeight = UiScaleHelper.GetInputHeight(_rightSwipePresentationBox, 28);
+            _rightSwipePresentationBox.MinimumSize = new Size(0, rightSwipeComboHeight);
+            _rightSwipePresentationBox.Height = rightSwipeComboHeight;
 
             // Match path-row action buttons to the textbox height so the whole
             // row shares one baseline (label / box / … / 检测).
@@ -908,6 +954,28 @@ public sealed class SettingsForm : Form
             var openAiSettingsButtonSize = UiScaleHelper.GetButtonSize(this, _openAiSettingsBtn.Text, _openAiSettingsBtn.Font, 128, 34, horizontalLogicalPadding: 12);
             var manageSearchToolsButtonSize = UiScaleHelper.GetButtonSize(this, _manageWebSearchToolsBtn.Text, _manageWebSearchToolsBtn.Font, 148, 30, horizontalLogicalPadding: 12);
 
+            // 标签顺序：三枚按钮等宽（以「恢复默认」为准），完整显示文字
+            var tabOrderBtnGap = UiScaleHelper.Scale(this, 6);
+            var tabOrderBtnSize = UiScaleHelper.GetButtonSize(
+                this, _tabOrderResetBtn.Text, _tabOrderResetBtn.Font,
+                minLogicalWidth: 84, minLogicalHeight: 28,
+                horizontalLogicalPadding: 12, verticalLogicalPadding: 4);
+            foreach (var btn in new[] { _tabOrderUpBtn, _tabOrderDownBtn, _tabOrderResetBtn })
+            {
+                btn.MinimumSize = tabOrderBtnSize;
+                btn.MaximumSize = tabOrderBtnSize;
+                btn.Size = tabOrderBtnSize;
+                btn.Margin = new Padding(0, 0, 0, tabOrderBtnGap);
+            }
+            _tabOrderResetBtn.Margin = new Padding(0);
+            tabOrderBtnCol.Margin = new Padding(UiScaleHelper.Scale(this, 10), 0, 0, 0);
+
+            // 约 4 行可见高度；项数更多时 ListBox 自带纵向滚动
+            var tabOrderListH = UiScaleHelper.Scale(this, 96);
+            _tabOrderList.Height = tabOrderListH;
+            if (tabOrderRow.RowStyles.Count > 0)
+                tabOrderRow.RowStyles[0] = new RowStyle(SizeType.Absolute, tabOrderListH);
+
             var cancelButtonSize = UiScaleHelper.GetButtonSize(this, cancelBtn.Text, cancelBtn.Font, 92, 34, horizontalLogicalPadding: 14);
             okBtn.MinimumSize = dialogButtonSize;
             okBtn.Size = dialogButtonSize;
@@ -931,13 +999,21 @@ public sealed class SettingsForm : Form
             _navList.Invalidate();
 
             var labelWidth = UiScaleHelper.Scale(this, 88);
+            var gestureLabelScaled = UiScaleHelper.Scale(this, gestureLabelWidth);
             var pathLabelScaled = UiScaleHelper.Scale(this, pathLabelWidth);
-            foreach (var row in new[] { hotKeyRow, leftDragActionRow, searchToolsRow, gestureMetricsRow, ocrAkRow, ocrSkRow })
+            foreach (var row in new[] { hotKeyRow, searchToolsRow, ocrAkRow, ocrSkRow })
             {
                 if (row.ColumnStyles.Count > 0 && row.ColumnStyles[0].SizeType == SizeType.Absolute)
                     row.ColumnStyles[0].Width = labelWidth;
+            }
+
+            // 手势区标签列单独加宽，并保证「向右呼出」行也参与缩放
+            foreach (var row in new[] { rightSwipePresentationRow, leftDragActionRow, gestureMetricsRow })
+            {
+                if (row.ColumnStyles.Count > 0 && row.ColumnStyles[0].SizeType == SizeType.Absolute)
+                    row.ColumnStyles[0].Width = gestureLabelScaled;
                 if (row == gestureMetricsRow && row.ColumnStyles.Count > 2)
-                    row.ColumnStyles[2].Width = labelWidth;
+                    row.ColumnStyles[2].Width = gestureLabelScaled;
             }
 
             foreach (var row in new[] { tcPathRow, dopusPathRow, everythingPathRow, openRow })
@@ -1001,7 +1077,11 @@ public sealed class SettingsForm : Form
             var contentWidth = Math.Max(
                 UiScaleHelper.Scale(this, 400),
                 ClientSize.Width - navWidth - contentPad);
-            foreach (var hint in new[] { _websiteHintLabel, gestureHintLabel, aiHintLabel, _ocrHintLabel, histHint })
+            foreach (var hint in new[]
+                     {
+                         _websiteHintLabel, gestureHintLabel, aiHintLabel, _ocrHintLabel, histHint,
+                         textDeliveryHint, clipboardActionHint
+                     })
                 hint.MaximumSize = new Size(contentWidth, 0);
 
             var bottomH = dialogButtonSize.Height + UiScaleHelper.Scale(this, 24);
@@ -1159,7 +1239,7 @@ public sealed class SettingsForm : Form
         ("Files", "文件"),
         ("Urls", "网页"),
         ("Texts", "文本"),
-        ("ClipboardHistory", "历史（剪贴板）"),
+        ("ClipboardHistory", "剪贴板"),
         ("RecentItems", "最近")
     ];
 
@@ -1347,6 +1427,26 @@ public sealed class SettingsForm : Form
             Cursor = Cursors.Hand
         };
 
+    private static ComboBox CreateTextDeliveryActionBox(TextDeliveryAction current)
+    {
+        var box = new ComboBox
+        {
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.System,
+            Font = new Font(UiFont, 9f),
+            Margin = new Padding(0)
+        };
+        box.Items.Add("复制到剪贴板");
+        box.Items.Add("直接粘贴到光标处");
+        box.SelectedIndex = current == TextDeliveryAction.PasteAtCursor ? 1 : 0;
+        return box;
+    }
+
+    private static TextDeliveryAction ReadTextDeliveryAction(ComboBox box)
+        => box.SelectedIndex == 1
+            ? TextDeliveryAction.PasteAtCursor
+            : TextDeliveryAction.CopyToClipboard;
+
     private static Label CreateHintLabel(string text)
         => new()
         {
@@ -1461,6 +1561,8 @@ public sealed class SettingsForm : Form
         config.ClipboardHistory.Enabled = _clipboardHistoryEnabledCheck.Checked;
         config.ClipboardHistory.Persist = _clipboardHistoryPersistCheck.Checked;
         config.ClipboardHistory.MaxItems = (int)_clipboardHistoryMaxBox.Value;
+        config.TextEntryAction = ReadTextDeliveryAction(_textEntryActionBox);
+        config.ClipboardHistoryAction = ReadTextDeliveryAction(_clipboardHistoryActionBox);
 
         try
         {
@@ -1538,13 +1640,15 @@ public sealed class SettingsForm : Form
         => new()
         {
             Text = text,
-            AutoSize = true,
-            // No Top/Bottom → TableLayoutPanel vertically centers in the row.
-            Anchor = AnchorStyles.Left,
+            // 固定填满标签列：垂直居中、不因窄列自动折成两行
+            AutoSize = false,
+            Dock = DockStyle.Fill,
             TextAlign = ContentAlignment.MiddleLeft,
             ForeColor = TextLabel,
             Font = new Font(UiFont, 9f),
-            Margin = new Padding(0, 0, 10, 0)
+            Margin = new Padding(0, 0, 8, 0),
+            UseMnemonic = false,
+            AutoEllipsis = true
         };
 
     private static TableLayoutPanel CreateLabeledFieldRow(
@@ -1572,6 +1676,7 @@ public sealed class SettingsForm : Form
         };
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, labelWidth));
         row.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        // 行高随控件（输入框/下拉）走；标签 Dock.Fill 后文字垂直居中
         row.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         row.Controls.Add(CreateFieldLabel(labelText), 0, 0);
         row.Controls.Add(control, 1, 0);

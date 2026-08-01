@@ -33,6 +33,15 @@ public enum RightSwipePresentation
     RadialRing = 1
 }
 
+/// <summary>点击文本类条目（文本收藏 / 剪贴板历史）后的默认动作。</summary>
+public enum TextDeliveryAction
+{
+    /// <summary>仅写入系统剪贴板，用户再到目标处 Ctrl+V。</summary>
+    CopyToClipboard = 0,
+    /// <summary>写入剪贴板并模拟 Ctrl+V 粘贴到呼出前的光标窗口。</summary>
+    PasteAtCursor = 1
+}
+
 public sealed class AppConfig
 {
     public List<QuickEntry> Entries { get; set; } = [];
@@ -65,6 +74,12 @@ public sealed class AppConfig
     /// <summary>右滑主面板左侧分类标签的显示顺序。</summary>
     public List<string> MainPopupTabOrder { get; set; } = [];
     public ClipboardHistoryConfig ClipboardHistory { get; set; } = new();
+
+    /// <summary>「文本」分类条目点击后的动作（复制 / 直接粘贴到光标处）。</summary>
+    public TextDeliveryAction TextEntryAction { get; set; } = TextDeliveryAction.CopyToClipboard;
+
+    /// <summary>「剪贴板」历史条目点击后的动作（复制 / 直接粘贴到光标处）。</summary>
+    public TextDeliveryAction ClipboardHistoryAction { get; set; } = TextDeliveryAction.CopyToClipboard;
 }
 
 /// <summary>右滑主弹窗「历史」Tab：系统剪贴板文本历史。</summary>
