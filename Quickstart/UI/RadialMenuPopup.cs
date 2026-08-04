@@ -11,7 +11,7 @@ using Quickstart.Utils;
 
 /// <summary>
 /// 右滑圆环轮：透明分层窗体。
-/// 中心圆 + 右侧扇形分类环，再往右横向列表。
+/// 中心圆 + 右侧扇形分类环 +（有分组时）更外侧窄环写分组名，再往右横向列表。
 /// 手势：继续右滑选中条目并松手执行；在中心松手则停靠，可用鼠标点选，点外部或执行后关闭。
 /// </summary>
 internal sealed class RadialMenuPopup : Form
@@ -28,6 +28,17 @@ internal sealed class RadialMenuPopup : Form
         public float SweepDeg { get; set; }
         public float MidDeg => StartDeg + SweepDeg / 2f;
         public float MidRad => MidDeg * MathF.PI / 180f;
+    }
+
+    /// <summary>分类环外侧窄环上的分组扇区；仅当该标签下存在非空分组时生成。</summary>
+    private sealed class GroupSlot
+    {
+        public required TabKind ParentTab { get; init; }
+        public required string Name { get; init; }
+        public int Count { get; set; }
+        public float StartDeg { get; set; }
+        public float SweepDeg { get; set; }
+        public float MidDeg => StartDeg + SweepDeg / 2f;
     }
 
     private sealed class ItemSlot
@@ -72,6 +83,10 @@ internal sealed class RadialMenuPopup : Form
     private static readonly Color ListPanelBorder = Color.FromArgb(218, 224, 232);
     private static readonly Color ScrollTrack = Color.FromArgb(230, 234, 240);
     private static readonly Color ScrollThumb = Color.FromArgb(160, 170, 185);
+    private static readonly Color GroupRingFill = Color.FromArgb(246, 249, 253);
+    private static readonly Color GroupRingBorder = Color.FromArgb(214, 222, 232);
+    private static readonly Color GroupText = Color.FromArgb(70, 78, 92);
+    private static readonly Color GroupTextHot = Color.FromArgb(28, 96, 180);
 
     /// <summary>右侧列表可视行数（面板高度固定）；超出可用滚轮上下滑动。</summary>
     private const int MaxVisibleItems = 8;
@@ -81,6 +96,8 @@ internal sealed class RadialMenuPopup : Form
     private const float HubRadiusLogical = 40f;
     private const float FanInnerRadiusLogical = 48f;
     private const float FanOuterRadiusLogical = 108f;
+    /// <summary>分类环外再套一层窄环，仅用于显示该标签下的分组名。</summary>
+    private const float FanGroupRingWidthLogical = 22f;
     // 右侧扇区：从上(-90°)到下(+90°)，覆盖右半环，便于右滑连贯
     private const float FanStartDeg = -90f;
     private const float FanTotalSweepDeg = 180f;
@@ -108,11 +125,13 @@ internal sealed class RadialMenuPopup : Form
     private readonly FaviconService _faviconService = new();
     private readonly System.Windows.Forms.Timer _animTimer;
     private readonly List<TabSlot> _tabs = [];
+    private readonly List<GroupSlot> _groups = [];
     private readonly List<ItemSlot> _items = [];
     private readonly Dictionary<string, Image> _iconCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _faviconInflight = new(StringComparer.OrdinalIgnoreCase);
     private readonly Font _segmentTitleFont;
     private readonly Font _segmentCountFont;
+    private readonly Font _groupFont;
     private readonly Font _itemFont;
     private readonly Font _itemSubFont;
     private readonly Font _hubTitleFont;
@@ -121,6 +140,8 @@ internal sealed class RadialMenuPopup : Form
     private Image? _webPlaceholder;
     private TabKind? _activeTab;
     private TabKind? _hoverTab;
+    private string _activeGroup = EntryQueries.AllGroupsLabel;
+    private string? _hoverGroup;
     private int _hoverItemIndex = -1;
     private long _animStartTick;
     private bool _animating;
@@ -129,6 +150,10 @@ internal sealed class RadialMenuPopup : Form
     private float _hubR;
     private float _fanInnerR;
     private float _fanOuterR;
+    /// <summary>分组外环外径；无任何分组时与 _fanOuterR 相同。</summary>
+    private float _fanGroupOuterR;
+    /// <summary>内容最外沿（列表左侧对齐基准）：有分组时为分组环外径，否则为分类环外径。</summary>
+    private float _contentOuterR;
     private RectangleF _listPanelBounds;
     private RectangleF _listClipBounds;
     /// <summary>列表首个可见项下标；仅当 _items.Count &gt; MaxVisibleItems 时可滚动。</summary>
@@ -143,6 +168,8 @@ internal sealed class RadialMenuPopup : Form
     private bool _layerReady;
     private TabKind? _cachedActiveForStatic;
     private TabKind? _cachedHoverForStatic;
+    private string? _cachedActiveGroupForStatic;
+    private string? _cachedHoverGroupForStatic;
     private Bitmap? _staticLayer; // 扇区+中心缓存，动画时只重绘列表
 
     // 手势跟踪阶段：NOACTIVATE；中心松手后进入交互模式：可点选 / ESC / 点外部关闭。
@@ -169,6 +196,7 @@ internal sealed class RadialMenuPopup : Form
 
         _segmentTitleFont = new Font("Microsoft YaHei UI", 8.25f, FontStyle.Regular);
         _segmentCountFont = new Font("Microsoft YaHei UI", 7f, FontStyle.Regular);
+        _groupFont = new Font("Microsoft YaHei UI", 7f, FontStyle.Regular);
         _itemFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
         _itemSubFont = new Font("Microsoft YaHei UI", 7.5f, FontStyle.Regular);
         _hubTitleFont = new Font("Microsoft YaHei UI", 11f, FontStyle.Bold);
@@ -226,9 +254,13 @@ internal sealed class RadialMenuPopup : Form
         RebuildTabs();
         _activeTab = ResolveInitialTab();
         _hoverTab = _activeTab;
+        _activeGroup = ResolveInitialGroup(_activeTab);
+        _hoverGroup = IsAllGroups(_activeGroup) ? null : _activeGroup;
         _hoverItemIndex = -1;
+        // 焦点标签就绪后再建外环（仅当前标签有分组时显示，并均分整个右半环）
+        RebuildGroupSlots();
         if (_activeTab.HasValue)
-            PersistLastViewTab(_activeTab.Value);
+            PersistLastView(_activeTab.Value, _activeGroup);
         LoadItemsForActiveTab(restartAnim: true);
 
         var screen = Screen.FromPoint(screenPt);
@@ -288,7 +320,7 @@ internal sealed class RadialMenuPopup : Form
             return false;
 
         var client = PointToClient(screenPt);
-        HitTest(client, out _, out var itemIndex);
+        HitTest(client, out _, out _, out var itemIndex);
 
         if (itemIndex >= 0 && itemIndex < _items.Count)
         {
@@ -348,10 +380,11 @@ internal sealed class RadialMenuPopup : Form
         }
 
         // 松手瞬间清掉悬停高亮，避免中心松手后仍显示拖过的高亮
-        if (_hoverItemIndex != -1 || _hoverTab != _activeTab)
+        if (_hoverItemIndex != -1 || _hoverTab != _activeTab || _hoverGroup != null)
         {
             _hoverItemIndex = -1;
             _hoverTab = _activeTab;
+            _hoverGroup = null;
             InvalidateStaticLayer();
             RequestRender();
         }
@@ -475,7 +508,7 @@ internal sealed class RadialMenuPopup : Form
         if (e.Button != MouseButtons.Left && e.Button != MouseButtons.Right)
             return;
 
-        HitTest(e.Location, out var tab, out var itemIndex);
+        HitTest(e.Location, out var tab, out var group, out var itemIndex);
 
         if (itemIndex >= 0 && itemIndex < _items.Count)
         {
@@ -484,15 +517,32 @@ internal sealed class RadialMenuPopup : Form
             return;
         }
 
-        if (tab.HasValue && tab != _activeTab && !IsOverHub(e.Location))
+        if (IsOverHub(e.Location))
+            return;
+
+        if (tab.HasValue)
         {
-            _activeTab = tab;
-            _hoverTab = tab;
-            _hoverItemIndex = -1;
-            PersistLastViewTab(tab.Value);
-            InvalidateStaticLayer();
-            LoadItemsForActiveTab(restartAnim: true);
-            RequestRender();
+            var nextGroup = string.IsNullOrEmpty(group)
+                ? EntryQueries.AllGroupsLabel
+                : group;
+            var tabChanged = tab != _activeTab;
+            var groupChanged = !string.Equals(_activeGroup, nextGroup, StringComparison.OrdinalIgnoreCase);
+            if (tabChanged || groupChanged)
+            {
+                _activeTab = tab;
+                _hoverTab = tab;
+                _activeGroup = nextGroup;
+                _hoverGroup = group;
+                _hoverItemIndex = -1;
+                PersistLastView(tab.Value, _activeGroup);
+                if (!IsAllGroups(nextGroup))
+                    _configManager.TouchGroup(nextGroup);
+                RebuildGroupSlots();
+                InvalidateStaticLayer();
+                LoadItemsForActiveTab(restartAnim: true);
+                RequestRender();
+            }
+
             return;
         }
 
@@ -504,35 +554,83 @@ internal sealed class RadialMenuPopup : Form
 
     private void ApplyPointerAtClientPoint(Point client, bool switchTabOnHover)
     {
-        HitTest(client, out var tab, out var itemIndex);
+        HitTest(client, out var tab, out var group, out var itemIndex);
 
-        var needRender = false;
-
-        if (tab != _hoverTab)
+        // 右侧列表：只高亮条目，绝不改标签/分组（否则移入列表会冲掉刚选中的分组）
+        if (!_listPanelBounds.IsEmpty && _listPanelBounds.Contains(client))
         {
-            _hoverTab = tab;
-            InvalidateStaticLayer();
-            needRender = true;
+            var needRender = false;
+            var listHoverGroup = IsAllGroups(_activeGroup) ? null : _activeGroup;
+            if (_hoverTab != _activeTab
+                || !string.Equals(_hoverGroup, listHoverGroup, StringComparison.OrdinalIgnoreCase))
+            {
+                _hoverTab = _activeTab;
+                _hoverGroup = listHoverGroup;
+                RebuildGroupSlots();
+                InvalidateStaticLayer();
+                needRender = true;
+            }
+
+            if (itemIndex != _hoverItemIndex)
+            {
+                _hoverItemIndex = itemIndex;
+                needRender = true;
+            }
+
+            if (needRender)
+                RequestRender();
+            return;
         }
 
-        if (switchTabOnHover && tab.HasValue && tab != _activeTab)
+        var needRingRender = false;
+
+        if (tab != _hoverTab || !string.Equals(_hoverGroup, group, StringComparison.OrdinalIgnoreCase))
         {
-            _activeTab = tab;
-            _hoverItemIndex = -1;
-            PersistLastViewTab(tab.Value);
+            _hoverTab = tab;
+            _hoverGroup = group;
+            RebuildGroupSlots();
             InvalidateStaticLayer();
-            LoadItemsForActiveTab(restartAnim: true);
-            needRender = true;
+            needRingRender = true;
+        }
+
+        if (switchTabOnHover && tab.HasValue)
+        {
+            // group==null 表示落在分类环（全部）；有值表示落在分组外环
+            var nextGroup = string.IsNullOrEmpty(group)
+                ? EntryQueries.AllGroupsLabel
+                : group;
+            var tabChanged = tab != _activeTab;
+            var groupChanged = !string.Equals(_activeGroup, nextGroup, StringComparison.OrdinalIgnoreCase);
+            if (tabChanged || groupChanged)
+            {
+                _activeTab = tab;
+                _activeGroup = nextGroup;
+                _hoverItemIndex = -1;
+                PersistLastView(tab.Value, _activeGroup);
+                RebuildGroupSlots();
+                InvalidateStaticLayer();
+                LoadItemsForActiveTab(restartAnim: true);
+                needRingRender = true;
+            }
+            else if (itemIndex != _hoverItemIndex)
+            {
+                _hoverItemIndex = itemIndex;
+                needRingRender = true;
+            }
         }
         else if (itemIndex != _hoverItemIndex)
         {
             _hoverItemIndex = itemIndex;
-            needRender = true;
+            needRingRender = true;
         }
 
-        if (needRender)
+        if (needRingRender)
             RequestRender();
     }
+
+    private static bool IsAllGroups(string? group)
+        => string.IsNullOrWhiteSpace(group)
+           || string.Equals(group, EntryQueries.AllGroupsLabel, StringComparison.OrdinalIgnoreCase);
 
     private bool IsOverHub(Point client)
     {
@@ -553,6 +651,7 @@ internal sealed class RadialMenuPopup : Form
             _faviconService.Dispose();
             _segmentTitleFont.Dispose();
             _segmentCountFont.Dispose();
+            _groupFont.Dispose();
             _itemFont.Dispose();
             _itemSubFont.Dispose();
             _hubTitleFont.Dispose();
@@ -583,6 +682,11 @@ internal sealed class RadialMenuPopup : Form
         _fanInnerR = S(FanInnerRadiusLogical);
         _fanOuterR = S(FanOuterRadiusLogical);
 
+        // 有配置分组时预留外环宽度，保证右半环完整落在窗体内；无分组则不占位
+        var groupRingLogical = HasAnyConfiguredGroups() ? FanGroupRingWidthLogical : 0f;
+        _fanGroupOuterR = S(FanOuterRadiusLogical + groupRingLogical);
+        _contentOuterR = _fanGroupOuterR;
+
         var listW = S(ListRowWidthLogical + ListPanelPadLogical * 2);
         var gap = S(ListGapFromFanLogical);
         var pad = S(FormPadLogical);
@@ -590,12 +694,27 @@ internal sealed class RadialMenuPopup : Form
             + Math.Max(0, MaxVisibleItems - 1) * S(ListRowGapLogical)
             + S(ListPanelPadLogical) * 2;
 
-        // 中心靠左：pad + hub；扇区外沿 = centerX + fanOuter；列表在外沿右侧
-        // centerX = pad + hubR  →  总宽 = centerX + fanOuter + gap + listW + pad
+        // 中心靠左：pad + hub；内容外沿 = centerX + contentOuter；列表在外沿右侧
+        // centerX = pad + hubR  →  总宽 = centerX + contentOuter + gap + listW + pad
+        // 高度取半环直径与列表高度的较大者，保证右半环完整可见
         var centerX = pad + _hubR;
-        var width = (int)Math.Ceiling(centerX + _fanOuterR + gap + listW + pad);
-        var height = (int)Math.Ceiling(Math.Max(_fanOuterR * 2f + pad * 2, maxListH + pad * 2));
+        var width = (int)Math.Ceiling(centerX + _contentOuterR + gap + listW + pad);
+        var height = (int)Math.Ceiling(Math.Max(_contentOuterR * 2f + pad * 2, maxListH + pad * 2));
         Size = new Size(Math.Max(width, 480), Math.Max(height, 320));
+    }
+
+    /// <summary>是否存在任意可显示的配置分组（剪贴板/最近无分组）。</summary>
+    private bool HasAnyConfiguredGroups()
+    {
+        foreach (var entry in _configManager.Config.Entries)
+        {
+            if (string.IsNullOrWhiteSpace(entry.Group))
+                continue;
+            if (entry.Type is EntryType.Folder or EntryType.File or EntryType.Url or EntryType.Text)
+                return true;
+        }
+
+        return false;
     }
 
     private PointF ComputeWheelCenter()
@@ -611,6 +730,8 @@ internal sealed class RadialMenuPopup : Form
         _staticLayer = null;
         _cachedActiveForStatic = null;
         _cachedHoverForStatic = null;
+        _cachedActiveGroupForStatic = null;
+        _cachedHoverGroupForStatic = null;
     }
 
     private void DisposeLayerResources()
@@ -778,6 +899,8 @@ internal sealed class RadialMenuPopup : Form
         if (_staticLayer != null
             && _cachedActiveForStatic == _activeTab
             && _cachedHoverForStatic == _hoverTab
+            && string.Equals(_cachedActiveGroupForStatic, _activeGroup, StringComparison.OrdinalIgnoreCase)
+            && string.Equals(_cachedHoverGroupForStatic, _hoverGroup, StringComparison.OrdinalIgnoreCase)
             && _staticLayer.Width == Width
             && _staticLayer.Height == Height)
         {
@@ -794,10 +917,13 @@ internal sealed class RadialMenuPopup : Form
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
         DrawSegments(g);
+        DrawGroupRing(g);
         DrawHub(g);
 
         _cachedActiveForStatic = _activeTab;
         _cachedHoverForStatic = _hoverTab;
+        _cachedActiveGroupForStatic = _activeGroup;
+        _cachedHoverGroupForStatic = _hoverGroup;
     }
 
     private void RebuildTabs()
@@ -864,7 +990,12 @@ internal sealed class RadialMenuPopup : Form
         _fanOuterR = S(FanOuterRadiusLogical);
 
         if (_tabs.Count == 0)
+        {
+            _groups.Clear();
+            _fanGroupOuterR = _fanOuterR;
+            _contentOuterR = _fanOuterR;
             return;
+        }
 
         var n = _tabs.Count;
         var sweep = FanTotalSweepDeg / n;
@@ -875,7 +1006,78 @@ internal sealed class RadialMenuPopup : Form
             _tabs[i].Count = CountForTab(_tabs[i].Kind);
         }
 
+        RebuildGroupSlots();
         LayoutItemList();
+    }
+
+    /// <summary>
+    /// 仅当「焦点标签」（悬停优先，否则当前选中）存在分组时生成外环。
+    /// 外环不固定；分组在整个右半大扇形（180°）上均分，而非挤在该标签小扇区内。
+    /// </summary>
+    private void RebuildGroupSlots()
+    {
+        _groups.Clear();
+
+        var focusTab = _hoverTab ?? _activeTab;
+        if (!focusTab.HasValue || !TabSupportsGroups(focusTab.Value))
+        {
+            UpdateGroupRingRadius();
+            return;
+        }
+
+        var typeEntries = GetTypeEntriesForTab(focusTab.Value);
+        var names = EntryQueries.OrderedGroupNames(typeEntries);
+        if (names.Count == 0)
+        {
+            UpdateGroupRingRadius();
+            return;
+        }
+
+        // 当前焦点标签的全部分组，均分整个右半环
+        var unit = FanTotalSweepDeg / names.Count;
+        for (var i = 0; i < names.Count; i++)
+        {
+            var name = names[i];
+            var count = typeEntries.Count(e =>
+                string.Equals(EntryQueries.NormalizeGroupName(e.Group), name, StringComparison.OrdinalIgnoreCase));
+            _groups.Add(new GroupSlot
+            {
+                ParentTab = focusTab.Value,
+                Name = name,
+                Count = count,
+                StartDeg = FanStartDeg + i * unit,
+                SweepDeg = unit
+            });
+        }
+
+        UpdateGroupRingRadius();
+    }
+
+    /// <summary>有分组扇区时外环可点可选；列表侧始终按「是否配置过分组」预留宽度，避免跳动。</summary>
+    private void UpdateGroupRingRadius()
+    {
+        _fanGroupOuterR = _groups.Count > 0
+            ? S(FanOuterRadiusLogical + FanGroupRingWidthLogical)
+            : _fanOuterR;
+        _contentOuterR = HasAnyConfiguredGroups()
+            ? S(FanOuterRadiusLogical + FanGroupRingWidthLogical)
+            : _fanOuterR;
+    }
+
+    private static bool TabSupportsGroups(TabKind kind)
+        => kind is TabKind.Folders or TabKind.Files or TabKind.Urls or TabKind.Texts;
+
+    private List<QuickEntry> GetTypeEntriesForTab(TabKind kind)
+    {
+        var type = kind switch
+        {
+            TabKind.Folders => EntryType.Folder,
+            TabKind.Files => EntryType.File,
+            TabKind.Urls => EntryType.Url,
+            TabKind.Texts => EntryType.Text,
+            _ => EntryType.Folder
+        };
+        return EntryQueries.ByType(_configManager.Config.Entries, type);
     }
 
     /// <summary>列表固定在扇区更右侧；高度按最多 MaxVisibleItems 行，超出靠 _scrollIndex 滑动。</summary>
@@ -904,8 +1106,8 @@ internal sealed class RadialMenuPopup : Form
         var panelH = totalH + pad * 2;
 
         var margin = S(8);
-        // 扇区最右点 = center.X + fanOuterR；列表必须完全在其右侧
-        var fanRight = _center.X + _fanOuterR;
+        // 内容最右点 = center.X + contentOuterR（含分组外环）；列表必须完全在其右侧
+        var fanRight = _center.X + _contentOuterR;
         var listLeft = fanRight + S(ListGapFromFanLogical);
 
         // 若窗体宽度不够，优先保证不重叠：压缩不再左移盖住扇区
@@ -1034,9 +1236,10 @@ internal sealed class RadialMenuPopup : Form
             return;
         }
 
-        // 刷新扇区计数
+        // 刷新扇区计数；分组无效时回退「全部」再加载
         foreach (var tab in _tabs)
             tab.Count = CountForTab(tab.Kind);
+        ReconcileActiveGroup();
 
         switch (_activeTab.Value)
         {
@@ -1272,25 +1475,41 @@ internal sealed class RadialMenuPopup : Form
 
     private IEnumerable<QuickEntry> GetEntriesForTab(TabKind kind)
     {
-        var type = kind switch
-        {
-            TabKind.Folders => EntryType.Folder,
-            TabKind.Files => EntryType.File,
-            TabKind.Urls => EntryType.Url,
-            TabKind.Texts => EntryType.Text,
-            _ => EntryType.Folder
-        };
+        var typeEntries = GetTypeEntriesForTab(kind);
+        var activeGroup = TabSupportsGroups(kind) ? _activeGroup : EntryQueries.AllGroupsLabel;
 
-        var typeEntries = EntryQueries.ByType(_configManager.Config.Entries, type);
+        IEnumerable<QuickEntry> scoped = string.Equals(activeGroup, EntryQueries.AllGroupsLabel, StringComparison.OrdinalIgnoreCase)
+            ? typeEntries
+            : typeEntries.Where(e =>
+                string.Equals(EntryQueries.NormalizeGroupName(e.Group), activeGroup, StringComparison.OrdinalIgnoreCase));
+
         IEnumerable<QuickEntry> ordered = _configManager.Config.SortByRecentUsage
-            ? typeEntries.OrderBy(e => e.SortOrder).ThenByDescending(e => e.LastUsedAt)
-            : typeEntries.OrderBy(e => e.SortOrder);
+            ? scoped.OrderBy(e => e.SortOrder).ThenByDescending(e => e.LastUsedAt)
+            : scoped.OrderBy(e => e.SortOrder);
 
-        // 文本分类置顶内置「今天日期」动态条目
-        if (kind == TabKind.Texts)
+        // 文本分类 +「全部」时置顶内置「今天日期」动态条目
+        if (kind == TabKind.Texts
+            && string.Equals(activeGroup, EntryQueries.AllGroupsLabel, StringComparison.OrdinalIgnoreCase))
+        {
             ordered = ordered.Prepend(DynamicTextEntries.CreateTodayDateEntry());
+        }
 
         return ordered;
+    }
+
+    private void ReconcileActiveGroup()
+    {
+        if (string.Equals(_activeGroup, EntryQueries.AllGroupsLabel, StringComparison.OrdinalIgnoreCase))
+            return;
+        if (!_activeTab.HasValue || !TabSupportsGroups(_activeTab.Value))
+        {
+            _activeGroup = EntryQueries.AllGroupsLabel;
+            return;
+        }
+
+        var names = EntryQueries.OrderedGroupNames(GetTypeEntriesForTab(_activeTab.Value));
+        if (names.All(n => !string.Equals(n, _activeGroup, StringComparison.OrdinalIgnoreCase)))
+            _activeGroup = EntryQueries.AllGroupsLabel;
     }
 
     private void StartFireworkAnim()
@@ -1360,12 +1579,14 @@ internal sealed class RadialMenuPopup : Form
         }
     }
 
-    private void HitTest(Point client, out TabKind? tab, out int itemIndex)
+    private void HitTest(Point client, out TabKind? tab, out string? group, out int itemIndex)
     {
         tab = null;
+        group = null;
         itemIndex = -1;
 
         // 1) 列表（当前视口内可见行）
+        // 返回当前标签 + 当前分组，避免外层把 group=null 误判为「全部」
         if (!_listPanelBounds.IsEmpty && _listPanelBounds.Contains(client))
         {
             var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
@@ -1378,37 +1599,58 @@ internal sealed class RadialMenuPopup : Form
                 {
                     itemIndex = i;
                     tab = _activeTab;
+                    group = IsAllGroups(_activeGroup) ? null : _activeGroup;
                     return;
                 }
             }
 
-            // 在列表面板上但未命中具体行：仍算落在当前分类，不再测扇区
+            // 在列表面板上但未命中具体行：保持当前分类与分组
             tab = _activeTab;
+            group = IsAllGroups(_activeGroup) ? null : _activeGroup;
             return;
         }
 
         var dx = client.X - _center.X;
         var dy = client.Y - _center.Y;
         var dist = MathF.Sqrt(dx * dx + dy * dy);
+        var deg = MathF.Atan2(dy, dx) * 180f / MathF.PI;
 
-        // 2) 扇区环（中环）
-        if (dist >= _fanInnerR - S(2) && dist <= _fanOuterR + S(4))
+        // 2) 分组外环：仅当前焦点标签有分组时存在，且占满整个右半环
+        if (_groups.Count > 0
+            && dist >= _fanOuterR - S(1)
+            && dist <= _fanGroupOuterR + S(4))
         {
-            // 屏幕角：atan2(y,x)，转为 GDI 度（0=右，顺时针）
-            var deg = MathF.Atan2(dy, dx) * 180f / MathF.PI;
-            foreach (var slot in _tabs)
+            foreach (var slot in _groups)
             {
                 if (AngleInSweep(deg, slot.StartDeg, slot.SweepDeg))
                 {
-                    tab = slot.Kind;
+                    tab = slot.ParentTab;
+                    group = slot.Name;
                     return;
                 }
             }
         }
 
-        // 3) 中心圆：保持当前分类
+        // 3) 分类环（中环）
+        if (dist >= _fanInnerR - S(2) && dist <= _fanOuterR + S(4))
+        {
+            foreach (var slot in _tabs)
+            {
+                if (AngleInSweep(deg, slot.StartDeg, slot.SweepDeg))
+                {
+                    tab = slot.Kind;
+                    // group 保持 null → 表示「该标签全部」，外环若存在可再细选
+                    return;
+                }
+            }
+        }
+
+        // 4) 中心圆：保持当前分类与分组
         if (dist <= _hubR)
+        {
             tab = _activeTab;
+            group = IsAllGroups(_activeGroup) ? null : _activeGroup;
+        }
     }
 
     private static bool AngleInSweep(float deg, float start, float sweep)
@@ -1485,7 +1727,7 @@ internal sealed class RadialMenuPopup : Form
 
             if (active)
             {
-                // 外弧强调条，替代阴影
+                // 外弧强调条：贴在分类环外缘内侧（分组环在更外侧时仍清晰）
                 const float degPad = 0.6f;
                 using var outerAccent = CreateDonutSegmentPath(
                     _center,
@@ -1519,6 +1761,115 @@ internal sealed class RadialMenuPopup : Form
             using (var b = new SolidBrush(countColor))
                 g.DrawString(count, _segmentCountFont, b, countPos);
         }
+    }
+
+    /// <summary>
+    /// 分类环外侧窄环：仅焦点标签有分组时绘制；分组均分整个右半大扇形，名称按弧长截断。
+    /// </summary>
+    private void DrawGroupRing(Graphics g)
+    {
+        if (_groups.Count == 0 || _fanGroupOuterR <= _fanOuterR + 0.5f)
+            return;
+
+        var ringInner = _fanOuterR + S(0.6f);
+        var ringOuter = _fanGroupOuterR;
+
+        // 整半环底
+        using (var basePath = CreateDonutSegmentPath(_center, ringInner, ringOuter, FanStartDeg, FanTotalSweepDeg))
+        {
+            using (var brush = new SolidBrush(GroupRingFill))
+                g.FillPath(brush, basePath);
+            using (var pen = new Pen(GroupRingBorder, Math.Max(1f, S(1f))))
+                g.DrawPath(pen, basePath);
+        }
+
+        foreach (var slot in _groups)
+        {
+            var active = slot.ParentTab == _activeTab
+                && string.Equals(slot.Name, _activeGroup, StringComparison.OrdinalIgnoreCase);
+            var hot = string.Equals(slot.Name, _hoverGroup, StringComparison.OrdinalIgnoreCase)
+                && !active;
+
+            if (active || hot)
+            {
+                using var path = CreateDonutSegmentPath(_center, ringInner, ringOuter, slot.StartDeg, slot.SweepDeg);
+                using var brush = new SolidBrush(active ? AccentSoft : Color.FromArgb(245, 249, 255));
+                g.FillPath(brush, path);
+            }
+
+            DrawGroupDivider(g, ringInner, ringOuter, slot.StartDeg);
+            if (slot == _groups[^1])
+                DrawGroupDivider(g, ringInner, ringOuter, slot.StartDeg + slot.SweepDeg);
+
+            if (active)
+            {
+                const float degPad = 0.5f;
+                using var outerAccent = CreateDonutSegmentPath(
+                    _center,
+                    ringOuter - S(2.4f),
+                    ringOuter - S(0.3f),
+                    slot.StartDeg + degPad,
+                    Math.Max(1f, slot.SweepDeg - degPad * 2f));
+                using var accentBrush = new SolidBrush(Accent);
+                g.FillPath(accentBrush, outerAccent);
+            }
+
+            DrawGroupLabel(g, slot, ringInner, ringOuter, active || hot);
+        }
+    }
+
+    private void DrawGroupDivider(Graphics g, float innerR, float outerR, float deg)
+    {
+        var rad = deg * MathF.PI / 180f;
+        var cos = MathF.Cos(rad);
+        var sin = MathF.Sin(rad);
+        var x1 = _center.X + cos * (innerR + S(0.5f));
+        var y1 = _center.Y + sin * (innerR + S(0.5f));
+        var x2 = _center.X + cos * (outerR - S(0.5f));
+        var y2 = _center.Y + sin * (outerR - S(0.5f));
+        using var pen = new Pen(SegmentDivider, Math.Max(1f, S(0.9f)));
+        g.DrawLine(pen, x1, y1, x2, y2);
+    }
+
+    private void DrawGroupLabel(Graphics g, GroupSlot slot, float innerR, float outerR, bool emphasize)
+    {
+        var midR = (innerR + outerR) / 2f;
+        var rad = slot.MidDeg * MathF.PI / 180f;
+        var tx = _center.X + MathF.Cos(rad) * midR;
+        var ty = _center.Y + MathF.Sin(rad) * midR;
+
+        // 按弧长自动分配可用宽度，过长则省略号
+        var arcLen = midR * (slot.SweepDeg * MathF.PI / 180f);
+        var maxW = Math.Max(S(10f), arcLen - S(4f));
+        var color = emphasize ? GroupTextHot : GroupText;
+        var text = FitTextToWidth(g, slot.Name, _groupFont, maxW);
+
+        var size = g.MeasureString(text, _groupFont);
+        var pos = new PointF(tx - size.Width / 2f, ty - size.Height / 2f);
+        using var brush = new SolidBrush(color);
+        g.DrawString(text, _groupFont, brush, pos);
+    }
+
+    private static string FitTextToWidth(Graphics g, string text, Font font, float maxWidth)
+    {
+        if (string.IsNullOrEmpty(text))
+            return text;
+        if (g.MeasureString(text, font).Width <= maxWidth)
+            return text;
+
+        const string ellipsis = "…";
+        var ellipsisW = g.MeasureString(ellipsis, font).Width;
+        if (ellipsisW >= maxWidth)
+            return ellipsis;
+
+        for (var len = text.Length - 1; len >= 1; len--)
+        {
+            var candidate = text[..len] + ellipsis;
+            if (g.MeasureString(candidate, font).Width <= maxWidth)
+                return candidate;
+        }
+
+        return ellipsis;
     }
 
     private void DrawSegmentDivider(Graphics g, float deg)
@@ -1646,7 +1997,7 @@ internal sealed class RadialMenuPopup : Form
                 using var brush = new SolidBrush(HintColor);
                 var msg = "暂无项目";
                 var size = g.MeasureString(msg, _itemFont);
-                var x = _center.X + _fanOuterR + S(18);
+                var x = _center.X + _contentOuterR + S(18);
                 g.DrawString(msg, _itemFont, brush, x, _center.Y - size.Height / 2f);
             }
             return;
@@ -1924,16 +2275,35 @@ internal sealed class RadialMenuPopup : Form
         return _tabs.Count > 0 ? _tabs[0].Kind : TabKind.Folders;
     }
 
-    private void PersistLastViewTab(TabKind kind)
+    private string ResolveInitialGroup(TabKind? tab)
+    {
+        if (!tab.HasValue || !TabSupportsGroups(tab.Value))
+            return EntryQueries.AllGroupsLabel;
+
+        if (!_configManager.Config.RememberLastView)
+            return EntryQueries.AllGroupsLabel;
+
+        var saved = string.IsNullOrWhiteSpace(_configManager.Config.LastViewGroup)
+            ? EntryQueries.AllGroupsLabel
+            : _configManager.Config.LastViewGroup.Trim();
+        if (string.Equals(saved, EntryQueries.AllGroupsLabel, StringComparison.OrdinalIgnoreCase))
+            return EntryQueries.AllGroupsLabel;
+
+        var names = EntryQueries.OrderedGroupNames(GetTypeEntriesForTab(tab.Value));
+        return names.Any(n => string.Equals(n, saved, StringComparison.OrdinalIgnoreCase))
+            ? saved
+            : EntryQueries.AllGroupsLabel;
+    }
+
+    private void PersistLastView(TabKind kind, string group)
     {
         if (!_configManager.Config.RememberLastView)
             return;
 
-        if (string.Equals(_configManager.Config.LastViewTab, kind.ToString(), StringComparison.Ordinal))
-            return;
-
-        _configManager.Config.LastViewTab = kind.ToString();
-        _configManager.Save();
+        var normalizedGroup = string.IsNullOrWhiteSpace(group)
+            ? EntryQueries.AllGroupsLabel
+            : group.Trim();
+        _configManager.SetLastView(kind.ToString(), normalizedGroup);
     }
 
     private static string GetTabLabel(TabKind kind)

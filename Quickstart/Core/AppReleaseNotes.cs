@@ -6,6 +6,13 @@ internal static class AppReleaseNotes
 {
     private static readonly ReleaseNote[] Releases =
     [
+        
+        new(
+            "1.0.19",
+            "2026-08-04",
+            [
+                "右滑圆环轮：移到有分组的标签后才显示外环；分组均分整个右半大扇形；移入右侧列表保持分组筛选，可继续手势选中分组内条目。"
+            ]),
         new(
             "1.0.18",
             "2026-08-01",
