@@ -96,8 +96,8 @@ internal sealed class RadialMenuPopup : Form
     private const float HubRadiusLogical = 40f;
     private const float FanInnerRadiusLogical = 48f;
     private const float FanOuterRadiusLogical = 108f;
-    /// <summary>分类环外再套一层窄环，仅用于显示该标签下的分组名。</summary>
-    private const float FanGroupRingWidthLogical = 22f;
+    /// <summary>分类环外再套一层窄环，仅用于显示该标签下的分组名（略加宽以容纳沿弧文字）。</summary>
+    private const float FanGroupRingWidthLogical = 26f;
     // 右侧扇区：从上(-90°)到下(+90°)，覆盖右半环，便于右滑连贯
     private const float FanStartDeg = -90f;
     private const float FanTotalSweepDeg = 180f;
@@ -379,15 +379,14 @@ internal sealed class RadialMenuPopup : Form
             });
         }
 
-        // 松手瞬间清掉悬停高亮，避免中心松手后仍显示拖过的高亮
-        if (_hoverItemIndex != -1 || _hoverTab != _activeTab || _hoverGroup != null)
-        {
-            _hoverItemIndex = -1;
-            _hoverTab = _activeTab;
-            _hoverGroup = null;
-            InvalidateStaticLayer();
-            RequestRender();
-        }
+        // 松手瞬间清掉悬停高亮，并把分组外环锁回当前标签。
+        // 即使悬停状态刚好无需清理，也要重建一次：切换模式本身会改变外环焦点规则。
+        _hoverItemIndex = -1;
+        _hoverTab = _activeTab;
+        _hoverGroup = null;
+        RebuildGroupSlots();
+        InvalidateStaticLayer();
+        RequestRender();
     }
 
     protected override bool ShowWithoutActivation => _showWithoutActivation;
@@ -1011,14 +1010,18 @@ internal sealed class RadialMenuPopup : Form
     }
 
     /// <summary>
-    /// 仅当「焦点标签」（悬停优先，否则当前选中）存在分组时生成外环。
-    /// 外环不固定；分组在整个右半大扇形（180°）上均分，而非挤在该标签小扇区内。
+    /// 仅当「焦点标签」存在分组时生成外环。
+    /// 手势阶段随悬停标签切换；中心松手进入交互模式后锁定到已点击标签，
+    /// 避免鼠标经过其它标签时替换当前显示的分组。
+    /// 分组均分整个右半大扇形；「全部」落在焦点标签中线最近的扇区，保证径向最短滑轨先到「全部」。
     /// </summary>
     private void RebuildGroupSlots()
     {
         _groups.Clear();
 
-        var focusTab = _hoverTab ?? _activeTab;
+        var focusTab = _gestureMode
+            ? _hoverTab ?? _activeTab
+            : _activeTab;
         if (!focusTab.HasValue || !TabSupportsGroups(focusTab.Value))
         {
             UpdateGroupRingRadius();
@@ -1033,13 +1036,42 @@ internal sealed class RadialMenuPopup : Form
             return;
         }
 
-        // 当前焦点标签的全部分组，均分整个右半环
-        var unit = FanTotalSweepDeg / names.Count;
-        for (var i = 0; i < names.Count; i++)
+        // 「全部」+ 具体分组，均分右半环；「全部」插到离焦点标签中线最近的位置
+        var total = names.Count + 1;
+        var unit = FanTotalSweepDeg / total;
+        var tabMid = _tabs.FirstOrDefault(t => t.Kind == focusTab.Value)?.MidDeg
+                     ?? (FanStartDeg + FanTotalSweepDeg / 2f);
+
+        var allIndex = 0;
+        var bestDist = float.MaxValue;
+        for (var i = 0; i < total; i++)
         {
-            var name = names[i];
-            var count = typeEntries.Count(e =>
-                string.Equals(EntryQueries.NormalizeGroupName(e.Group), name, StringComparison.OrdinalIgnoreCase));
+            var mid = FanStartDeg + i * unit + unit / 2f;
+            var dist = MathF.Abs(mid - tabMid);
+            if (dist < bestDist)
+            {
+                bestDist = dist;
+                allIndex = i;
+            }
+        }
+
+        var ordered = new string[total];
+        ordered[allIndex] = EntryQueries.AllGroupsLabel;
+        var nameIndex = 0;
+        for (var i = 0; i < total; i++)
+        {
+            if (i == allIndex)
+                continue;
+            ordered[i] = names[nameIndex++];
+        }
+
+        for (var i = 0; i < total; i++)
+        {
+            var name = ordered[i];
+            var count = string.Equals(name, EntryQueries.AllGroupsLabel, StringComparison.OrdinalIgnoreCase)
+                ? typeEntries.Count
+                : typeEntries.Count(e =>
+                    string.Equals(EntryQueries.NormalizeGroupName(e.Group), name, StringComparison.OrdinalIgnoreCase));
             _groups.Add(new GroupSlot
             {
                 ParentTab = focusTab.Value,
@@ -1764,7 +1796,8 @@ internal sealed class RadialMenuPopup : Form
     }
 
     /// <summary>
-    /// 分类环外侧窄环：仅焦点标签有分组时绘制；分组均分整个右半大扇形，名称按弧长截断。
+    /// 分类环外侧窄环：仅焦点标签有分组时绘制；分组均分整个右半大扇形。
+    /// 名称沿弧绘制并裁剪在扇区内，避免溢出到列表。
     /// </summary>
     private void DrawGroupRing(Graphics g)
     {
@@ -1831,45 +1864,67 @@ internal sealed class RadialMenuPopup : Form
         g.DrawLine(pen, x1, y1, x2, y2);
     }
 
+    /// <summary>
+    /// 窄环上的分组名：单字正立、沿弧切线依次排布，既可读又不会水平撑出环外。
+    /// </summary>
     private void DrawGroupLabel(Graphics g, GroupSlot slot, float innerR, float outerR, bool emphasize)
     {
+        if (string.IsNullOrEmpty(slot.Name))
+            return;
+
         var midR = (innerR + outerR) / 2f;
         var rad = slot.MidDeg * MathF.PI / 180f;
         var tx = _center.X + MathF.Cos(rad) * midR;
         var ty = _center.Y + MathF.Sin(rad) * midR;
-
-        // 按弧长自动分配可用宽度，过长则省略号
-        var arcLen = midR * (slot.SweepDeg * MathF.PI / 180f);
-        var maxW = Math.Max(S(10f), arcLen - S(4f));
         var color = emphasize ? GroupTextHot : GroupText;
-        var text = FitTextToWidth(g, slot.Name, _groupFont, maxW);
 
-        var size = g.MeasureString(text, _groupFont);
-        var pos = new PointF(tx - size.Width / 2f, ty - size.Height / 2f);
-        using var brush = new SolidBrush(color);
-        g.DrawString(text, _groupFont, brush, pos);
-    }
-
-    private static string FitTextToWidth(Graphics g, string text, Font font, float maxWidth)
-    {
-        if (string.IsNullOrEmpty(text))
-            return text;
-        if (g.MeasureString(text, font).Width <= maxWidth)
-            return text;
-
-        const string ellipsis = "…";
-        var ellipsisW = g.MeasureString(ellipsis, font).Width;
-        if (ellipsisW >= maxWidth)
-            return ellipsis;
-
-        for (var len = text.Length - 1; len >= 1; len--)
+        using var sf = new StringFormat(StringFormat.GenericTypographic)
         {
-            var candidate = text[..len] + ellipsis;
-            if (g.MeasureString(candidate, font).Width <= maxWidth)
-                return candidate;
-        }
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
+            FormatFlags = StringFormatFlags.NoClip | StringFormatFlags.NoWrap
+        };
 
-        return ellipsis;
+        // 字距按单字高度；可排字数受弧长限制
+        var probe = g.MeasureString("国", _groupFont, int.MaxValue, sf);
+        var step = Math.Max(S(9f), probe.Height * 0.92f);
+        var arcLen = midR * (slot.SweepDeg * MathF.PI / 180f);
+        var maxChars = Math.Max(1, (int)MathF.Floor((arcLen - S(3f)) / step));
+
+        var name = slot.Name.Trim();
+        string display;
+        if (name.Length <= maxChars)
+            display = name;
+        else if (maxChars <= 1)
+            display = name[..1];
+        else
+            display = name[..(maxChars - 1)] + "…";
+
+        // 切线方向（顺时针）；下半环反向，使字序从上到下/从左到右更自然
+        var tangentDeg = slot.MidDeg + 90f;
+        if (slot.MidDeg > 0f)
+            tangentDeg += 180f;
+        var tRad = tangentDeg * MathF.PI / 180f;
+        var tdx = MathF.Cos(tRad);
+        var tdy = MathF.Sin(tRad);
+
+        var n = display.Length;
+        var totalSpan = (n - 1) * step;
+        using var brush = new SolidBrush(color);
+        for (var i = 0; i < n; i++)
+        {
+            var ch = display[i].ToString();
+            var offset = -totalSpan / 2f + i * step;
+            var cx = tx + tdx * offset;
+            var cy = ty + tdy * offset;
+            var size = g.MeasureString(ch, _groupFont, int.MaxValue, sf);
+            g.DrawString(
+                ch,
+                _groupFont,
+                brush,
+                new RectangleF(cx - size.Width / 2f, cy - size.Height / 2f, size.Width, size.Height),
+                sf);
+        }
     }
 
     private void DrawSegmentDivider(Graphics g, float deg)
