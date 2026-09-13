@@ -165,8 +165,18 @@ if ((-not $SkipInstaller) -and (Test-Path $installer)) {
 }
 
 Write-Host "==> Publishing GitHub Release $tag"
-gh release view $tag 1>$null 2>$null
-if ($LASTEXITCODE -eq 0) {
+
+# gh 在“Release 不存在”或出错时会把信息写到 stderr。脚本开头是 $ErrorActionPreference='Stop'，
+# 而 Windows PowerShell 5.1 会把原生命令的 stderr 输出包装成 NativeCommandError 并直接终止脚本，
+# 于是探测用的 `gh release view` 一旦返回“release not found”（这是正常的首次发布分支），
+# 脚本就会在创建 Release 之前中断。这一段改用 Continue，成败一律靠 $LASTEXITCODE 判断。
+$previousErrorActionPreference = $ErrorActionPreference
+$ErrorActionPreference = 'Continue'
+
+$null = gh release view $tag 2>&1
+$releaseExists = ($LASTEXITCODE -eq 0)
+
+if ($releaseExists) {
     Write-Host "Release $tag exists; uploading/replacing assets"
     gh release upload $tag @($assets.ToArray()) --clobber
     if ($LASTEXITCODE -ne 0) { throw "gh release upload failed" }
@@ -177,6 +187,8 @@ if ($LASTEXITCODE -eq 0) {
     gh release create $tag @($assets.ToArray()) --title "Quickstart $tag" --notes-file $releaseNotesPath
     if ($LASTEXITCODE -ne 0) { throw "gh release create failed" }
 }
+
+$ErrorActionPreference = $previousErrorActionPreference
 
 Write-Host ""
 Write-Host "Sync completed."
