@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Message = "",
     [string]$Runtime = "win-x64",
     [switch]$SkipRelease,

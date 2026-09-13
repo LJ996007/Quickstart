@@ -83,6 +83,10 @@ public sealed class MainPopup : Form
     private bool SuppressAutoHide => _autoHideSuspendCount > 0;
     /// <summary>呼出前的目标窗口，用于「直接粘贴到光标处」。</summary>
     private IntPtr _deliveryTargetWindow;
+    /// <summary>本次呼出的目标显示器；句柄未创建时用它估算布局，跨屏呼出时先搬屏再算尺寸。</summary>
+    private Screen? _targetScreen;
+    /// <summary>最近一次应用度量时窗口的 DPI；据此判断呼出时是否需要重算，避免每条手势都重排。</summary>
+    private int _appliedMetricsDpi;
 
     public event Action? ShowSettings;
 
@@ -525,6 +529,7 @@ public sealed class MainPopup : Form
     {
         // 字体/DPI 变化会使按 (文本,宽度) 缓存的截断结果失效
         _truncateCache.Clear();
+        _appliedMetricsDpi = UiScaleHelper.GetDpi(this);
 
         var separatorWidth = Math.Max(1, UiScaleHelper.Scale(this, 1));
         _separatorPanel.Height = separatorWidth;
@@ -621,12 +626,48 @@ public sealed class MainPopup : Form
         ApplyTabStyles();
         ApplyGroupStyles();
 
-        if (Visible)
-        {
-            var screen = Screen.FromPoint(new Point(Math.Max(Left + 1, 0), Math.Max(Top + 1, 0)));
-            EnsurePopupSizeForScreen(screen);
-            ClampToWorkingArea(screen.WorkingArea);
-        }
+        // 无论是否可见都按目标显示器重算尺寸：窗口隐藏期间的分辨率 / 缩放变化
+        // 必须在这次就落到尺寸上，否则会带着旧口径的尺寸被显示出来。
+        var screen = ResolveLayoutScreen();
+        EnsurePopupSizeForScreen(screen);
+        ClampToWorkingArea(screen.WorkingArea);
+    }
+
+    /// <summary>
+    /// 布局参考显示器：句柄已创建时按窗口所在显示器（含负坐标的多屏布局），
+    /// 否则用最近一次呼出的目标屏，保证隐藏期间也能按正确分辨率/DPI 重算尺寸。
+    /// </summary>
+    private Screen ResolveLayoutScreen()
+    {
+        var current = UiScaleHelper.GetScreenOf(this);
+        if (current != null)
+            return current;
+
+        return _targetScreen
+            ?? Screen.PrimaryScreen
+            ?? Screen.FromPoint(Cursor.Position);
+    }
+
+    /// <summary>
+    /// 分辨率变化 / 显示器热插拔 / DPI 变化后的实时适配（由显示环境监听触发，已回到 UI 线程）。
+    /// 重算随 DPI 变化的度量与图标尺寸，按新工作区重设窗体尺寸并夹回可见区域，
+    /// 保证不用重启程序界面也能立即恢复正常。
+    /// </summary>
+    public void HandleDisplayEnvironmentChanged()
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+
+        _truncateCache.Clear();
+        ApplyScaledMetrics();
+        UpdateSearchIndicatorBounds();
+        PerformLayout();
+
+        if (!Visible)
+            return;
+
+        RefreshList();
+        Invalidate(true);
     }
 
     private void UpdateSearchPresentation()
@@ -661,9 +702,7 @@ public sealed class MainPopup : Form
         _isSearchExpanded = expanded;
         ApplyScaledMetrics();
 
-        var screen = Visible
-            ? Screen.FromPoint(new Point(Math.Max(Left + 1, 0), Math.Max(Top + 1, 0)))
-            : Screen.FromPoint(Cursor.Position);
+        var screen = ResolveLayoutScreen();
         EnsurePopupSizeForScreen(screen);
         ClampToWorkingArea(screen.WorkingArea);
 
@@ -1426,7 +1465,7 @@ public sealed class MainPopup : Form
         SetSearchExpanded(false);
         ApplyTabStyles();
         UpdateSearchPlaceholder();
-        EnsurePopupSizeForScreen(Screen.PrimaryScreen ?? Screen.FromPoint(Cursor.Position));
+        PrepareTargetScreen(GetTrayScreen());
         RefreshList();
         PersistCurrentView();
         PositionNearTray();
@@ -1434,6 +1473,29 @@ public sealed class MainPopup : Form
         Activate();
         if (focusList && _listView.Items.Count > 0)
             _listView.Focus();
+    }
+
+    /// <summary>
+    /// 托盘呼出所对应的显示器（托盘图标位于系统任务栏，取主屏；无主屏时退回鼠标所在屏）。
+    /// </summary>
+    private static Screen GetTrayScreen()
+        => Screen.PrimaryScreen ?? Screen.FromPoint(Cursor.Position);
+
+    /// <summary>
+    /// 记录本次呼出的目标显示器并按该屏重算布局。
+    /// 必须先把窗口搬到目标屏：窗口 DPI 由所在显示器决定，跨屏（尤其缩放不同）呼出时
+    /// 不搬屏就会沿用原显示器的缩放，尺寸与字体都会错位。
+    /// </summary>
+    private void PrepareTargetScreen(Screen screen)
+    {
+        _targetScreen = screen;
+        UiScaleHelper.MoveIntoWorkingArea(this, screen);
+
+        // 只在 DPI 真的变了（跨了不同缩放的显示器）时才重算度量，避免每条手势都做一次重排。
+        if (UiScaleHelper.GetDpi(this) != _appliedMetricsDpi)
+            ApplyScaledMetrics();
+
+        EnsurePopupSizeForScreen(screen);
     }
 
     public void HandleExternalRequest(string request)
@@ -1828,7 +1890,7 @@ public sealed class MainPopup : Form
         SetSearchExpanded(false);
         ApplyTabStyles();
         UpdateSearchPlaceholder();
-        EnsurePopupSizeForScreen(Screen.PrimaryScreen ?? Screen.FromPoint(Cursor.Position));
+        PrepareTargetScreen(GetTrayScreen());
         RefreshList();
         PersistCurrentView();
 
@@ -3074,7 +3136,7 @@ public sealed class MainPopup : Form
         UpdateSearchPlaceholder();
 
         var screen = Screen.FromPoint(screenPt);
-        EnsurePopupSizeForScreen(screen);
+        PrepareTargetScreen(screen);
         RefreshList();
         PersistCurrentView();
 
@@ -3193,9 +3255,14 @@ public sealed class MainPopup : Form
 
     private void EnsurePopupSizeForScreen(Screen screen)
     {
-        var margin = UiScaleHelper.Scale(this, 8);
-        var preferred = UiScaleHelper.ScaleSize(this, GetPreferredPopupLogicalSize());
-        var minimum = UiScaleHelper.ScaleSize(this, GetMinimumPopupLogicalSize());
+        // 按目标显示器（而非窗口当前所在显示器）的 DPI 计算：跨屏呼出时窗口可能还没搬过去。
+        var dpi = UiScaleHelper.GetDpiForScreen(screen);
+        int S(int logical) => UiScaleHelper.Scale(logical, dpi);
+        Size ScaleSize(Size logical) => new(S(logical.Width), S(logical.Height));
+
+        var margin = S(8);
+        var preferred = ScaleSize(GetPreferredPopupLogicalSize());
+        var minimum = ScaleSize(GetMinimumPopupLogicalSize());
         var maxWidth = Math.Max(minimum.Width, screen.WorkingArea.Width - margin * 2);
         var maxHeight = Math.Max(minimum.Height, screen.WorkingArea.Height - margin * 2);
 
@@ -3226,16 +3293,20 @@ public sealed class MainPopup : Form
 
     private void PositionNearTray()
     {
-        var screen = Screen.PrimaryScreen?.WorkingArea ?? Screen.FromPoint(Cursor.Position).WorkingArea;
-        var taskbarOnBottom = screen.Bottom < (Screen.PrimaryScreen?.Bounds.Bottom ?? screen.Bottom);
+        // 用本次呼出的目标屏，而不是固定主屏：多显示器下分辨率/工作区各不相同。
+        var target = _targetScreen ?? GetTrayScreen();
+        var workingArea = target.WorkingArea;
+        var taskbarOnBottom = workingArea.Bottom < target.Bounds.Bottom;
         var margin = UiScaleHelper.Scale(this, 8);
 
-        int x = screen.Right - Width - margin;
+        int x = workingArea.Right - Width - margin;
         int y = taskbarOnBottom
-            ? screen.Bottom - Height - margin
-            : screen.Top + margin;
+            ? workingArea.Bottom - Height - margin
+            : workingArea.Top + margin;
 
-        Location = new Point(Math.Max(screen.Left + margin, x), Math.Max(screen.Top + margin, y));
+        Location = new Point(
+            Math.Max(workingArea.Left + margin, x),
+            Math.Max(workingArea.Top + margin, y));
     }
 
     private void OnDragEnter(object? sender, DragEventArgs e)

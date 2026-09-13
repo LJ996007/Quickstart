@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Text;
 using Quickstart.Core;
 using Quickstart.UI;
+using Quickstart.Utils;
 
 static class Program
 {
@@ -88,6 +89,36 @@ static class Program
         using var clipboardHistory = new ClipboardHistoryService(configManager);
         clipboardHistory.Start(uiDispatcher);
         Perf("tray-and-hook-ready");
+
+        // 分辨率切换 / 显示器热插拔 / DPI 变化：让常驻弹窗实时重新适配，无需重启程序。
+        // 监听器已去抖并回投到 UI 线程，这里只做「通知各窗体重排」。
+        DisplayEnvironmentWatcher.Start(uiDispatcher);
+        DisplayEnvironmentWatcher.Changed += () =>
+        {
+            // 显示器 DPI 可能已变，先丢弃缓存，否则各窗体会继续按旧 DPI 布局。
+            UiScaleHelper.InvalidateDeviceDpiCache();
+
+            if (mainPopup is { IsDisposed: false })
+                mainPopup.HandleDisplayEnvironmentChanged();
+
+            if (radialMenuPopup is { IsDisposed: false })
+                radialMenuPopup.HandleDisplayEnvironmentChanged();
+
+            if (aiPopup is { IsDisposed: false })
+                aiPopup.HandleDisplayEnvironmentChanged();
+
+            if (aiActionPicker is { IsDisposed: false })
+                aiActionPicker.HandleDisplayEnvironmentChanged();
+
+            // 正在显示的对话框（设置等）可能因分辨率变小落到屏幕外，夹回可见工作区。
+            foreach (Form form in Application.OpenForms)
+            {
+                if (form is MainPopup or RadialMenuPopup or AiPopup or AiActionPickerPopup)
+                    continue;
+                if (form is { IsDisposed: false, Visible: true } && form.Opacity >= 1f && form.Width > 1)
+                    EnsureFormVisibleOnScreen(form);
+            }
+        };
 
         MainPopup EnsureMainPopup()
         {
@@ -378,6 +409,7 @@ static class Program
         };
         Application.ApplicationExit += (_, _) =>
         {
+            DisplayEnvironmentWatcher.Stop();
             gestureMoveTimer.Stop();
             gestureMoveTimer.Dispose();
             aiPopupPrewarmTimer.Stop();
@@ -771,6 +803,26 @@ static class Program
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// 把已打开的窗体夹回它当前所在显示器的可见工作区。
+    /// 分辨率变小或显示器被拔掉后，窗口可能整体落在屏幕外，仅靠用户拖动无法找回。
+    /// </summary>
+    private static void EnsureFormVisibleOnScreen(Form form)
+    {
+        if (form.IsDisposed || !form.IsHandleCreated)
+            return;
+
+        var screen = Screen.FromHandle(form.Handle);
+        var area = screen.WorkingArea;
+        var margin = UiScaleHelper.Scale(form, 8);
+        var x = Math.Max(area.Left + margin, Math.Min(form.Left, area.Right - form.Width - margin));
+        var y = Math.Max(area.Top + margin, Math.Min(form.Top, area.Bottom - form.Height - margin));
+
+        var target = new Point(x, y);
+        if (form.Location != target)
+            form.Location = target;
     }
 
     /// <summary>

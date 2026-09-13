@@ -213,6 +213,46 @@ internal sealed class AiActionPickerPopup : Form
             if (Visible && _interactiveDocked && !_suppressAutoHide)
                 Hide();
         };
+
+        // DPI 变化（跨不同缩放的显示器）：条目/标题栏高度都是按 DPI 预先算好的固定像素，
+        // 必须丢弃缓存并整表重建，否则会出现行高与字体不匹配。
+        DpiChanged += (_, _) => InvalidateScaledLayout();
+    }
+
+    /// <summary>丢弃按 DPI 计算出的尺寸缓存与已构建条目，让下次布局按新 DPI 重算。</summary>
+    private void InvalidateScaledLayout()
+    {
+        if (IsDisposed)
+            return;
+
+        _lastPopupSize = Size.Empty;
+        _lastPopupDpi = 0;
+
+        if (!IsHandleCreated)
+            return;
+
+        _actionsSignature = null;
+        _recentSignature = null;
+        RefreshActions();
+    }
+
+    /// <summary>
+    /// 分辨率变化 / 显示器热插拔 / DPI 变化后的实时适配（由显示环境监听触发，已回到 UI 线程）。
+    /// </summary>
+    public void HandleDisplayEnvironmentChanged()
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+
+        InvalidateScaledLayout();
+
+        if (!Visible)
+            return;
+
+        var screen = Screen.FromHandle(Handle);
+        EnsurePopupSizeForScreen(screen);
+        UiScaleHelper.MoveIntoWorkingArea(this, screen);
+        Invalidate(true);
     }
 
     private bool _interactiveDocked => !_gestureMode;
@@ -231,6 +271,9 @@ internal sealed class AiActionPickerPopup : Form
             EnterGestureMode();
 
             var screen = Screen.FromPoint(screenPt);
+            // 先搬到目标显示器：窗口 DPI 由所在显示器决定，跨屏（尤其缩放不同）呼出时
+            // 不先落屏，下面按 DPI 算出的尺寸与行高都会沿用原显示器。
+            UiScaleHelper.MoveIntoWorkingArea(this, screen);
             EnsurePopupSizeForScreen(screen);
             var workingArea = screen.WorkingArea;
             var margin = UiScaleHelper.Scale(this, 8);

@@ -29,6 +29,8 @@ public sealed class AiPopup : Form
     private CancellationTokenSource? _runCts;
     private CancellationTokenSource? _captureCts;
     private bool _showWithoutActivation;
+    /// <summary>本次呼出的目标显示器；句柄未创建时用它估算布局。</summary>
+    private Screen? _targetScreen;
 
     public event Action<Form?>? ShowAiSettings;
 
@@ -219,6 +221,10 @@ public sealed class AiPopup : Form
         PreparePendingCapture();
 
         var screen = Screen.FromPoint(screenPt);
+        _targetScreen = screen;
+        // 先搬屏再算尺寸：窗口 DPI 由所在显示器决定，跨屏（尤其缩放不同）呼出时必须先落屏。
+        UiScaleHelper.MoveIntoWorkingArea(this, screen);
+        ApplyScaledMetrics();
         EnsurePopupSizeForScreen(screen);
         var workingArea = screen.WorkingArea;
         var margin = UiScaleHelper.Scale(this, 8);
@@ -602,18 +608,53 @@ public sealed class AiPopup : Form
         _settingsButton.Size = UiScaleHelper.GetButtonSize(this, _settingsButton.Text, _settingsButton.Font, 92, 32, horizontalLogicalPadding: 12);
         _closeButton.Size = new Size(UiScaleHelper.Scale(this, 30), UiScaleHelper.Scale(this, 30));
 
+        // 尺寸始终按目标显示器重算（隐藏期间的分辨率/DPI 变化也要在下次呼出时立即生效）。
+        EnsurePopupSizeForScreen(ResolveLayoutScreen());
         if (Visible)
-            EnsurePopupSizeForScreen(Screen.FromPoint(Location));
+            PerformLayout();
+    }
+
+    /// <summary>
+    /// 布局参考显示器：句柄已创建时按窗口所在显示器，否则用最近一次呼出的目标屏。
+    /// </summary>
+    private Screen ResolveLayoutScreen()
+        => UiScaleHelper.GetScreenOf(this)
+            ?? _targetScreen
+            ?? Screen.PrimaryScreen
+            ?? Screen.FromPoint(Cursor.Position);
+
+    /// <summary>
+    /// 分辨率变化 / 显示器热插拔 / DPI 变化后的实时适配（由显示环境监听触发，已回到 UI 线程）。
+    /// </summary>
+    public void HandleDisplayEnvironmentChanged()
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+
+        var screen = Screen.FromHandle(Handle);
+        _targetScreen = screen;
+        ApplyScaledMetrics();
+
+        if (!Visible)
+            return;
+
+        UiScaleHelper.MoveIntoWorkingArea(this, screen);
+        PerformLayout();
+        Invalidate(true);
     }
 
     private void EnsurePopupSizeForScreen(Screen screen)
     {
-        var margin = UiScaleHelper.Scale(this, 8);
-        var preferred = UiScaleHelper.ScaleSize(this, PopupLogicalSize);
-        var minimum = UiScaleHelper.ScaleSize(this, MinimumPopupLogicalSize);
+        // 按目标显示器 DPI 计算，跨屏呼出时窗口可能还没搬过去。
+        var dpi = UiScaleHelper.GetDpiForScreen(screen);
+        int S(int logical) => UiScaleHelper.Scale(logical, dpi);
+
+        var margin = S(8);
+        var preferred = new Size(S(PopupLogicalSize.Width), S(PopupLogicalSize.Height));
+        var minimum = new Size(S(MinimumPopupLogicalSize.Width), S(MinimumPopupLogicalSize.Height));
         Size = new Size(
-            Math.Min(Math.Max(preferred.Width, minimum.Width), screen.WorkingArea.Width - margin * 2),
-            Math.Min(Math.Max(preferred.Height, minimum.Height), screen.WorkingArea.Height - margin * 2));
+            Math.Min(Math.Max(preferred.Width, minimum.Width), Math.Max(minimum.Width, screen.WorkingArea.Width - margin * 2)),
+            Math.Min(Math.Max(preferred.Height, minimum.Height), Math.Max(minimum.Height, screen.WorkingArea.Height - margin * 2)));
     }
 
     private static Label CreateInlineLabel(string text) => new()

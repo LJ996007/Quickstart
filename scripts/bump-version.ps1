@@ -1,4 +1,4 @@
-param(
+﻿param(
     [string]$Version = "",
     [string[]]$Notes = @(),
     [string]$Date = "",
@@ -122,14 +122,23 @@ function Update-AppReleaseNotes {
 
     $content = Get-Content -Path $Path -Raw -Encoding UTF8
     $block = Format-ReleaseNoteBlock -Version $Version -DateValue $DateValue -Items $Items
-    $pattern = '(private static readonly ReleaseNote\[\] Releases =\s*\[\s*)'
+    # 只匹配到 `[` 为止。若把 `[` 后面的空白也吃进 $1（原写法是 \[\s*），
+    # 拼接时会再补一个换行，结果在 `[` 与第一条 new( 之间多出一行空行和一行缩进空白。
+    $pattern = '(private static readonly ReleaseNote\[\] Releases\s*=\s*\[)'
     if ($content -notmatch $pattern) {
         throw "Could not locate Releases array in $Path"
     }
+    # 用 MatchEvaluator 而非替换字符串：替换字符串里的 $1 / $name 会被当作反向引用解析，
+    # 而 release notes 文本本身可能包含 $ 等字符。
+    # 末尾不补换行也不补缩进：$pattern 只匹配到 `[`，紧随其后的换行与缩进属于剩余内容，
+    # 会原样保留；补了就会在 `[` 之后、以及新旧版本块之间各多出一个空行。
     $updated = [regex]::Replace(
         $content,
         $pattern,
-        ('$1' + [Environment]::NewLine + $block + ',' + [Environment]::NewLine + '        '),
+        {
+            param($match)
+            $match.Value + [Environment]::NewLine + $block + ','
+        },
         1
     )
     Set-Content -Path $Path -Value $updated -Encoding UTF8 -NoNewline

@@ -72,6 +72,8 @@ internal sealed class RadialMenuPopup : Form
     private static readonly Color SegmentText = Color.FromArgb(42, 48, 58);
     private static readonly Color SegmentCount = Color.FromArgb(130, 136, 148);
     private static readonly Color SegmentTextHot = Color.FromArgb(28, 96, 180);
+    /// <summary>悬停（未选中）扇区底色。必须不透明：高亮层靠它盖住静态层的普通色文字。</summary>
+    private static readonly Color SegmentHoverFill = Color.FromArgb(245, 249, 255);
     private static readonly Color RowFill = Color.FromArgb(255, 255, 255);
     private static readonly Color RowFillHot = Color.FromArgb(236, 244, 255);
     private static readonly Color RowBorder = Color.FromArgb(230, 234, 240);
@@ -110,6 +112,11 @@ internal sealed class RadialMenuPopup : Form
     private const float FormPadLogical = 12f;
     private const int AnimDurationMs = 180;
     private const int AnimFrameMs = 12;
+    /// <summary>
+    /// 扇区切换迟滞（度）：指针越过分界线超过该角度才换扇区。
+    /// 没有它时停在分界线上会让高亮反复横跳，表现为「选不准 / 容易误触」。
+    /// </summary>
+    private const float HysteresisDeg = 3f;
 
     private const int GWL_EXSTYLE = -20;
     private const int WS_EX_LAYERED = 0x00080000;
@@ -166,11 +173,10 @@ internal sealed class RadialMenuPopup : Form
     private IntPtr _hLayerBmp;
     private IntPtr _oldMemBmp;
     private bool _layerReady;
-    private TabKind? _cachedActiveForStatic;
-    private TabKind? _cachedHoverForStatic;
-    private string? _cachedActiveGroupForStatic;
-    private string? _cachedHoverGroupForStatic;
-    private Bitmap? _staticLayer; // 扇区+中心缓存，动画时只重绘列表
+    /// <summary>静态层缓存签名（只由标签集合与计数决定）：滑动手势过程中静态层不再重建。</summary>
+    private string? _cachedTabsSignatureForStatic;
+    /// <summary>分类环底 + 分割线 + 标签文字；高亮、分组外环、中心圆改为每帧叠加绘制。</summary>
+    private Bitmap? _staticLayer;
 
     // 手势跟踪阶段：NOACTIVATE；中心松手后进入交互模式：可点选 / ESC / 点外部关闭。
     private bool _gestureMode = true;
@@ -216,16 +222,8 @@ internal sealed class RadialMenuPopup : Form
             InvalidateStaticLayer();
             RequestRender();
         };
-        DpiChanged += (_, _) =>
-        {
-            UpdateDpiScale();
-            DisposeLayerResources();
-            ApplyContentSize();
-            _center = ComputeWheelCenter();
-            RelayoutGeometry();
-            InvalidateStaticLayer();
-            RequestRender();
-        };
+        DpiChanged += (_, _) => RefreshForDisplayEnvironment();
+
         LocationChanged += (_, _) =>
         {
             // 仅位置变化：直接推当前图层，不必整帧重绘
@@ -245,6 +243,12 @@ internal sealed class RadialMenuPopup : Form
     public void ShowAtGesturePoint(Point screenPt, IntPtr sourceWindow = default)
     {
         CaptureDeliveryTarget(sourceWindow);
+
+        // 先搬到目标显示器再算几何：窗口 DPI 由所在显示器决定，跨屏（尤其缩放不同）呼出时
+        // 若先按原显示器的缩放算半径与行高，圆环和列表都会错位甚至被裁切。
+        var screen = Screen.FromPoint(screenPt);
+        UiScaleHelper.MoveIntoWorkingArea(this, screen);
+
         UpdateDpiScale();
         ApplyContentSize();
         _center = ComputeWheelCenter();
@@ -263,7 +267,6 @@ internal sealed class RadialMenuPopup : Form
             PersistLastView(_activeTab.Value, _activeGroup);
         LoadItemsForActiveTab(restartAnim: true);
 
-        var screen = Screen.FromPoint(screenPt);
         var wa = screen.WorkingArea;
         // 手势点对齐到中心圆，继续右滑即可扫过扇区与列表
         var x = screenPt.X - (int)_center.X;
@@ -553,79 +556,122 @@ internal sealed class RadialMenuPopup : Form
 
     private void ApplyPointerAtClientPoint(Point client, bool switchTabOnHover)
     {
+        // 手势模式：指针滑出可视行就先推进滚动，再按滚动后的视口命中条目
+        if (_gestureMode)
+            AutoScrollListAt(client);
+
         HitTest(client, out var tab, out var group, out var itemIndex);
 
         // 右侧列表：只高亮条目，绝不改标签/分组（否则移入列表会冲掉刚选中的分组）
-        if (!_listPanelBounds.IsEmpty && _listPanelBounds.Contains(client))
+        var listHit = GetListHitBounds();
+        if (!listHit.IsEmpty && listHit.Contains(client))
         {
-            var needRender = false;
             var listHoverGroup = IsAllGroups(_activeGroup) ? null : _activeGroup;
-            if (_hoverTab != _activeTab
-                || !string.Equals(_hoverGroup, listHoverGroup, StringComparison.OrdinalIgnoreCase))
-            {
-                _hoverTab = _activeTab;
-                _hoverGroup = listHoverGroup;
-                RebuildGroupSlots();
-                InvalidateStaticLayer();
-                needRender = true;
-            }
-
-            if (itemIndex != _hoverItemIndex)
-            {
-                _hoverItemIndex = itemIndex;
-                needRender = true;
-            }
-
-            if (needRender)
-                RequestRender();
+            ApplyHoverState(_activeTab, listHoverGroup, itemIndex);
             return;
         }
 
-        var needRingRender = false;
-
-        if (tab != _hoverTab || !string.Equals(_hoverGroup, group, StringComparison.OrdinalIgnoreCase))
+        if (!switchTabOnHover || !tab.HasValue)
         {
-            _hoverTab = tab;
-            _hoverGroup = group;
+            ApplyHoverState(tab, group, itemIndex);
+            return;
+        }
+
+        // 分类环命中时 group 为空 = 该标签「全部」；分组外环命中时带具体分组名。
+        var nextGroup = string.IsNullOrEmpty(group)
+            ? EntryQueries.AllGroupsLabel
+            : group;
+
+        // 同一标签内从分组外环滑回分类环时，不把已选分组重置为「全部」——
+        // 否则滑向列表的路径稍微偏内，刚选好的分组就被冲掉了。
+        // 想回到「全部」时，滑到分组外环上的「全部」扇区即可。
+        if (tab == _activeTab
+            && string.IsNullOrEmpty(group)
+            && !IsAllGroups(_activeGroup))
+        {
+            nextGroup = _activeGroup;
+        }
+
+        var tabChanged = tab != _activeTab;
+        var groupChanged = !string.Equals(_activeGroup, nextGroup, StringComparison.OrdinalIgnoreCase);
+        if (tabChanged || groupChanged)
+        {
+            _activeTab = tab;
+            _activeGroup = nextGroup;
+            _hoverItemIndex = -1;
+            PersistLastView(tab.Value, _activeGroup);
+            // 滑动筛选期间不播入场动画，列表直接到位。
+            // 原来每次悬停变化都 restartAnim: true，等于每滑过一个扇区就重建列表 + 重播 180ms 动画，
+            // 而动画期间 RequestRender 又会丢弃新的指针位置 —— 这就是「不跟手」的主要来源。
+            // 入场动画只在呼出瞬间（ShowAtGesturePoint）播一次。
+            LoadItemsForActiveTab(restartAnim: false);
             RebuildGroupSlots();
-            InvalidateStaticLayer();
-            needRingRender = true;
+            ApplyHoverState(tab, group, itemIndex);
+            return;
         }
 
-        if (switchTabOnHover && tab.HasValue)
+        ApplyHoverState(tab, group, itemIndex);
+    }
+
+    /// <summary>
+    /// 更新悬停高亮。只有「焦点标签」变化才重建分组外环的扇区集合；
+    /// 高亮本身画在动态层，不再让静态层失效 —— 这是滑动跟手的关键。
+    /// </summary>
+    private void ApplyHoverState(TabKind? hoverTab, string? hoverGroup, int itemIndex)
+    {
+        var tabFocusChanged = hoverTab != _hoverTab;
+        var groupChanged = !string.Equals(_hoverGroup, hoverGroup, StringComparison.OrdinalIgnoreCase);
+        var itemChanged = itemIndex != _hoverItemIndex;
+
+        if (tabFocusChanged || groupChanged)
         {
-            // group==null 表示落在分类环（全部）；有值表示落在分组外环
-            var nextGroup = string.IsNullOrEmpty(group)
-                ? EntryQueries.AllGroupsLabel
-                : group;
-            var tabChanged = tab != _activeTab;
-            var groupChanged = !string.Equals(_activeGroup, nextGroup, StringComparison.OrdinalIgnoreCase);
-            if (tabChanged || groupChanged)
-            {
-                _activeTab = tab;
-                _activeGroup = nextGroup;
-                _hoverItemIndex = -1;
-                PersistLastView(tab.Value, _activeGroup);
-                RebuildGroupSlots();
-                InvalidateStaticLayer();
-                LoadItemsForActiveTab(restartAnim: true);
-                needRingRender = true;
-            }
-            else if (itemIndex != _hoverItemIndex)
-            {
-                _hoverItemIndex = itemIndex;
-                needRingRender = true;
-            }
+            _hoverTab = hoverTab;
+            _hoverGroup = hoverGroup;
         }
-        else if (itemIndex != _hoverItemIndex)
-        {
+
+        if (itemChanged)
             _hoverItemIndex = itemIndex;
-            needRingRender = true;
-        }
 
-        if (needRingRender)
+        // 外环展示的是「焦点标签」的分组，焦点变了才需要重建扇区集合
+        if (tabFocusChanged)
+            RebuildGroupSlots();
+
+        if (tabFocusChanged || groupChanged || itemChanged)
             RequestRender();
     }
+
+    /// <summary>
+    /// 手势模式下列表自动滚动：指针滑到可视行之外即推进，滑出越远滚得越快。
+    /// 原来手势中根本无法滚动，第 9 项以后的条目永远够不到，必须先松手进交互模式。
+    /// </summary>
+    private void AutoScrollListAt(Point client)
+    {
+        if (!CanScrollList || _listPanelBounds.IsEmpty || _listClipBounds.IsEmpty)
+            return;
+
+        // 只认列表所在的横向范围，避免指针在分类环上、纵向恰好越界时误滚动
+        if (client.X < _listPanelBounds.Left || client.X > _listPanelBounds.Right)
+            return;
+
+        var rowH = S(ListRowHeightLogical);
+        if (rowH <= 0)
+            return;
+
+        if (client.Y < _listClipBounds.Top - rowH)
+        {
+            var overshoot = (_listClipBounds.Top - rowH) - client.Y;
+            TryScrollList(-ScrollRowsFor(overshoot, rowH));
+        }
+        else if (client.Y > _listClipBounds.Bottom + rowH)
+        {
+            var overshoot = client.Y - (_listClipBounds.Bottom + rowH);
+            TryScrollList(ScrollRowsFor(overshoot, rowH));
+        }
+    }
+
+    /// <summary>滑出越远一次推进越多（上限 3 行），避免快速滑动时逐行爬。</summary>
+    private static int ScrollRowsFor(float overshoot, float rowH)
+        => Math.Clamp(1 + (int)(overshoot / MathF.Max(1f, rowH)), 1, 3);
 
     private static bool IsAllGroups(string? group)
         => string.IsNullOrWhiteSpace(group)
@@ -671,6 +717,53 @@ internal sealed class RadialMenuPopup : Form
         if (_dpiScale <= 0)
             _dpiScale = 1f;
     }
+
+    /// <summary>
+    /// 分辨率 / DPI / 显示器布局变化后重建几何与图层。
+    /// 半径、行高、字形图标都是按 DPI 预计算的固定像素，必须整体重算，否则会残留旧缩放的尺寸。
+    /// </summary>
+    private void RefreshForDisplayEnvironment()
+    {
+        if (IsDisposed || !IsHandleCreated)
+            return;
+
+        ResetDpiDependentIcons();
+        UpdateDpiScale();
+        DisposeLayerResources();
+        ApplyContentSize();
+        _center = ComputeWheelCenter();
+        RelayoutGeometry();
+        InvalidateStaticLayer();
+
+        if (!Visible)
+            return;
+
+        // 可见时夹回新工作区，并按新 DPI 重建列表（图标已随缓存清空而失效）。
+        var area = Screen.FromHandle(Handle).WorkingArea;
+        var x = Math.Max(area.Left, Math.Min(Left, Math.Max(area.Left, area.Right - Width)));
+        var y = Math.Max(area.Top, Math.Min(Top, Math.Max(area.Top, area.Bottom - Height)));
+        Location = new Point(x, y);
+
+        if (_activeTab.HasValue)
+            LoadItemsForActiveTab(restartAnim: false);
+        else
+            RequestRender();
+    }
+
+    /// <summary>字形图标与网页占位图按 DPI 生成为固定像素位图，DPI 变化后必须丢弃重建。</summary>
+    private void ResetDpiDependentIcons()
+    {
+        foreach (var image in _iconCache.Values)
+            image.Dispose();
+        _iconCache.Clear();
+        _webPlaceholder?.Dispose();
+        _webPlaceholder = null;
+    }
+
+    /// <summary>
+    /// 分辨率变化 / 显示器热插拔 / DPI 变化后的实时适配（由显示环境监听触发，已回到 UI 线程）。
+    /// </summary>
+    public void HandleDisplayEnvironmentChanged() => RefreshForDisplayEnvironment();
 
     private float S(float logical) => logical * _dpiScale;
 
@@ -727,10 +820,7 @@ internal sealed class RadialMenuPopup : Form
     {
         _staticLayer?.Dispose();
         _staticLayer = null;
-        _cachedActiveForStatic = null;
-        _cachedHoverForStatic = null;
-        _cachedActiveGroupForStatic = null;
-        _cachedHoverGroupForStatic = null;
+        _cachedTabsSignatureForStatic = null;
     }
 
     private void DisposeLayerResources()
@@ -829,10 +919,8 @@ internal sealed class RadialMenuPopup : Form
         if (!IsHandleCreated)
             return;
 
-        // 动画中由定时器直接渲染，避免 BeginInvoke 排队卡顿
-        if (_animating)
-            return;
-
+        // 动画进行中同样要允许渲染：原来这里直接 return，入场动画期间的指针位置会被丢弃，
+        // 画面停在上一帧，是「不跟手」的来源之一。_renderPending 已保证不会重复排队。
         if (_renderPending)
             return;
 
@@ -881,10 +969,15 @@ internal sealed class RadialMenuPopup : Form
             g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         }
 
-        // 静态层：扇区 + 中心（分类/悬停变化时重建）
+        // 静态层：分类环底与标签文字（滑动手势过程中不再重建）
         EnsureStaticLayer(fast);
         if (_staticLayer != null)
             g.DrawImageUnscaled(_staticLayer, 0, 0);
+
+        // 动态叠加：随指针实时变化，但每帧只画命中的少数扇区，成本远低于重建静态层
+        DrawSegmentHighlights(g);
+        DrawGroupRing(g);
+        DrawHub(g);
 
         DrawListPanel(g);
         DrawItems(g);
@@ -893,15 +986,18 @@ internal sealed class RadialMenuPopup : Form
         PushLayeredBitmap();
     }
 
+    /// <summary>
+    /// 静态层只画分类环的底、分割线与标签文字 —— 这些只在标签集合/计数或窗体尺寸变化时才变。
+    /// 悬停高亮、分组外环、中心圆都随指针实时变化，改由 RenderLayered 每帧叠加绘制；
+    /// 否则每滑过一个扇区就要 new 一张整窗位图重画全部内容，这正是原来「不跟手」的主因。
+    /// </summary>
     private void EnsureStaticLayer(bool fast)
     {
+        var signature = BuildTabsSignature();
         if (_staticLayer != null
-            && _cachedActiveForStatic == _activeTab
-            && _cachedHoverForStatic == _hoverTab
-            && string.Equals(_cachedActiveGroupForStatic, _activeGroup, StringComparison.OrdinalIgnoreCase)
-            && string.Equals(_cachedHoverGroupForStatic, _hoverGroup, StringComparison.OrdinalIgnoreCase)
             && _staticLayer.Width == Width
-            && _staticLayer.Height == Height)
+            && _staticLayer.Height == Height
+            && string.Equals(_cachedTabsSignatureForStatic, signature, StringComparison.Ordinal))
         {
             return;
         }
@@ -915,14 +1011,21 @@ internal sealed class RadialMenuPopup : Form
         g.CompositingQuality = fast ? CompositingQuality.HighSpeed : CompositingQuality.HighQuality;
         g.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
 
-        DrawSegments(g);
-        DrawGroupRing(g);
-        DrawHub(g);
+        DrawSegmentsBase(g);
 
-        _cachedActiveForStatic = _activeTab;
-        _cachedHoverForStatic = _hoverTab;
-        _cachedActiveGroupForStatic = _activeGroup;
-        _cachedHoverGroupForStatic = _hoverGroup;
+        _cachedTabsSignatureForStatic = signature;
+    }
+
+    /// <summary>静态层缓存签名：标签种类与计数，任一变化都要重绘标签文字。</summary>
+    private string BuildTabsSignature()
+    {
+        if (_tabs.Count == 0)
+            return string.Empty;
+
+        var sb = new System.Text.StringBuilder(_tabs.Count * 12);
+        foreach (var tab in _tabs)
+            sb.Append((int)tab.Kind).Append(':').Append(tab.Count).Append(';');
+        return sb.ToString();
     }
 
     private void RebuildTabs()
@@ -1321,7 +1424,8 @@ internal sealed class RadialMenuPopup : Form
         }
 
         LayoutItemList();
-        InvalidateStaticLayer();
+        // 这里只是刷新了各标签的计数，静态层缓存签名会自行判断要不要重绘；
+        // 不要无条件失效 —— 否则每次跨标签都会重建整张静态位图，正是卡顿的来源。
 
         if (restartAnim)
             StartFireworkAnim();
@@ -1611,32 +1715,22 @@ internal sealed class RadialMenuPopup : Form
         }
     }
 
+    /// <summary>
+    /// 指针命中判定。径向分环必须「连续、无重叠、无空档」：
+    /// 任何距离都要落到某一层，否则滑快一点就掉进未命中状态，高亮闪断、状态被冲掉。
+    /// </summary>
     private void HitTest(Point client, out TabKind? tab, out string? group, out int itemIndex)
     {
         tab = null;
         group = null;
         itemIndex = -1;
 
-        // 1) 列表（当前视口内可见行）
-        // 返回当前标签 + 当前分组，避免外层把 group=null 误判为「全部」
-        if (!_listPanelBounds.IsEmpty && _listPanelBounds.Contains(client))
+        // 1) 列表：命中区在面板外再纵向扩一行，让指针滑出可视行后仍能驱动滚动
+        var listHit = GetListHitBounds();
+        if (!listHit.IsEmpty && listHit.Contains(client))
         {
-            var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
-            for (var i = _scrollIndex; i < end; i++)
-            {
-                var item = _items[i];
-                if (item.TargetBounds.IsEmpty || item.AnimT < 0.28f)
-                    continue;
-                if (GetAnimatedItemBounds(item).Contains(client))
-                {
-                    itemIndex = i;
-                    tab = _activeTab;
-                    group = IsAllGroups(_activeGroup) ? null : _activeGroup;
-                    return;
-                }
-            }
-
-            // 在列表面板上但未命中具体行：保持当前分类与分组
+            itemIndex = FindNearestVisibleItem(client);
+            // 返回当前标签 + 当前分组，避免外层把 group=null 误判为「全部」
             tab = _activeTab;
             group = IsAllGroups(_activeGroup) ? null : _activeGroup;
             return;
@@ -1647,42 +1741,148 @@ internal sealed class RadialMenuPopup : Form
         var dist = MathF.Sqrt(dx * dx + dy * dy);
         var deg = MathF.Atan2(dy, dx) * 180f / MathF.PI;
 
-        // 2) 分组外环：仅当前焦点标签有分组时存在，且占满整个右半环
-        if (_groups.Count > 0
-            && dist >= _fanOuterR - S(1)
-            && dist <= _fanGroupOuterR + S(4))
-        {
-            foreach (var slot in _groups)
-            {
-                if (AngleInSweep(deg, slot.StartDeg, slot.SweepDeg))
-                {
-                    tab = slot.ParentTab;
-                    group = slot.Name;
-                    return;
-                }
-            }
-        }
-
-        // 3) 分类环（中环）
-        if (dist >= _fanInnerR - S(2) && dist <= _fanOuterR + S(4))
-        {
-            foreach (var slot in _tabs)
-            {
-                if (AngleInSweep(deg, slot.StartDeg, slot.SweepDeg))
-                {
-                    tab = slot.Kind;
-                    // group 保持 null → 表示「该标签全部」，外环若存在可再细选
-                    return;
-                }
-            }
-        }
-
-        // 4) 中心圆：保持当前分类与分组
-        if (dist <= _hubR)
+        // 2) 中心圆：与分类环之间的空档按中点就近吸附，往外滑时自然过渡到分类环
+        var hubCutoff = (_hubR + _fanInnerR) / 2f;
+        if (dist <= hubCutoff)
         {
             tab = _activeTab;
             group = IsAllGroups(_activeGroup) ? null : _activeGroup;
+            return;
         }
+
+        // 3) 分组外环：下界不侵入分类环（原来的 -1 在 107–112 造成重叠），上界不设
+        //    —— 滑过头仍留在分组环，不再掉回未命中状态。
+        if (_groups.Count > 0 && dist > _fanOuterR)
+        {
+            if (TryPickGroup(deg, out var groupSlot))
+            {
+                tab = groupSlot.ParentTab;
+                group = groupSlot.Name;
+                return;
+            }
+
+            tab = _activeTab;
+            group = IsAllGroups(_activeGroup) ? null : _activeGroup;
+            return;
+        }
+
+        // 4) 分类环：中心圆外侧到分组环内沿都算；命中即「该标签全部」（group 保持 null）
+        if (TryPickTab(deg, out var tabSlot))
+        {
+            tab = tabSlot.Kind;
+            return;
+        }
+
+        // 5) 左半环等未覆盖区域：保持当前分类与分组
+        tab = _activeTab;
+        group = IsAllGroups(_activeGroup) ? null : _activeGroup;
+    }
+
+    /// <summary>
+    /// 分类环扇区命中，带迟滞：当前悬停扇区的边界放宽 <see cref="HysteresisDeg"/>，
+    /// 指针停在分界线附近时保持原扇区，越过分界线超过迟滞量才切换。
+    /// </summary>
+    private bool TryPickTab(float deg, out TabSlot slot)
+    {
+        slot = null!;
+        if (_tabs.Count == 0)
+            return false;
+
+        if (_hoverTab.HasValue)
+        {
+            var current = _tabs.FirstOrDefault(t => t.Kind == _hoverTab.Value);
+            if (current != null
+                && AngleInSweep(deg, current.StartDeg - HysteresisDeg, current.SweepDeg + HysteresisDeg * 2f))
+            {
+                slot = current;
+                return true;
+            }
+        }
+
+        foreach (var candidate in _tabs)
+        {
+            if (!AngleInSweep(deg, candidate.StartDeg, candidate.SweepDeg))
+                continue;
+
+            slot = candidate;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>分组外环扇区命中，迟滞规则同 <see cref="TryPickTab"/>。</summary>
+    private bool TryPickGroup(float deg, out GroupSlot slot)
+    {
+        slot = null!;
+        if (_groups.Count == 0)
+            return false;
+
+        if (!string.IsNullOrEmpty(_hoverGroup))
+        {
+            var current = _groups.FirstOrDefault(
+                g => string.Equals(g.Name, _hoverGroup, StringComparison.OrdinalIgnoreCase));
+            if (current != null
+                && AngleInSweep(deg, current.StartDeg - HysteresisDeg, current.SweepDeg + HysteresisDeg * 2f))
+            {
+                slot = current;
+                return true;
+            }
+        }
+
+        foreach (var candidate in _groups)
+        {
+            if (!AngleInSweep(deg, candidate.StartDeg, candidate.SweepDeg))
+                continue;
+
+            slot = candidate;
+            return true;
+        }
+
+        return false;
+    }
+
+    /// <summary>
+    /// 列表命中区：面板本体；手势模式下纵向各扩一行高。
+    /// 扩出来的部分让指针滑出可视行后仍算「在列表里」，从而触发自动滚动。
+    /// </summary>
+    private RectangleF GetListHitBounds()
+    {
+        if (_listPanelBounds.IsEmpty)
+            return RectangleF.Empty;
+
+        return _gestureMode
+            ? RectangleF.Inflate(_listPanelBounds, 0, S(ListRowHeightLogical))
+            : _listPanelBounds;
+    }
+
+    /// <summary>
+    /// 按纵向最近的行中心选行，而不是要求指针落在行矩形内。
+    /// 行与行之间本来有 5px 间隙，用矩形包含判定会让高亮在间隙处闪断。
+    /// </summary>
+    private int FindNearestVisibleItem(Point client)
+    {
+        if (_items.Count == 0)
+            return -1;
+
+        var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
+        var best = -1;
+        var bestDelta = float.MaxValue;
+        for (var i = _scrollIndex; i < end; i++)
+        {
+            var bounds = _items[i].TargetBounds;
+            if (bounds.IsEmpty)
+                continue;
+
+            var delta = Math.Abs(client.Y - (bounds.Y + bounds.Height / 2f));
+            if (delta < bestDelta)
+            {
+                bestDelta = delta;
+                best = i;
+            }
+        }
+
+        return best;
     }
 
     private static bool AngleInSweep(float deg, float start, float sweep)
@@ -1726,7 +1926,8 @@ internal sealed class RadialMenuPopup : Form
         return new RectangleF(target.X - slide, target.Y, target.Width, target.Height);
     }
 
-    private void DrawSegments(Graphics g)
+    /// <summary>分类环基础外观：整块浅底、分割线、标签文字（普通色）。属于静态层。</summary>
+    private void DrawSegmentsBase(Graphics g)
     {
         if (_tabs.Count == 0)
             return;
@@ -1742,17 +1943,35 @@ internal sealed class RadialMenuPopup : Form
 
         foreach (var slot in _tabs)
         {
+            // 扇区分割线（平面 UI：细线而非描边块）
+            DrawSegmentDivider(g, slot.StartDeg);
+            if (slot == _tabs[^1])
+                DrawSegmentDivider(g, slot.StartDeg + slot.SweepDeg);
+
+            DrawTabLabel(g, slot, SegmentText, SegmentCount);
+        }
+    }
+
+    /// <summary>
+    /// 分类环的悬停 / 选中高亮，属于动态层。
+    /// 底色刻意用不透明色：直接盖住静态层里的普通色文字后再重绘强调色，省掉一次整窗重建。
+    /// </summary>
+    private void DrawSegmentHighlights(Graphics g)
+    {
+        foreach (var slot in _tabs)
+        {
             var active = slot.Kind == _activeTab;
             var hot = slot.Kind == _hoverTab && !active;
-            using var path = CreateDonutSegmentPath(_center, _fanInnerR, _fanOuterR, slot.StartDeg, slot.SweepDeg);
+            if (!active && !hot)
+                continue;
 
-            if (active || hot)
+            using (var path = CreateDonutSegmentPath(_center, _fanInnerR, _fanOuterR, slot.StartDeg, slot.SweepDeg))
             {
-                using var brush = new SolidBrush(active ? AccentSoft : Color.FromArgb(245, 249, 255));
+                using var brush = new SolidBrush(active ? AccentSoft : SegmentHoverFill);
                 g.FillPath(brush, path);
             }
 
-            // 扇区分割线（平面 UI：细线而非描边块）
+            // 底色盖掉了分割线，补回该扇区两侧
             DrawSegmentDivider(g, slot.StartDeg);
             if (slot == _tabs[^1])
                 DrawSegmentDivider(g, slot.StartDeg + slot.SweepDeg);
@@ -1771,28 +1990,31 @@ internal sealed class RadialMenuPopup : Form
                 g.FillPath(accentBrush, outerAccent);
             }
 
-            var midR = (_fanInnerR + _fanOuterR) / 2f;
-            var rad = slot.MidDeg * MathF.PI / 180f;
-            var tx = _center.X + MathF.Cos(rad) * midR;
-            var ty = _center.Y + MathF.Sin(rad) * midR;
-
-            var titleColor = active || hot ? SegmentTextHot : SegmentText;
-            var countColor = active || hot ? Color.FromArgb(70, 118, 180) : SegmentCount;
-
-            var title = slot.Label;
-            var count = $"{slot.Count} 项";
-            var titleSize = g.MeasureString(title, _segmentTitleFont);
-            var countSize = g.MeasureString(count, _segmentCountFont);
-
-            var blockH = titleSize.Height + countSize.Height - S(2);
-            var titlePos = new PointF(tx - titleSize.Width / 2f, ty - blockH / 2f);
-            var countPos = new PointF(tx - countSize.Width / 2f, titlePos.Y + titleSize.Height - S(2));
-
-            using (var b = new SolidBrush(titleColor))
-                g.DrawString(title, _segmentTitleFont, b, titlePos);
-            using (var b = new SolidBrush(countColor))
-                g.DrawString(count, _segmentCountFont, b, countPos);
+            DrawTabLabel(g, slot, SegmentTextHot, Color.FromArgb(70, 118, 180));
         }
+    }
+
+    /// <summary>标签名与计数画在扇区中线处；颜色由调用方给，基础层与高亮层复用。</summary>
+    private void DrawTabLabel(Graphics g, TabSlot slot, Color titleColor, Color countColor)
+    {
+        var midR = (_fanInnerR + _fanOuterR) / 2f;
+        var rad = slot.MidDeg * MathF.PI / 180f;
+        var tx = _center.X + MathF.Cos(rad) * midR;
+        var ty = _center.Y + MathF.Sin(rad) * midR;
+
+        var title = slot.Label;
+        var count = $"{slot.Count} 项";
+        var titleSize = g.MeasureString(title, _segmentTitleFont);
+        var countSize = g.MeasureString(count, _segmentCountFont);
+
+        var blockH = titleSize.Height + countSize.Height - S(2);
+        var titlePos = new PointF(tx - titleSize.Width / 2f, ty - blockH / 2f);
+        var countPos = new PointF(tx - countSize.Width / 2f, titlePos.Y + titleSize.Height - S(2));
+
+        using (var b = new SolidBrush(titleColor))
+            g.DrawString(title, _segmentTitleFont, b, titlePos);
+        using (var b = new SolidBrush(countColor))
+            g.DrawString(count, _segmentCountFont, b, countPos);
     }
 
     /// <summary>
@@ -1826,7 +2048,7 @@ internal sealed class RadialMenuPopup : Form
             if (active || hot)
             {
                 using var path = CreateDonutSegmentPath(_center, ringInner, ringOuter, slot.StartDeg, slot.SweepDeg);
-                using var brush = new SolidBrush(active ? AccentSoft : Color.FromArgb(245, 249, 255));
+                using var brush = new SolidBrush(active ? AccentSoft : SegmentHoverFill);
                 g.FillPath(brush, path);
             }
 
