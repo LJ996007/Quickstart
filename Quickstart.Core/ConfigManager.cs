@@ -250,8 +250,26 @@ public sealed class ConfigManager : IDisposable
             if (entry != null)
             {
                 entry.LastUsedAt = DateTime.Now;
+                entry.UseCount = entry.UseCount < long.MaxValue ? Math.Max(0, entry.UseCount) + 1 : long.MaxValue;
                 ScheduleSave();
             }
+        }
+    }
+
+    public void RecordRecentFolder(string path)
+    {
+        if (string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) return;
+        try { path = Path.TrimEndingDirectorySeparator(Path.GetFullPath(path)); }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or PathTooLongException) { return; }
+        lock (_lock)
+        {
+            _config.RecentFolders ??= new(StringComparer.OrdinalIgnoreCase);
+            foreach (var duplicate in _config.RecentFolders.Keys.Where(k => string.Equals(k, path, StringComparison.OrdinalIgnoreCase)).ToArray())
+                _config.RecentFolders.Remove(duplicate);
+            _config.RecentFolders[path] = DateTime.UtcNow;
+            _config.RecentFolders = _config.RecentFolders.OrderByDescending(p => p.Value).Take(40)
+                .ToDictionary(p => p.Key, p => p.Value, StringComparer.OrdinalIgnoreCase);
+            ScheduleSave();
         }
     }
 
@@ -335,6 +353,7 @@ public sealed class ConfigManager : IDisposable
     private bool NormalizeConfig()
     {
         _config.Entries ??= [];
+        _config.RecentFolders ??= new(StringComparer.OrdinalIgnoreCase);
         _config.GroupLastUsedAt = _config.GroupLastUsedAt == null
             ? new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, DateTime>(_config.GroupLastUsedAt, StringComparer.OrdinalIgnoreCase);

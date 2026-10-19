@@ -12,7 +12,7 @@ using Quickstart.Utils;
 /// <summary>
 /// 右滑圆环轮：透明分层窗体。
 /// 中心圆 + 右侧扇形分类环 +（有分组时）更外侧窄环写分组名，再往右横向列表。
-/// 手势：继续右滑选中条目并松手执行；在中心松手则停靠，可用鼠标点选，点外部或执行后关闭。
+/// 手势只负责呼出；松手停靠后点击分类、分组和条目，点外部或执行后关闭。
 /// </summary>
 internal sealed class RadialMenuPopup : Form
 {
@@ -48,6 +48,7 @@ internal sealed class RadialMenuPopup : Form
         public object? Payload { get; init; }
         public Image? Icon { get; set; }
         public bool OwnsIcon { get; set; }
+        public bool IconRequested { get; set; }
         public float Stagger { get; set; }
         public float AnimT { get; set; }
         public RectangleF TargetBounds { get; set; }
@@ -62,38 +63,36 @@ internal sealed class RadialMenuPopup : Form
 
     // 平面 UI 色板：无阴影，靠细线与轻填充分层
     private static readonly Color HubFill = Color.FromArgb(255, 255, 255);
-    private static readonly Color HubRing = Color.FromArgb(55, 138, 221);
-    private static readonly Color Accent = Color.FromArgb(55, 138, 221);
-    private static readonly Color AccentSoft = Color.FromArgb(232, 242, 255);
-    private static readonly Color AccentMuted = Color.FromArgb(180, 210, 245);
+    private static readonly Color HubRing = UiTheme.Accent;
+    private static readonly Color Accent = UiTheme.Accent;
+    private static readonly Color AccentSoft = UiTheme.SelectionFill;
+    private static readonly Color AccentMuted = UiTheme.AccentMuted;
     private static readonly Color SegmentFill = Color.FromArgb(252, 253, 255);
     private static readonly Color SegmentBorder = Color.FromArgb(222, 228, 236);
-    private static readonly Color SegmentDivider = Color.FromArgb(210, 216, 224);
-    private static readonly Color SegmentText = Color.FromArgb(42, 48, 58);
-    private static readonly Color SegmentCount = Color.FromArgb(130, 136, 148);
-    private static readonly Color SegmentTextHot = Color.FromArgb(28, 96, 180);
+    private static readonly Color SegmentDivider = UiTheme.Divider;
+    private static readonly Color SegmentText = UiTheme.TextPrimary;
+    private static readonly Color SegmentCount = UiTheme.TextMuted;
+    private static readonly Color SegmentTextHot = UiTheme.AccentText;
     /// <summary>悬停（未选中）扇区底色。必须不透明：高亮层靠它盖住静态层的普通色文字。</summary>
-    private static readonly Color SegmentHoverFill = Color.FromArgb(245, 249, 255);
-    private static readonly Color RowFill = Color.FromArgb(255, 255, 255);
-    private static readonly Color RowFillHot = Color.FromArgb(236, 244, 255);
-    private static readonly Color RowBorder = Color.FromArgb(230, 234, 240);
-    private static readonly Color RowBorderHot = Color.FromArgb(55, 138, 221);
-    private static readonly Color TitleColor = Color.FromArgb(28, 32, 40);
-    private static readonly Color SubColor = Color.FromArgb(132, 138, 148);
+    private static readonly Color SegmentHoverFill = UiTheme.HoverFill;
+    private static readonly Color RowFill = UiTheme.Card;
+    private static readonly Color RowFillHot = UiTheme.SelectionFill;
+    private static readonly Color RowBorder = UiTheme.BorderSubtle;
+    private static readonly Color RowBorderHot = UiTheme.Accent;
+    private static readonly Color TitleColor = UiTheme.TextPrimary;
+    private static readonly Color SubColor = UiTheme.TextMuted;
     private static readonly Color HintColor = Color.FromArgb(148, 154, 164);
-    private static readonly Color ListPanelFill = Color.FromArgb(250, 251, 253);
-    private static readonly Color ListPanelBorder = Color.FromArgb(218, 224, 232);
-    private static readonly Color ScrollTrack = Color.FromArgb(230, 234, 240);
+    private static readonly Color ListPanelFill = UiTheme.Surface;
+    private static readonly Color ListPanelBorder = UiTheme.Border;
+    private static readonly Color ScrollTrack = UiTheme.BorderSubtle;
     private static readonly Color ScrollThumb = Color.FromArgb(160, 170, 185);
     private static readonly Color GroupRingFill = Color.FromArgb(246, 249, 253);
     private static readonly Color GroupRingBorder = Color.FromArgb(214, 222, 232);
     private static readonly Color GroupText = Color.FromArgb(70, 78, 92);
-    private static readonly Color GroupTextHot = Color.FromArgb(28, 96, 180);
+    private static readonly Color GroupTextHot = UiTheme.AccentText;
 
     /// <summary>右侧列表可视行数（面板高度固定）；超出可用滚轮上下滑动。</summary>
     private const int MaxVisibleItems = 8;
-    /// <summary>单次载入上限，避免收藏极多时一次建上千图标。</summary>
-    private const int MaxLoadedItems = 80;
     // 扇区缩小，为右侧列表让出空间，避免互相遮挡
     private const float HubRadiusLogical = 40f;
     private const float FanInnerRadiusLogical = 48f;
@@ -112,12 +111,6 @@ internal sealed class RadialMenuPopup : Form
     private const float FormPadLogical = 12f;
     private const int AnimDurationMs = 180;
     private const int AnimFrameMs = 12;
-    /// <summary>
-    /// 扇区切换迟滞（度）：指针越过分界线超过该角度才换扇区。
-    /// 没有它时停在分界线上会让高亮反复横跳，表现为「选不准 / 容易误触」。
-    /// </summary>
-    private const float HysteresisDeg = 3f;
-
     private const int GWL_EXSTYLE = -20;
     private const int WS_EX_LAYERED = 0x00080000;
     private const int WS_EX_TOOLWINDOW = 0x00000080;
@@ -130,6 +123,7 @@ internal sealed class RadialMenuPopup : Form
     private readonly ProcessLauncher _launcher;
     private readonly ClipboardHistoryService? _clipboardHistory;
     private readonly FaviconService _faviconService = new();
+    private readonly AsyncIconLoader _iconLoader = new("Quickstart.RadialIcons");
     private readonly System.Windows.Forms.Timer _animTimer;
     private readonly List<TabSlot> _tabs = [];
     private readonly List<GroupSlot> _groups = [];
@@ -178,7 +172,7 @@ internal sealed class RadialMenuPopup : Form
     /// <summary>分类环底 + 分割线 + 标签文字；高亮、分组外环、中心圆改为每帧叠加绘制。</summary>
     private Bitmap? _staticLayer;
 
-    // 手势跟踪阶段：NOACTIVATE；中心松手后进入交互模式：可点选 / ESC / 点外部关闭。
+    // 手势跟踪阶段：NOACTIVATE；松手后进入交互模式：可点选 / ESC / 点外部关闭。
     private bool _gestureMode = true;
     private bool _showWithoutActivation = true;
     private bool _suppressAutoHide;
@@ -200,13 +194,13 @@ internal sealed class RadialMenuPopup : Form
         BackColor = Color.Black;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
 
-        _segmentTitleFont = new Font("Microsoft YaHei UI", 8.25f, FontStyle.Regular);
-        _segmentCountFont = new Font("Microsoft YaHei UI", 7f, FontStyle.Regular);
-        _groupFont = new Font("Microsoft YaHei UI", 7f, FontStyle.Regular);
-        _itemFont = new Font("Microsoft YaHei UI", 9f, FontStyle.Regular);
-        _itemSubFont = new Font("Microsoft YaHei UI", 7.5f, FontStyle.Regular);
-        _hubTitleFont = new Font("Microsoft YaHei UI", 11f, FontStyle.Bold);
-        _hubCountFont = new Font("Microsoft YaHei UI", 8f, FontStyle.Regular);
+        _segmentTitleFont = new Font(UiTheme.FontFamily, 8.25f, FontStyle.Regular);
+        _segmentCountFont = new Font(UiTheme.FontFamily, 7f, FontStyle.Regular);
+        _groupFont = new Font(UiTheme.FontFamily, 7f, FontStyle.Regular);
+        _itemFont = new Font(UiTheme.FontFamily, 9f, FontStyle.Regular);
+        _itemSubFont = new Font(UiTheme.FontFamily, 7.5f, FontStyle.Regular);
+        _hubTitleFont = new Font(UiTheme.FontFamily, 11f, FontStyle.Bold);
+        _hubCountFont = new Font(UiTheme.FontFamily, 8f, FontStyle.Regular);
 
         _animTimer = new System.Windows.Forms.Timer { Interval = AnimFrameMs };
         _animTimer.Tick += (_, _) => OnAnimTick();
@@ -268,7 +262,7 @@ internal sealed class RadialMenuPopup : Form
         LoadItemsForActiveTab(restartAnim: true);
 
         var wa = screen.WorkingArea;
-        // 手势点对齐到中心圆，继续右滑即可扫过扇区与列表
+        // 手势点对齐到中心圆，松手后即可点选分类与列表
         var x = screenPt.X - (int)_center.X;
         var y = screenPt.Y - (int)_center.Y;
         x = Math.Max(wa.Left, Math.Min(x, wa.Right - Width));
@@ -306,46 +300,7 @@ internal sealed class RadialMenuPopup : Form
             _deliveryTargetWindow = IntPtr.Zero;
     }
 
-    public void HighlightAtScreenPoint(Point screenPt)
-    {
-        if (!Visible || !_gestureMode)
-            return;
-
-        ApplyPointerAtScreenPoint(screenPt, switchTabOnHover: true);
-    }
-
-    /// <summary>
-    /// 手势松手：命中列表项则执行并关闭；落在中心圆则进入可点选交互模式；其它位置关闭。
-    /// </summary>
-    public bool TryReleaseAtScreenPoint(Point screenPt)
-    {
-        if (!Visible)
-            return false;
-
-        var client = PointToClient(screenPt);
-        HitTest(client, out _, out _, out var itemIndex);
-
-        if (itemIndex >= 0 && itemIndex < _items.Count)
-        {
-            ExecutePayload(_items[itemIndex].Payload);
-            Hide();
-            return true;
-        }
-
-        // 中心圆松手：停靠，允许鼠标点选；点界面外或执行动作后再退出
-        if (IsOverHub(client))
-        {
-            EnterInteractiveMode();
-            return false;
-        }
-
-        Hide();
-        return false;
-    }
-
-    /// <summary>
-    /// 中心松手后：抢前台，支持 ESC / 点击外部关闭，以及鼠标悬停与点击选择。
-    /// </summary>
+    /// <summary>右滑松手后停靠，支持左键点选、ESC 和点击外部关闭。</summary>
     public void EnterInteractiveMode()
     {
         if (!Visible || IsDisposed)
@@ -409,6 +364,7 @@ internal sealed class RadialMenuPopup : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
+        EnsureVisibleIcons();
         RequestRender();
     }
 
@@ -464,6 +420,11 @@ internal sealed class RadialMenuPopup : Form
 
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
+        if (keyData == (Keys.Control | Keys.F))
+        {
+            ShowFileSearch?.Invoke();
+            return true;
+        }
         if (keyData == Keys.Escape)
         {
             Hide();
@@ -472,6 +433,9 @@ internal sealed class RadialMenuPopup : Form
 
         return base.ProcessCmdKey(ref msg, keyData);
     }
+
+    public event Action? ShowFileSearch;
+    public IntPtr SourceWindow => _deliveryTargetWindow;
 
     private void EnterGestureMode()
     {
@@ -500,14 +464,14 @@ internal sealed class RadialMenuPopup : Form
             return;
 
         // 交互模式：仅高亮，不因悬停切换分类（点击扇区才切换）
-        ApplyPointerAtClientPoint(e.Location, switchTabOnHover: false);
+        ApplyPointerAtClientPoint(e.Location);
     }
 
     private void OnInteractiveMouseDown(object? sender, MouseEventArgs e)
     {
         if (!Visible || _gestureMode)
             return;
-        if (e.Button != MouseButtons.Left && e.Button != MouseButtons.Right)
+        if (e.Button != MouseButtons.Left)
             return;
 
         HitTest(e.Location, out var tab, out var group, out var itemIndex);
@@ -541,7 +505,7 @@ internal sealed class RadialMenuPopup : Form
                     _configManager.TouchGroup(nextGroup);
                 RebuildGroupSlots();
                 InvalidateStaticLayer();
-                LoadItemsForActiveTab(restartAnim: true);
+                LoadItemsForActiveTab(restartAnim: false);
                 RequestRender();
             }
 
@@ -551,127 +515,17 @@ internal sealed class RadialMenuPopup : Form
         // 点在中心或当前扇区：保持打开；点在窗体透明区不会进到这里（分层窗体 hit-test 透明穿透）
     }
 
-    private void ApplyPointerAtScreenPoint(Point screenPt, bool switchTabOnHover)
-        => ApplyPointerAtClientPoint(PointToClient(screenPt), switchTabOnHover);
-
-    private void ApplyPointerAtClientPoint(Point client, bool switchTabOnHover)
+    private void ApplyPointerAtClientPoint(Point client)
     {
-        // 手势模式：指针滑出可视行就先推进滚动，再按滚动后的视口命中条目
-        if (_gestureMode)
-            AutoScrollListAt(client);
-
         HitTest(client, out var tab, out var group, out var itemIndex);
-
-        // 右侧列表：只高亮条目，绝不改标签/分组（否则移入列表会冲掉刚选中的分组）
-        var listHit = GetListHitBounds();
-        if (!listHit.IsEmpty && listHit.Contains(client))
-        {
-            var listHoverGroup = IsAllGroups(_activeGroup) ? null : _activeGroup;
-            ApplyHoverState(_activeTab, listHoverGroup, itemIndex);
+        if (tab == _hoverTab && group == _hoverGroup && itemIndex == _hoverItemIndex)
             return;
-        }
 
-        if (!switchTabOnHover || !tab.HasValue)
-        {
-            ApplyHoverState(tab, group, itemIndex);
-            return;
-        }
-
-        // 分类环命中时 group 为空 = 该标签「全部」；分组外环命中时带具体分组名。
-        var nextGroup = string.IsNullOrEmpty(group)
-            ? EntryQueries.AllGroupsLabel
-            : group;
-
-        // 同一标签内从分组外环滑回分类环时，不把已选分组重置为「全部」——
-        // 否则滑向列表的路径稍微偏内，刚选好的分组就被冲掉了。
-        // 想回到「全部」时，滑到分组外环上的「全部」扇区即可。
-        if (tab == _activeTab
-            && string.IsNullOrEmpty(group)
-            && !IsAllGroups(_activeGroup))
-        {
-            nextGroup = _activeGroup;
-        }
-
-        var tabChanged = tab != _activeTab;
-        var groupChanged = !string.Equals(_activeGroup, nextGroup, StringComparison.OrdinalIgnoreCase);
-        if (tabChanged || groupChanged)
-        {
-            _activeTab = tab;
-            _activeGroup = nextGroup;
-            _hoverItemIndex = -1;
-            PersistLastView(tab.Value, _activeGroup);
-            // 滑动筛选期间不播入场动画，列表直接到位。
-            // 原来每次悬停变化都 restartAnim: true，等于每滑过一个扇区就重建列表 + 重播 180ms 动画，
-            // 而动画期间 RequestRender 又会丢弃新的指针位置 —— 这就是「不跟手」的主要来源。
-            // 入场动画只在呼出瞬间（ShowAtGesturePoint）播一次。
-            LoadItemsForActiveTab(restartAnim: false);
-            RebuildGroupSlots();
-            ApplyHoverState(tab, group, itemIndex);
-            return;
-        }
-
-        ApplyHoverState(tab, group, itemIndex);
+        _hoverTab = tab;
+        _hoverGroup = group;
+        _hoverItemIndex = itemIndex;
+        RequestRender();
     }
-
-    /// <summary>
-    /// 更新悬停高亮。只有「焦点标签」变化才重建分组外环的扇区集合；
-    /// 高亮本身画在动态层，不再让静态层失效 —— 这是滑动跟手的关键。
-    /// </summary>
-    private void ApplyHoverState(TabKind? hoverTab, string? hoverGroup, int itemIndex)
-    {
-        var tabFocusChanged = hoverTab != _hoverTab;
-        var groupChanged = !string.Equals(_hoverGroup, hoverGroup, StringComparison.OrdinalIgnoreCase);
-        var itemChanged = itemIndex != _hoverItemIndex;
-
-        if (tabFocusChanged || groupChanged)
-        {
-            _hoverTab = hoverTab;
-            _hoverGroup = hoverGroup;
-        }
-
-        if (itemChanged)
-            _hoverItemIndex = itemIndex;
-
-        // 外环展示的是「焦点标签」的分组，焦点变了才需要重建扇区集合
-        if (tabFocusChanged)
-            RebuildGroupSlots();
-
-        if (tabFocusChanged || groupChanged || itemChanged)
-            RequestRender();
-    }
-
-    /// <summary>
-    /// 手势模式下列表自动滚动：指针滑到可视行之外即推进，滑出越远滚得越快。
-    /// 原来手势中根本无法滚动，第 9 项以后的条目永远够不到，必须先松手进交互模式。
-    /// </summary>
-    private void AutoScrollListAt(Point client)
-    {
-        if (!CanScrollList || _listPanelBounds.IsEmpty || _listClipBounds.IsEmpty)
-            return;
-
-        // 只认列表所在的横向范围，避免指针在分类环上、纵向恰好越界时误滚动
-        if (client.X < _listPanelBounds.Left || client.X > _listPanelBounds.Right)
-            return;
-
-        var rowH = S(ListRowHeightLogical);
-        if (rowH <= 0)
-            return;
-
-        if (client.Y < _listClipBounds.Top - rowH)
-        {
-            var overshoot = (_listClipBounds.Top - rowH) - client.Y;
-            TryScrollList(-ScrollRowsFor(overshoot, rowH));
-        }
-        else if (client.Y > _listClipBounds.Bottom + rowH)
-        {
-            var overshoot = client.Y - (_listClipBounds.Bottom + rowH);
-            TryScrollList(ScrollRowsFor(overshoot, rowH));
-        }
-    }
-
-    /// <summary>滑出越远一次推进越多（上限 3 行），避免快速滑动时逐行爬。</summary>
-    private static int ScrollRowsFor(float overshoot, float rowH)
-        => Math.Clamp(1 + (int)(overshoot / MathF.Max(1f, rowH)), 1, 3);
 
     private static bool IsAllGroups(string? group)
         => string.IsNullOrWhiteSpace(group)
@@ -681,7 +535,7 @@ internal sealed class RadialMenuPopup : Form
     {
         var dx = client.X - _center.X;
         var dy = client.Y - _center.Y;
-        // 略放宽容差：中心松手不必精确压在圆边内
+        // 中心圆附近保持当前分类。
         var r = _hubR + S(6);
         return dx * dx + dy * dy <= r * r;
     }
@@ -692,6 +546,7 @@ internal sealed class RadialMenuPopup : Form
         {
             _animTimer.Stop();
             _animTimer.Dispose();
+            _iconLoader.Dispose();
             ClearItems(disposeOwned: true);
             _faviconService.Dispose();
             _segmentTitleFont.Dispose();
@@ -1114,17 +969,14 @@ internal sealed class RadialMenuPopup : Form
 
     /// <summary>
     /// 仅当「焦点标签」存在分组时生成外环。
-    /// 手势阶段随悬停标签切换；中心松手进入交互模式后锁定到已点击标签，
-    /// 避免鼠标经过其它标签时替换当前显示的分组。
+    /// 始终跟随已点击的分类，悬停其他标签不会替换分组或列表。
     /// 分组均分整个右半大扇形；「全部」落在焦点标签中线最近的扇区，保证径向最短滑轨先到「全部」。
     /// </summary>
     private void RebuildGroupSlots()
     {
         _groups.Clear();
 
-        var focusTab = _gestureMode
-            ? _hoverTab ?? _activeTab
-            : _activeTab;
+        var focusTab = _activeTab;
         if (!focusTab.HasValue || !TabSupportsGroups(focusTab.Value))
         {
             UpdateGroupRingRadius();
@@ -1279,6 +1131,8 @@ internal sealed class RadialMenuPopup : Form
             // 更小错峰，动画更干脆（仅当前视口内）
             _items[i].Stagger = visRow * 0.02f;
         }
+
+        EnsureVisibleIcons();
     }
 
     private static int ClampScrollIndex(int scroll, int itemCount, int visibleCount)
@@ -1304,9 +1158,9 @@ internal sealed class RadialMenuPopup : Form
         _scrollIndex = next;
         LayoutItemList();
 
-        // 滚动后按当前指针位置刷新高亮（手势/交互共用）
+        // 滚轮浏览后刷新指针下的高亮，不自动执行。
         if (screenPtForHover.HasValue)
-            ApplyPointerAtScreenPoint(screenPtForHover.Value, switchTabOnHover: _gestureMode);
+            ApplyPointerAtClientPoint(PointToClient(screenPtForHover.Value));
         else if (_hoverItemIndex >= 0
                  && (_hoverItemIndex < _scrollIndex || _hoverItemIndex >= _scrollIndex + MaxVisibleItems))
         {
@@ -1326,19 +1180,13 @@ internal sealed class RadialMenuPopup : Form
 
     private void OnListMouseWheel(object? sender, MouseEventArgs e)
     {
-        if (!Visible || _items.Count == 0 || !CanScrollList)
-            return;
-
-        // 仅当指针在列表区域（或整窗在交互模式）时滚动，避免误触
-        var client = e.Location;
-        var overList = !_listPanelBounds.IsEmpty && _listPanelBounds.Contains(client);
-        if (!overList && _gestureMode)
+        if (!Visible || _gestureMode || _items.Count == 0 || !CanScrollList)
             return;
 
         // WinForms：Delta>0 为向上滚 → 列表内容上移 → 减小首行下标
         var steps = Math.Max(1, Math.Abs(e.Delta) / 120);
         var deltaRows = e.Delta > 0 ? -steps : steps;
-        TryScrollList(deltaRows, PointToScreen(client));
+        TryScrollList(deltaRows, PointToScreen(e.Location));
     }
 
     private void ClearItems(bool disposeOwned)
@@ -1379,7 +1227,7 @@ internal sealed class RadialMenuPopup : Form
         switch (_activeTab.Value)
         {
             case TabKind.ClipboardHistory:
-                foreach (var hist in (_clipboardHistory?.GetItems() ?? []).Take(MaxLoadedItems))
+                foreach (var hist in (_clipboardHistory?.GetItems() ?? []))
                 {
                     _items.Add(new ItemSlot
                     {
@@ -1393,21 +1241,20 @@ internal sealed class RadialMenuPopup : Form
                 break;
 
             case TabKind.RecentItems:
-                foreach (var recent in WindowsRecentItemsService.GetItems().Take(MaxLoadedItems))
+                foreach (var recent in WindowsRecentItemsService.GetItems())
                 {
                     _items.Add(new ItemSlot
                     {
                         Title = Truncate(recent.Name, 32),
                         Subtitle = Truncate(recent.DisplayPath, 48),
                         Payload = recent,
-                        Icon = ResolvePathIcon(recent.LaunchPath, recent.IsDirectory),
                         OwnsIcon = false
                     });
                 }
                 break;
 
             default:
-                foreach (var entry in GetEntriesForTab(_activeTab.Value).Take(MaxLoadedItems))
+                foreach (var entry in GetEntriesForTab(_activeTab.Value))
                 {
                     var slot = new ItemSlot
                     {
@@ -1417,7 +1264,6 @@ internal sealed class RadialMenuPopup : Form
                             : Truncate(entry.Path, 48),
                         Payload = entry
                     };
-                    AssignEntryIcon(slot, entry);
                     _items.Add(slot);
                 }
                 break;
@@ -1442,10 +1288,10 @@ internal sealed class RadialMenuPopup : Form
         switch (entry.Type)
         {
             case EntryType.Folder:
-                slot.Icon = ResolvePathIcon(entry.Path, isDirectory: true);
+                QueuePathIcon(slot, entry.Path, isDirectory: true);
                 break;
             case EntryType.File:
-                slot.Icon = ResolvePathIcon(entry.Path, isDirectory: false);
+                QueuePathIcon(slot, entry.Path, isDirectory: false);
                 break;
             case EntryType.Url:
                 slot.Icon = _faviconService.TryGetMemoryCached(entry.Path)
@@ -1460,47 +1306,65 @@ internal sealed class RadialMenuPopup : Form
         }
     }
 
-    private Image? ResolvePathIcon(string path, bool isDirectory)
+    private void EnsureVisibleIcons()
     {
+        if (!IsHandleCreated)
+            return;
+
+        var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
+        for (var i = _scrollIndex; i < end; i++)
+        {
+            var slot = _items[i];
+            if (slot.IconRequested)
+                continue;
+            slot.IconRequested = true;
+            if (slot.Payload is QuickEntry entry)
+                AssignEntryIcon(slot, entry);
+            else if (slot.Payload is WindowsRecentItem recent)
+                QueuePathIcon(slot, recent.LaunchPath, recent.IsDirectory);
+        }
+    }
+
+    private void QueuePathIcon(ItemSlot slot, string path, bool isDirectory)
+    {
+        slot.Icon = GetCachedGlyphIcon(isDirectory ? "folder" : "file");
         if (string.IsNullOrWhiteSpace(path))
-            return GetCachedGlyphIcon(isDirectory ? "folder" : "file");
+            return;
 
-        // 文件夹共用同一壳图标；普通扩展名共用；exe/lnk 等按完整路径
-        string key;
-        if (isDirectory)
+        _iconLoader.Enqueue(() =>
         {
-            key = "dir:";
-        }
-        else if (IconExtractor.NeedsPerFileIcon(path))
-        {
-            key = "file:" + path.ToLowerInvariant();
-        }
-        else
-        {
-            var ext = Path.GetExtension(path);
-            key = "ext:" + (string.IsNullOrEmpty(ext) ? "<noext>" : ext.ToLowerInvariant());
-        }
-
-        if (_iconCache.TryGetValue(key, out var cached))
-            return cached;
-
-        try
-        {
-            // Icon 由 IconExtractor 全局缓存持有，不可 Dispose（using 会拆掉后续项的图标）
-            var icon = IconExtractor.GetIcon(path, isDirectory, useLargeIcon: false);
-            if (icon != null)
+            Bitmap? bitmap = null;
+            try
             {
-                var bmp = icon.ToBitmap();
-                _iconCache[key] = bmp;
-                return bmp;
+                if (IsDisposed)
+                    return;
+                // Shell 图标读取在现有 STA 工作者上执行，不阻塞点击和滚动。
+                bitmap = IconExtractor.GetIcon(path, isDirectory, useLargeIcon: false)?.ToBitmap();
+                if (bitmap == null)
+                    return;
+                if (IsDisposed || !IsHandleCreated)
+                {
+                    bitmap.Dispose();
+                    return;
+                }
+                BeginInvoke(() =>
+                {
+                    // 分类已切换或窗口已释放时，不把旧图标交给新的列表。
+                    if (IsDisposed || !_items.Contains(slot))
+                    {
+                        bitmap.Dispose();
+                        return;
+                    }
+                    slot.Icon = bitmap;
+                    slot.OwnsIcon = true;
+                    RequestRender();
+                });
             }
-        }
-        catch
-        {
-            // fall through
-        }
-
-        return GetCachedGlyphIcon(isDirectory ? "folder" : "file");
+            catch
+            {
+                bitmap?.Dispose();
+            }
+        });
     }
 
     private Image GetWebPlaceholder()
@@ -1619,7 +1483,9 @@ internal sealed class RadialMenuPopup : Form
             : typeEntries.Where(e =>
                 string.Equals(EntryQueries.NormalizeGroupName(e.Group), activeGroup, StringComparison.OrdinalIgnoreCase));
 
-        IEnumerable<QuickEntry> ordered = _configManager.Config.SortByRecentUsage
+        IEnumerable<QuickEntry> ordered = kind == TabKind.Folders && _configManager.Config.SortFoldersByFrequency
+            ? EntryQueries.ByUsageFrequency(scoped)
+            : _configManager.Config.SortByRecentUsage
             ? scoped.OrderBy(e => e.SortOrder).ThenByDescending(e => e.LastUsedAt)
             : scoped.OrderBy(e => e.SortOrder);
 
@@ -1716,8 +1582,7 @@ internal sealed class RadialMenuPopup : Form
     }
 
     /// <summary>
-    /// 指针命中判定。径向分环必须「连续、无重叠、无空档」：
-    /// 任何距离都要落到某一层，否则滑快一点就掉进未命中状态，高亮闪断、状态被冲掉。
+    /// 指针命中判定：圆环内按扇区选择，圆环外到列表之间保留当前分类与分组。
     /// </summary>
     private void HitTest(Point client, out TabKind? tab, out string? group, out int itemIndex)
     {
@@ -1725,11 +1590,11 @@ internal sealed class RadialMenuPopup : Form
         group = null;
         itemIndex = -1;
 
-        // 1) 列表：命中区在面板外再纵向扩一行，让指针滑出可视行后仍能驱动滚动
-        var listHit = GetListHitBounds();
+        // 1) 列表：只命中实际可见条目，不向空白区扩展。
+        var listHit = _listPanelBounds;
         if (!listHit.IsEmpty && listHit.Contains(client))
         {
-            itemIndex = FindNearestVisibleItem(client);
+            itemIndex = FindVisibleItem(client);
             // 返回当前标签 + 当前分组，避免外层把 group=null 误判为「全部」
             tab = _activeTab;
             group = IsAllGroups(_activeGroup) ? null : _activeGroup;
@@ -1741,17 +1606,16 @@ internal sealed class RadialMenuPopup : Form
         var dist = MathF.Sqrt(dx * dx + dy * dy);
         var deg = MathF.Atan2(dy, dx) * 180f / MathF.PI;
 
-        // 2) 中心圆：与分类环之间的空档按中点就近吸附，往外滑时自然过渡到分类环
+        // 2) 中心圆和圆环外的过渡区保持选择，不能把扇区按角度无限延伸到列表旁。
         var hubCutoff = (_hubR + _fanInnerR) / 2f;
-        if (dist <= hubCutoff)
+        if (dist <= hubCutoff || dist > _fanGroupOuterR)
         {
             tab = _activeTab;
             group = IsAllGroups(_activeGroup) ? null : _activeGroup;
             return;
         }
 
-        // 3) 分组外环：下界不侵入分类环（原来的 -1 在 107–112 造成重叠），上界不设
-        //    —— 滑过头仍留在分组环，不再掉回未命中状态。
+        // 3) 分组外环：只在实际外环范围内切换分组。
         if (_groups.Count > 0 && dist > _fanOuterR)
         {
             if (TryPickGroup(deg, out var groupSlot))
@@ -1778,111 +1642,28 @@ internal sealed class RadialMenuPopup : Form
         group = IsAllGroups(_activeGroup) ? null : _activeGroup;
     }
 
-    /// <summary>
-    /// 分类环扇区命中，带迟滞：当前悬停扇区的边界放宽 <see cref="HysteresisDeg"/>，
-    /// 指针停在分界线附近时保持原扇区，越过分界线超过迟滞量才切换。
-    /// </summary>
     private bool TryPickTab(float deg, out TabSlot slot)
     {
-        slot = null!;
-        if (_tabs.Count == 0)
-            return false;
-
-        if (_hoverTab.HasValue)
-        {
-            var current = _tabs.FirstOrDefault(t => t.Kind == _hoverTab.Value);
-            if (current != null
-                && AngleInSweep(deg, current.StartDeg - HysteresisDeg, current.SweepDeg + HysteresisDeg * 2f))
-            {
-                slot = current;
-                return true;
-            }
-        }
-
-        foreach (var candidate in _tabs)
-        {
-            if (!AngleInSweep(deg, candidate.StartDeg, candidate.SweepDeg))
-                continue;
-
-            slot = candidate;
-            return true;
-        }
-
-        return false;
+        slot = _tabs.FirstOrDefault(t => AngleInSweep(deg, t.StartDeg, t.SweepDeg))!;
+        return slot != null;
     }
 
-    /// <summary>分组外环扇区命中，迟滞规则同 <see cref="TryPickTab"/>。</summary>
     private bool TryPickGroup(float deg, out GroupSlot slot)
     {
-        slot = null!;
-        if (_groups.Count == 0)
-            return false;
-
-        if (!string.IsNullOrEmpty(_hoverGroup))
-        {
-            var current = _groups.FirstOrDefault(
-                g => string.Equals(g.Name, _hoverGroup, StringComparison.OrdinalIgnoreCase));
-            if (current != null
-                && AngleInSweep(deg, current.StartDeg - HysteresisDeg, current.SweepDeg + HysteresisDeg * 2f))
-            {
-                slot = current;
-                return true;
-            }
-        }
-
-        foreach (var candidate in _groups)
-        {
-            if (!AngleInSweep(deg, candidate.StartDeg, candidate.SweepDeg))
-                continue;
-
-            slot = candidate;
-            return true;
-        }
-
-        return false;
+        slot = _groups.FirstOrDefault(g => AngleInSweep(deg, g.StartDeg, g.SweepDeg))!;
+        return slot != null;
     }
 
-    /// <summary>
-    /// 列表命中区：面板本体；手势模式下纵向各扩一行高。
-    /// 扩出来的部分让指针滑出可视行后仍算「在列表里」，从而触发自动滚动。
-    /// </summary>
-    private RectangleF GetListHitBounds()
+    /// <summary>仅实际可见行可以点击；边距、滚动条和行间空白不吸附到条目。</summary>
+    private int FindVisibleItem(Point client)
     {
-        if (_listPanelBounds.IsEmpty)
-            return RectangleF.Empty;
-
-        return _gestureMode
-            ? RectangleF.Inflate(_listPanelBounds, 0, S(ListRowHeightLogical))
-            : _listPanelBounds;
-    }
-
-    /// <summary>
-    /// 按纵向最近的行中心选行，而不是要求指针落在行矩形内。
-    /// 行与行之间本来有 5px 间隙，用矩形包含判定会让高亮在间隙处闪断。
-    /// </summary>
-    private int FindNearestVisibleItem(Point client)
-    {
-        if (_items.Count == 0)
-            return -1;
-
         var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
-        var best = -1;
-        var bestDelta = float.MaxValue;
         for (var i = _scrollIndex; i < end; i++)
         {
-            var bounds = _items[i].TargetBounds;
-            if (bounds.IsEmpty)
-                continue;
-
-            var delta = Math.Abs(client.Y - (bounds.Y + bounds.Height / 2f));
-            if (delta < bestDelta)
-            {
-                bestDelta = delta;
-                best = i;
-            }
+            if (_items[i].AnimT >= 0.4f && GetAnimatedItemBounds(_items[i]).Contains(client))
+                return i;
         }
-
-        return best;
+        return -1;
     }
 
     private static bool AngleInSweep(float deg, float start, float sweep)
@@ -2429,6 +2210,11 @@ internal sealed class RadialMenuPopup : Form
 
     private void ExecuteEntry(QuickEntry entry)
     {
+        if (entry.Type == EntryType.Folder)
+        {
+            _ = _launcher.OpenFolderOrNavigateAsync(entry, _deliveryTargetWindow);
+            return;
+        }
         if (entry.Type == EntryType.Text)
         {
             if (!DynamicTextEntries.IsDynamic(entry))

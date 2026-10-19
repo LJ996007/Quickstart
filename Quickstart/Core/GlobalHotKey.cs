@@ -14,6 +14,7 @@ internal sealed class GlobalHotKey : NativeWindow, IDisposable
 
     private bool _registered;
     private bool _disposed;
+    private int _registrationError;
 
     public event Action? Pressed;
 
@@ -30,6 +31,7 @@ internal sealed class GlobalHotKey : NativeWindow, IDisposable
     {
         Unregister();
         error = string.Empty;
+        _registrationError = 0;
 
         if (string.IsNullOrWhiteSpace(gesture))
             return true;
@@ -39,12 +41,32 @@ internal sealed class GlobalHotKey : NativeWindow, IDisposable
 
         if (!RegisterHotKey(Handle, HotKeyId, modifiers | ModNoRepeat, (uint)key))
         {
-            error = $"快捷键注册失败，可能已被其他程序占用（错误 {Marshal.GetLastWin32Error()}）。";
+            _registrationError = Marshal.GetLastWin32Error();
+            error = $"快捷键 {gesture} 注册失败，可能已被其他程序占用（错误 {_registrationError}）。";
             return false;
         }
 
         _registered = true;
         return true;
+    }
+
+    public bool TryRegisterWithFallback(string? gesture, IEnumerable<string> alternatives,
+        out string effectiveGesture, out string error)
+    {
+        effectiveGesture = gesture ?? string.Empty;
+        if (TryRegister(gesture, out error)) return true;
+        if (_registrationError != 1409) return false;
+
+        foreach (var alternative in alternatives)
+        {
+            if (TryRegister(alternative, out error))
+            {
+                effectiveGesture = alternative;
+                return true;
+            }
+            if (_registrationError != 1409) return false;
+        }
+        return false;
     }
 
     public static bool TryParse(string? gesture, out uint modifiers, out Keys key, out string error)

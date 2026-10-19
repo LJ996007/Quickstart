@@ -12,6 +12,8 @@ static class Program
     [STAThread]
     static void Main(string[] args)
     {
+        // Reader workers must bypass single-instance IPC, hooks, config and all application UI.
+        if (FileDialogProbe.HandleCommandLine(args)) return;
         var startupSw = Stopwatch.StartNew();
         var perfEnabled = string.Equals(
             Environment.GetEnvironmentVariable("QUICKSTART_PERF"),
@@ -66,6 +68,8 @@ static class Program
         // Core services
         var configManager = new ConfigManager();
         configManager.Load();
+        using var opusRecentFolders = new OpusRecentFolderTracker(configManager);
+        opusRecentFolders.Start();
         Perf("config-loaded");
 
         var launcher = new ProcessLauncher(configManager);
@@ -78,14 +82,22 @@ static class Program
         RadialMenuPopup? radialMenuPopup = null;
         AiPopup? aiPopup = null;
         AiActionPickerPopup? aiActionPicker = null;
+        FileSearchPopup? fileSearchPopup = null;
+        using var dialogQuickBar = new DialogQuickBarController(configManager);
+        launcher.DialogTargetResolver = dialogQuickBar.ResolveAsync;
+        using var middleClickMenu = new ContextMenuStrip();
+        Point middleClickPoint = Point.Empty;
+        IntPtr middleClickSourceWindow = IntPtr.Zero;
         IntPtr leftGestureSourceWindow = IntPtr.Zero;
         CancellationTokenSource? everythingSearchCts = null;
         var settingsDialogOpen = false;
         var trayIcon = new TrayIcon();
+        launcher.NavigationFailed += message => trayIcon.ShowBalloon("目录跳转", message, ToolTipIcon.Warning);
         using var uiDispatcher = new Control();
         _ = uiDispatcher.Handle;
         var mouseHook = new GlobalMouseHook();
         using var globalHotKey = new GlobalHotKey();
+        using var fileSearchHotKey = new GlobalHotKey();
         using var clipboardHistory = new ClipboardHistoryService(configManager);
         clipboardHistory.Start(uiDispatcher);
         Perf("tray-and-hook-ready");
@@ -126,6 +138,7 @@ static class Program
             {
                 mainPopup = new MainPopup(configManager, launcher, clipboardHistory);
                 mainPopup.ShowSettings += ShowSettings;
+                mainPopup.ShowFileSearch += () => ShowFileSearch(sourceWindow: mainPopup.SourceWindow);
                 _ = mainPopup.Handle;
             }
 
@@ -137,6 +150,7 @@ static class Program
             if (radialMenuPopup == null || radialMenuPopup.IsDisposed)
             {
                 radialMenuPopup = new RadialMenuPopup(configManager, launcher, clipboardHistory);
+                radialMenuPopup.ShowFileSearch += () => ShowFileSearch(sourceWindow: radialMenuPopup.SourceWindow);
                 _ = radialMenuPopup.Handle;
             }
 
@@ -182,6 +196,7 @@ static class Program
         // 钩子无法及时返回，表现为整机鼠标严重卡顿。必须等菜单关闭后再弹出。
         // （钩子已迁到专用线程后整机鼠标不再受影响，但菜单嵌套仍会导致设置窗异常。）
         trayIcon.ShowSettings += () => PostToUi(ShowSettings);
+        trayIcon.ShowFileSearch += () => PostToUi(() => ShowFileSearch());
 
         trayIcon.ExitRequested += () =>
         {
@@ -271,14 +286,7 @@ static class Program
             var direction = (RightDragDirection)Volatile.Read(ref gestureMove.Direction);
             var point = GestureMoveState.UnpackPoint(Interlocked.Read(ref gestureMove.PackedPoint));
 
-            if (direction == RightDragDirection.Right)
-            {
-                if (radialMenuPopup is { Visible: true })
-                    radialMenuPopup.HighlightAtScreenPoint(point);
-                else if (mainPopup is { Visible: true })
-                    mainPopup.HighlightAtScreenPoint(point);
-            }
-            else if (direction == RightDragDirection.Left && aiActionPicker is { Visible: true })
+            if (direction == RightDragDirection.Left && aiActionPicker is { Visible: true })
             {
                 aiActionPicker.HighlightAtScreenPoint(point);
             }
@@ -301,7 +309,8 @@ static class Program
             mouseHook.UpdateSettings(
                 config.RightDragEnabled,
                 config.RightDragTriggerDistance,
-                config.RightDragVerticalTolerance);
+                config.RightDragVerticalTolerance,
+                config.MiddleClickEnabled);
 
             if (!globalHotKey.TryRegister(config.HotKey, out var error)
                 && showRegistrationError
@@ -309,16 +318,105 @@ static class Program
             {
                 trayIcon.ShowBalloon("Quickstart", error, ToolTipIcon.Warning);
             }
+            // Only migrate the shipped default; never replace a user's custom binding.
+            string[] searchAlternatives = string.Equals(config.FileSearchHotKey, "Ctrl+Alt+Space", StringComparison.OrdinalIgnoreCase)
+                ? ["Ctrl+Shift+Space", "Ctrl+Alt+F"] : [];
+            if (fileSearchHotKey.TryRegisterWithFallback(config.FileSearchHotKey, searchAlternatives,
+                out var effectiveSearchHotKey, out var searchError))
+            {
+                if (effectiveSearchHotKey != config.FileSearchHotKey)
+                {
+                    var previous = config.FileSearchHotKey;
+                    config.FileSearchHotKey = effectiveSearchHotKey;
+                    configManager.Save();
+                    trayIcon.ShowBalloon("本地搜索快捷键已调整",
+                        $"{previous} 已被占用，已改为 {effectiveSearchHotKey}。可在设置 → 快捷启动中修改。", ToolTipIcon.Info);
+                }
+            }
+            else if (showRegistrationError)
+                trayIcon.ShowBalloon("本地搜索", searchError +
+                    " 可在设置 → 快捷启动中修改；仍可使用中键菜单、托盘菜单和对话框底栏。", ToolTipIcon.Warning);
         }
 
+        fileSearchHotKey.Pressed += () =>
+        {
+            if (fileSearchPopup is { Visible: true }) fileSearchPopup.Hide();
+            else ShowFileSearch();
+        };
+
         ApplyRuntimeInputSettings(showRegistrationError: true);
+        dialogQuickBar.Start();
+
+        void HideInputPanels()
+        {
+            mainPopup?.Hide();
+            radialMenuPopup?.Hide();
+            aiActionPicker?.Hide();
+            aiPopup?.Hide();
+            fileSearchPopup?.Hide();
+            dialogQuickBar.Bar.Hide();
+        }
+
+        async void ShowFileSearch(string query = "", IntPtr sourceWindow = default)
+        {
+            if (sourceWindow == IntPtr.Zero) sourceWindow = FileDialogNavigator.CaptureForegroundWindow();
+            HideInputPanels();
+            try
+            {
+                if (await dialogQuickBar.ShowSearchAsync(query, sourceWindow)) return;
+                if (fileSearchPopup == null || fileSearchPopup.IsDisposed)
+                    fileSearchPopup = new FileSearchPopup(configManager, launcher);
+                fileSearchPopup.ShowSearch(query, sourceWindow);
+            }
+            catch (Exception ex)
+            {
+                trayIcon.ShowBalloon("目录助手", ex is OperationCanceledException ? "识别超时，请重新呼出。" : ex.Message, ToolTipIcon.Warning);
+            }
+        }
+
+        // As with the tray menu, wait for the menu's modal loop to close before showing a panel.
+        middleClickMenu.Items.Add("快捷启动（右滑界面）", null, (_, _) => PostToUi(() =>
+        {
+            HideInputPanels();
+            if (configManager.Config.RightSwipePresentation == RightSwipePresentation.RadialRing)
+            {
+                var popup = EnsureRadialMenuPopup();
+                popup.ShowAtGesturePoint(middleClickPoint, middleClickSourceWindow);
+                popup.EnterInteractiveMode();
+            }
+            else
+            {
+                var popup = EnsureMainPopup();
+                popup.ShowAtGesturePoint(middleClickPoint, middleClickSourceWindow);
+                popup.EnterInteractiveMode();
+            }
+        }));
+        middleClickMenu.Items.Add("动作面板（左滑界面）", null, (_, _) => PostToUi(() =>
+        {
+            HideInputPanels();
+            leftGestureSourceWindow = middleClickSourceWindow;
+            var popup = EnsureAiActionPicker();
+            popup.ShowAtGesturePoint(middleClickPoint);
+            popup.EnterInteractiveMode();
+        }));
+        middleClickMenu.Items.Add("本地文件搜索", null, (_, _) => PostToUi(() => ShowFileSearch(sourceWindow: middleClickSourceWindow)));
+        mouseHook.MiddleClicked += (point, sourceWindow) => PostToUi(() =>
+        {
+            if (settingsDialogOpen) return;
+            if (middleClickMenu.Visible) { middleClickMenu.Close(); return; }
+            HideInputPanels();
+            middleClickPoint = point;
+            middleClickSourceWindow = sourceWindow;
+            WindowActivator.ClaimForegroundRights();
+            middleClickMenu.Show(point);
+        });
 
         mouseHook.GestureTriggered += (direction, pt, sourceWindow) =>
         {
             // 低级鼠标钩子必须尽快返回。所有窗口创建、布局和显示都投递到 UI 消息队列。
             PostGestureAction(() =>
             {
-                if (!gestureMoveTimer.Enabled)
+                if (direction == RightDragDirection.Left && !gestureMoveTimer.Enabled)
                     gestureMoveTimer.Start();
 
                 if (direction == RightDragDirection.Left)
@@ -359,6 +457,9 @@ static class Program
         };
         mouseHook.GestureMove += (direction, pt) =>
         {
+            // 右滑只呼出，松手后点击选择；连续拖动选择仅保留给左滑动作面板。
+            if (direction != RightDragDirection.Left)
+                return;
             // 只保留最新坐标，由 16 ms UI 定时器统一处理，避免高回报率鼠标淹没消息泵。
             Volatile.Write(ref gestureMove.Direction, (int)direction);
             Interlocked.Exchange(ref gestureMove.PackedPoint, GestureMoveState.PackPoint(pt));
@@ -368,15 +469,18 @@ static class Program
         {
             PostGestureAction(() =>
             {
-                Volatile.Write(ref gestureMove.Direction, (int)direction);
-                Interlocked.Exchange(ref gestureMove.PackedPoint, GestureMoveState.PackPoint(pt));
-                Interlocked.Exchange(ref gestureMove.Pending, 1);
-                ProcessPendingGestureMove();
+                if (direction == RightDragDirection.Left)
+                {
+                    Volatile.Write(ref gestureMove.Direction, (int)direction);
+                    Interlocked.Exchange(ref gestureMove.PackedPoint, GestureMoveState.PackPoint(pt));
+                    Interlocked.Exchange(ref gestureMove.Pending, 1);
+                    ProcessPendingGestureMove();
+                }
 
                 if (direction == RightDragDirection.Right && radialMenuPopup is { Visible: true })
-                    radialMenuPopup.TryReleaseAtScreenPoint(pt);
+                    radialMenuPopup.EnterInteractiveMode();
                 else if (direction == RightDragDirection.Right && mainPopup is { Visible: true })
-                    mainPopup.TryReleaseAtScreenPoint(pt);
+                    mainPopup.EnterInteractiveMode();
                 else if (direction == RightDragDirection.Left
                     && configManager.Config.LeftDragAction == LeftDragAction.EverythingSearch)
                 {
@@ -415,6 +519,7 @@ static class Program
             aiPopupPrewarmTimer.Stop();
             aiPopupPrewarmTimer.Dispose();
             mouseHook.Dispose();
+            fileSearchPopup?.Dispose();
             everythingSearchCts?.Cancel();
             everythingSearchCts?.Dispose();
             aiClient.Dispose();
@@ -659,38 +764,13 @@ static class Program
                     cts.Token,
                     restoreClipboard: true);
 
-                if (captured.Kind == AiCapturedInputKind.Files)
-                {
-                    trayIcon.ShowBalloon("Quickstart", "请选择文本后再使用 Everything 搜索。", ToolTipIcon.Warning);
-                    return;
-                }
-
+                cts.Token.ThrowIfCancellationRequested();
                 if (captured.Kind != AiCapturedInputKind.Text || string.IsNullOrWhiteSpace(captured.Text))
                 {
-                    trayIcon.ShowBalloon("Quickstart", "未捕获到选中文字。", ToolTipIcon.Warning);
+                    ShowFileSearch(sourceWindow: sourceWindow);
                     return;
                 }
-
-                var everythingPath = configManager.Config.EverythingPath;
-                if (string.IsNullOrWhiteSpace(everythingPath) || !File.Exists(everythingPath))
-                {
-                    everythingPath = EverythingDetector.Detect();
-                    if (everythingPath == null)
-                    {
-                        trayIcon.ShowBalloon(
-                            "Quickstart",
-                            "未找到 Everything.exe，请在设置中指定路径。",
-                            ToolTipIcon.Warning);
-                        return;
-                    }
-
-                    configManager.Config.EverythingPath = everythingPath;
-                    configManager.Save();
-                }
-
-                // 文本捕获会把前台切回微信；启动 Everything 前先恢复抢前台权限，并异步等待窗口出现。
-                // 必须在 UI 线程上完成 ClaimForegroundRights / Process.Start，否则单实例窗口常不前置。
-                await EverythingLauncher.SearchAsync(everythingPath, captured.Text, cts.Token);
+                ShowFileSearch(EverythingLauncher.NormalizeQuery(captured.Text), sourceWindow);
             }
             catch (OperationCanceledException)
             {

@@ -32,6 +32,9 @@ public sealed class SettingsForm : Form
     private readonly CheckBox _shellMenuCheck;
     private readonly TextBox _hotKeyBox;
     private readonly CheckBox _rightDragCheck;
+    private readonly CheckBox _middleClickCheck;
+    private readonly TextBox _fileSearchHotKeyBox;
+    private readonly CheckBox _fileDialogNavigationCheck;
     private readonly NumericUpDown _gestureDistanceBox;
     private readonly NumericUpDown _gestureToleranceBox;
     private readonly ComboBox _leftDragActionBox;
@@ -39,6 +42,7 @@ public sealed class SettingsForm : Form
     private readonly Button _manageWebSearchToolsBtn;
     private readonly CheckBox _rememberLastViewCheck;
     private readonly CheckBox _sortRecentCheck;
+    private readonly CheckBox _sortFrequencyCheck;
     private readonly ListBox _tabOrderList;
     private readonly Button _tabOrderUpBtn;
     private readonly Button _tabOrderDownBtn;
@@ -184,11 +188,16 @@ public sealed class SettingsForm : Form
         _hotKeyBox = CreateTextBox(config.HotKey);
         _hotKeyBox.PlaceholderText = "例如 Ctrl+Shift+Space；留空表示禁用";
         var hotKeyRow = CreateLabeledFieldRow("全局快捷键", _hotKeyBox, labelWidth: 88);
+        _fileSearchHotKeyBox = CreateTextBox(config.FileSearchHotKey);
+        _fileSearchHotKeyBox.PlaceholderText = "Ctrl+Alt+Space；留空禁用";
+        var fileSearchHotKeyRow = CreateLabeledFieldRow("本地搜索", _fileSearchHotKeyBox, labelWidth: 88);
 
         _rightDragCheck = CreateCheckBox("启用右键拖动手势", config.RightDragEnabled);
+        _middleClickCheck = CreateCheckBox("中键单击呼出面板选择入口", config.MiddleClickEnabled);
+        _fileDialogNavigationCheck = CreateCheckBox("打开/保存时自动显示目录搜索与收藏栏（含 WPS）", config.FileDialogNavigationEnabled);
         _rightDragCheck.Margin = new Padding(0, 4, 0, 2);
 
-        var gestureHintLabel = CreateHintLabel("向右拖动打开启动器（经典面板或圆环轮，见「向右呼出」）；向左拖动执行下方动作");
+        var gestureHintLabel = CreateHintLabel("向右拖动呼出后松手停留，左键点击条目执行；向左拖动执行下方动作");
         gestureHintLabel.Margin = new Padding(22, 0, 0, 8);
 
         _leftDragActionBox = new ComboBox
@@ -213,7 +222,7 @@ public sealed class SettingsForm : Form
             FlatStyle = FlatStyle.System,
             Font = new Font(UiFont, 9f)
         };
-        _rightSwipePresentationBox.Items.AddRange(["经典列表面板", "圆环轮（标签 + 烟花列表）"]);
+        _rightSwipePresentationBox.Items.AddRange(["经典列表面板（推荐）", "圆环轮（点击选择）"]);
         _rightSwipePresentationBox.SelectedIndex =
             config.RightSwipePresentation == RightSwipePresentation.RadialRing ? 1 : 0;
         var rightSwipePresentationRow = CreateLabeledFieldRow("向右呼出", _rightSwipePresentationBox, labelWidth: gestureLabelWidth);
@@ -266,6 +275,7 @@ public sealed class SettingsForm : Form
         _rememberLastViewCheck.Margin = new Padding(0, 0, 20, 0);
         _sortRecentCheck = CreateCheckBox("最近使用的项目优先", config.SortByRecentUsage);
         _sortRecentCheck.Margin = new Padding(0);
+        _sortFrequencyCheck = CreateCheckBox("文件夹按使用频率排序（次数相同按最近使用）", config.SortFoldersByFrequency);
 
         // 紧凑一行，不要 Dock.Fill，否则会在卡片底部撑出一条无意义的灰色空白
         var listBehaviorRow = new FlowLayoutPanel
@@ -281,6 +291,7 @@ public sealed class SettingsForm : Form
         };
         listBehaviorRow.Controls.Add(_rememberLastViewCheck);
         listBehaviorRow.Controls.Add(_sortRecentCheck);
+        listBehaviorRow.Controls.Add(_sortFrequencyCheck);
 
         // 标签顺序（经典列表面板 + 圆环轮扇区共用）
         var tabOrderHint = CreateHintLabel("上→下 / 圆环扇区上→下；经典面板左侧标签与圆环轮顺序一致。也可在经典面板里拖拽标签排序。");
@@ -586,8 +597,13 @@ public sealed class SettingsForm : Form
             CreateCard("系统集成",
                 _startupCheck, _shellMenuCheck));
 
+        var folderFavoritesButton = new Button { Text = "设置目录收藏来源 / 管理收藏…", AutoSize = true };
+        folderFavoritesButton.Click += (_, _) => { using var editor = new FolderFavoritesForm(_configManager); editor.ShowDialog(this); };
         var launchPage = CreatePagePanel(
-            CreateCard("快捷键", hotKeyRow),
+            CreateCard("快捷键", hotKeyRow, fileSearchHotKeyRow, _fileDialogNavigationCheck),
+            CreateCard("对话框目录", CreateHintLabel("底部按钮显示最近使用目录；点击 ☆ 收藏查看收藏，支持 Opus、Quickstart 或合并。"), folderFavoritesButton),
+            CreateCard("鼠标中键", _middleClickCheck,
+                CreateHintLabel("单击滚轮后选择快捷启动、动作面板或本地搜索。开启后接管中键，关闭可恢复浏览器中键开标签等原有功能。")),
             CreateCard("右键拖动手势",
                 _rightDragCheck, gestureHintLabel, gestureOptionsPanel));
 
@@ -1001,7 +1017,7 @@ public sealed class SettingsForm : Form
             var labelWidth = UiScaleHelper.Scale(this, 88);
             var gestureLabelScaled = UiScaleHelper.Scale(this, gestureLabelWidth);
             var pathLabelScaled = UiScaleHelper.Scale(this, pathLabelWidth);
-            foreach (var row in new[] { hotKeyRow, searchToolsRow, ocrAkRow, ocrSkRow })
+            foreach (var row in new[] { hotKeyRow, fileSearchHotKeyRow, searchToolsRow, ocrAkRow, ocrSkRow })
             {
                 if (row.ColumnStyles.Count > 0 && row.ColumnStyles[0].SizeType == SizeType.Absolute)
                     row.ColumnStyles[0].Width = labelWidth;
@@ -1512,6 +1528,18 @@ public sealed class SettingsForm : Form
         }
 
         var everythingPath = _everythingPathBox.Text.Trim();
+        var searchHotKey = _fileSearchHotKeyBox.Text.Trim();
+        if (!GlobalHotKey.TryParse(searchHotKey, out var searchModifiers, out var searchKey, out var searchError)
+            || (!string.IsNullOrEmpty(searchHotKey)
+                && GlobalHotKey.TryParse(hotKey, out var launchModifiers, out var launchKey, out _)
+                && searchModifiers == launchModifiers && searchKey == launchKey))
+        {
+            DialogPresenter.ShowMessage(this, string.IsNullOrEmpty(searchError) ? "本地搜索快捷键不能与启动器快捷键相同。" : searchError,
+                "快捷键格式不正确", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            _navList.SelectedIndex = 1;
+            _fileSearchHotKeyBox.Focus();
+            return;
+        }
         if (_leftDragActionBox.SelectedIndex == 1 && !File.Exists(everythingPath))
         {
             DialogPresenter.ShowMessage(
@@ -1537,7 +1565,10 @@ public sealed class SettingsForm : Form
             _ => OpenWith.TotalCommander
         };
         config.HotKey = hotKey;
+        config.FileSearchHotKey = searchHotKey;
+        config.FileDialogNavigationEnabled = _fileDialogNavigationCheck.Checked;
         config.RightDragEnabled = _rightDragCheck.Checked;
+        config.MiddleClickEnabled = _middleClickCheck.Checked;
         config.LeftDragAction = _leftDragActionBox.SelectedIndex == 1
             ? LeftDragAction.EverythingSearch
             : LeftDragAction.AiActionPicker;
@@ -1548,6 +1579,7 @@ public sealed class SettingsForm : Form
         config.RightDragVerticalTolerance = Decimal.ToInt32(_gestureToleranceBox.Value);
         config.RememberLastView = _rememberLastViewCheck.Checked;
         config.SortByRecentUsage = _sortRecentCheck.Checked;
+        config.SortFoldersByFrequency = _sortFrequencyCheck.Checked;
         config.MainPopupTabOrder = CollectTabOrderFromList();
 
         config.Ocr ??= new OcrConfig();

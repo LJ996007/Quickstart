@@ -18,6 +18,7 @@ public sealed class QuickEntry
     public int SortOrder { get; set; }
     public DateTime AddedAt { get; set; } = DateTime.Now;
     public DateTime LastUsedAt { get; set; }
+    public long UseCount { get; set; }
 
     /// <summary>网页条目的自定义图标文件路径（位于应用数据目录），为空则使用自动抓取的网站图标。</summary>
     public string? CustomIconPath { get; set; }

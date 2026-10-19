@@ -11,6 +11,9 @@ public static class EntryQueries
 {
     public const string AllGroupsLabel = "全部";
 
+    public static IOrderedEnumerable<QuickEntry> ByUsageFrequency(IEnumerable<QuickEntry> entries)
+        => entries.OrderByDescending(e => e.UseCount).ThenByDescending(e => e.LastUsedAt).ThenBy(e => e.SortOrder);
+
     public static string NormalizeGroupName(string? group)
         => string.IsNullOrWhiteSpace(group) ? string.Empty : group.Trim();
 

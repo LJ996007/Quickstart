@@ -7,6 +7,26 @@ using Quickstart.Utils;
 
 public sealed class ProcessLauncher(ConfigManager configManager)
 {
+    public event Action<string>? NavigationFailed;
+    public Func<IntPtr, Task<FileDialogTarget?>>? DialogTargetResolver { get; set; }
+
+    public async Task OpenFolderOrNavigateAsync(QuickEntry entry, IntPtr sourceWindow)
+    {
+        try
+        {
+            var target = configManager.Config.FileDialogNavigationEnabled
+                ? await (DialogTargetResolver?.Invoke(sourceWindow) ?? FileDialogNavigator.DetectAsync(sourceWindow)) : null;
+            if (target == null) { Open(entry); return; }
+            await FileDialogNavigator.NavigateAsync(target, entry.Path);
+            configManager.RecordRecentFolder(entry.Path);
+            configManager.TouchEntry(entry.Id);
+        }
+        catch (Exception ex)
+        {
+            NavigationFailed?.Invoke(ex is OperationCanceledException ? "对话框操作超时，请重新呼出后重试。" : ex.Message);
+        }
+    }
+
     /// <summary>匹配「%xxx%」形式、可能被 Go 命令当环境变量展开的路径片段。</summary>
     private static readonly Regex ExpandableEnvPattern = new("%[^%]+%", RegexOptions.Compiled);
 
@@ -36,6 +56,7 @@ public sealed class ProcessLauncher(ConfigManager configManager)
         }
 
         // Folder
+        configManager.RecordRecentFolder(entry.Path);
         switch (openWith)
         {
             case OpenWith.TotalCommander:

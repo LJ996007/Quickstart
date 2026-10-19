@@ -33,8 +33,11 @@ internal sealed class AiActionPickerPopup : Form
     private const int ContentBottomSlack = 20;
     private const int ChromeLogical = 8;
     private const int ListBottomPadding = 8;
+    private const int FooterLogicalHeight = 20;
+    private const string GestureHint = "拖到动作上松手执行 · 空白处松手可停留";
+    private const string InteractiveHint = "↑↓←→ 选择 · Enter 执行 · 1-3 最近 · Esc 关闭";
 
-    private static readonly Color PromptDot = Color.FromArgb(55, 138, 221);   // #378ADD
+    private static readonly Color PromptDot = UiTheme.Accent;   // #378ADD
     private static readonly Color ToolDot = Color.FromArgb(99, 153, 34);      // #639922
     private static readonly Color SkillDot = Color.FromArgb(127, 119, 221);   // #7F77DD
 
@@ -54,6 +57,7 @@ internal sealed class AiActionPickerPopup : Form
     private readonly Label _toolHeaderLabel;
     private readonly FlowLayoutPanel _promptList;
     private readonly FlowLayoutPanel _toolList;
+    private readonly Label _footerHint;
     private readonly List<ActionItemControl> _items = [];
     private readonly List<RecentChipControl> _chips = [];
     private readonly List<Control> _dragHandles = [];
@@ -85,7 +89,7 @@ internal sealed class AiActionPickerPopup : Form
         StartPosition = FormStartPosition.Manual;
         TopMost = true;
         KeyPreview = true;
-        BackColor = Color.FromArgb(250, 250, 250);
+        BackColor = UiTheme.Surface;
         Padding = new Padding(1);
         SetStyle(
             ControlStyles.ResizeRedraw
@@ -100,15 +104,15 @@ internal sealed class AiActionPickerPopup : Form
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(1),
-            BackColor = Color.FromArgb(220, 220, 220)
+            BackColor = UiTheme.Border
         };
 
         _root = new TableLayoutPanel
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(250, 250, 250),
+            BackColor = UiTheme.Surface,
             ColumnCount = 1,
-            RowCount = 2,
+            RowCount = 3,
             Padding = UiScaleHelper.ScalePadding(this, new Padding(RootPadding)),
             Margin = new Padding(0)
         };
@@ -146,8 +150,8 @@ internal sealed class AiActionPickerPopup : Form
             Dock = DockStyle.Left,
             Width = UiScaleHelper.Scale(this, RecentLabelLogicalWidth),
             Height = UiScaleHelper.Scale(this, TopBarLogicalHeight),
-            Font = new Font("Microsoft YaHei UI", 9f),
-            ForeColor = Color.FromArgb(120, 120, 120),
+            Font = UiTheme.CreateFont(9f),
+            ForeColor = UiTheme.TextMuted,
             TextAlign = ContentAlignment.MiddleLeft,
             Margin = new Padding(0),
             Padding = new Padding(0),
@@ -180,7 +184,7 @@ internal sealed class AiActionPickerPopup : Form
             RowCount = 2,
             Margin = new Padding(0),
             Padding = new Padding(0),
-            BackColor = Color.FromArgb(250, 250, 250)
+            BackColor = UiTheme.Surface
         };
         // 左右等分，列间距略留白，视觉更对称
         content.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -204,6 +208,22 @@ internal sealed class AiActionPickerPopup : Form
         content.Controls.Add(_promptList, 0, 1);
         content.Controls.Add(_toolList, 1, 1);
         InstallTitleDragHandlers(_promptList, _toolList);
+
+        // ── 底部操作提示：手势中 / 停留后两套文案 ─────────────────────
+        _root.RowStyles.Add(new RowStyle(SizeType.Absolute, UiScaleHelper.Scale(this, FooterLogicalHeight)));
+        _footerHint = new Label
+        {
+            Text = GestureHint,
+            Dock = DockStyle.Fill,
+            AutoSize = false,
+            AutoEllipsis = true,
+            Font = UiTheme.CreateFont(8.5f),
+            ForeColor = UiTheme.TextMuted,
+            TextAlign = ContentAlignment.BottomLeft,
+            Margin = new Padding(0)
+        };
+        _root.Controls.Add(_footerHint, 0, 2);
+        InstallTitleDragHandlers(_footerHint);
 
         border.Controls.Add(_root);
         Controls.Add(border);
@@ -280,6 +300,7 @@ internal sealed class AiActionPickerPopup : Form
             var x = Math.Max(workingArea.Left + margin, Math.Min(screenPt.X - Width + margin, workingArea.Right - Width - margin));
             var y = Math.Max(workingArea.Top + margin, Math.Min(screenPt.Y - (Height / 2), workingArea.Bottom - Height - margin));
             Location = new Point(x, y);
+            PopupMotion.SlideIn(this, direction: -1);
         }
         finally
         {
@@ -304,6 +325,10 @@ internal sealed class AiActionPickerPopup : Form
         _showWithoutActivation = false;
         ApplyNoActivateStyle(enabled: false);
         UpdateDragCursors();
+        _footerHint.Text = InteractiveHint;
+        // 停留后给键盘一个起点：沿用手势最后悬停的条目，否则选中第一项
+        if (_lastHighlightedItem == null)
+            MoveKeyboardHighlight(_items.FirstOrDefault());
 
         // 手势阶段一直 NOACTIVATE，松手后必须真正抢到前台，ESC / 拖动 / 点击才可靠。
         // 先抑制失焦自动隐藏，避免 Activate 过程中的瞬时 Deactivate 把面板关掉。
@@ -415,6 +440,9 @@ internal sealed class AiActionPickerPopup : Form
             return true;
         }
 
+        if (!_gestureMode && HandleNavigationKey(keyData))
+            return true;
+
         return base.ProcessCmdKey(ref msg, keyData);
     }
 
@@ -438,6 +466,7 @@ internal sealed class AiActionPickerPopup : Form
         ApplyNoActivateStyle(enabled: true);
         ClearHighlight();
         UpdateDragCursors();
+        _footerHint.Text = GestureHint;
     }
 
     private void ClearHighlight()
@@ -446,6 +475,79 @@ internal sealed class AiActionPickerPopup : Form
         _lastHighlightedChip?.SetHighlighted(false);
         _lastHighlightedItem = null;
         _lastHighlightedChip = null;
+    }
+
+    /// <summary>
+    /// 停留模式的键盘操作：↑↓ 在当前栏内移动，←→ 切换 Prompt / 工具栏（保持行号），
+    /// Enter 执行当前项，1-3 直接执行对应的「最近」chip。
+    /// </summary>
+    private bool HandleNavigationKey(Keys keyData)
+    {
+        var chipIndex = keyData switch
+        {
+            Keys.D1 or Keys.NumPad1 => 0,
+            Keys.D2 or Keys.NumPad2 => 1,
+            Keys.D3 or Keys.NumPad3 => 2,
+            _ => -1
+        };
+        if (chipIndex >= 0)
+        {
+            if (chipIndex >= _chips.Count)
+                return false;
+            var chip = _chips[chipIndex];
+            RaiseActionSelected(chip.Selection, chip.PointToScreen(new Point(chip.Width / 2, chip.Height / 2)));
+            return true;
+        }
+
+        if (keyData == Keys.Enter)
+        {
+            var current = _lastHighlightedItem;
+            if (current == null)
+                return false;
+            RaiseActionSelected(current.Selection, current.PointToScreen(new Point(current.Width / 2, current.Height / 2)));
+            return true;
+        }
+
+        if (keyData is not (Keys.Up or Keys.Down or Keys.Left or Keys.Right))
+            return false;
+
+        var prompts = _items.Where(i => i.Parent == _promptList).ToList();
+        var tools = _items.Where(i => i.Parent == _toolList).ToList();
+        if (prompts.Count == 0 && tools.Count == 0)
+            return true;
+
+        var column = _lastHighlightedItem?.Parent == _toolList ? tools : prompts;
+        if (column.Count == 0)
+            column = prompts.Count > 0 ? prompts : tools;
+        var index = _lastHighlightedItem == null ? -1 : column.IndexOf(_lastHighlightedItem);
+
+        ActionItemControl? next = keyData switch
+        {
+            Keys.Up => column[Math.Max(0, index - 1)],
+            Keys.Down => column[Math.Min(column.Count - 1, index + 1)],
+            Keys.Left when column == tools && prompts.Count > 0 => prompts[Math.Clamp(index, 0, prompts.Count - 1)],
+            Keys.Right when column == prompts && tools.Count > 0 => tools[Math.Clamp(index, 0, tools.Count - 1)],
+            _ => _lastHighlightedItem ?? column[0]
+        };
+        MoveKeyboardHighlight(next);
+        return true;
+    }
+
+    private void MoveKeyboardHighlight(ActionItemControl? item)
+    {
+        _lastHighlightedChip?.SetHighlighted(false);
+        _lastHighlightedChip = null;
+        if (ReferenceEquals(_lastHighlightedItem, item))
+            return;
+
+        _lastHighlightedItem?.SetHighlighted(false);
+        _lastHighlightedItem = item;
+        if (item == null)
+            return;
+
+        item.SetHighlighted(true);
+        if (item.Parent is ScrollableControl list)
+            list.ScrollControlIntoView(item);
     }
 
     private void ApplyNoActivateStyle(bool enabled)
@@ -681,6 +783,12 @@ internal sealed class AiActionPickerPopup : Form
             var screenPoint = item.PointToScreen(e.Location);
             RaiseActionSelected(selection, screenPoint);
         };
+        // 停留模式下鼠标悬停与键盘共用同一个高亮，避免两处同时亮
+        item.MouseEnter += (_, _) =>
+        {
+            if (!_gestureMode)
+                MoveKeyboardHighlight(item);
+        };
         _items.Add(item);
         host.Controls.Add(item);
     }
@@ -765,11 +873,12 @@ internal sealed class AiActionPickerPopup : Form
             listContentPx = rows * S(RowLogicalHeight) + Math.Max(0, rows - 1) * S(RowGap) + S(ListBottomPadding);
         }
 
-        // 窗体总高 = 顶栏 + 分组标题 + 列表 + 内边距 + 边框余量
+        // 窗体总高 = 顶栏 + 分组标题 + 列表 + 底部提示 + 内边距 + 边框余量
         var neededHeight =
             S(TopBarLogicalHeight + TopBarBottomGap)
             + S(GroupHeaderLogicalHeight)
             + listContentPx
+            + S(FooterLogicalHeight)
             + S(RootPadding) * 2
             + S(ContentBottomSlack)
             + S(ChromeLogical);
@@ -939,7 +1048,7 @@ internal sealed class AiActionPickerPopup : Form
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         base.OnPaintBackground(e);
-        using var pen = new Pen(Color.FromArgb(210, 210, 210));
+        using var pen = new Pen(UiTheme.Border);
         e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
     }
 
@@ -1044,7 +1153,7 @@ internal sealed class AiActionPickerPopup : Form
             AccessibleName = "打开设置",
             FlatStyle = FlatStyle.Flat,
             BackColor = Color.Transparent,
-            ForeColor = Color.FromArgb(90, 90, 90),
+            ForeColor = UiTheme.TextSecondary,
             Font = new Font("Segoe UI Symbol", 11f),
             Cursor = Cursors.Hand,
             TabStop = false,
@@ -1052,8 +1161,8 @@ internal sealed class AiActionPickerPopup : Form
             TextAlign = ContentAlignment.MiddleCenter
         };
         settingsButton.FlatAppearance.BorderSize = 0;
-        settingsButton.FlatAppearance.MouseOverBackColor = Color.FromArgb(235, 235, 235);
-        settingsButton.FlatAppearance.MouseDownBackColor = Color.FromArgb(225, 225, 225);
+        settingsButton.FlatAppearance.MouseOverBackColor = UiTheme.ButtonHoverFill;
+        settingsButton.FlatAppearance.MouseDownBackColor = UiTheme.ButtonPressedFill;
         settingsButton.Click += (_, _) =>
         {
             _suppressAutoHide = true;
@@ -1074,8 +1183,8 @@ internal sealed class AiActionPickerPopup : Form
     {
         Text = text,
         Dock = DockStyle.Fill,
-        Font = new Font("Microsoft YaHei UI", 9f, FontStyle.Bold),
-        ForeColor = Color.FromArgb(90, 90, 90),
+        Font = UiTheme.CreateFont(9f, FontStyle.Bold),
+        ForeColor = UiTheme.TextSecondary,
         TextAlign = ContentAlignment.MiddleLeft,
         Margin = new Padding(0, 0, 0, 2)
     };
@@ -1097,10 +1206,10 @@ internal sealed class AiActionPickerPopup : Form
         AutoSize = false,
         Height = UiScaleHelper.Scale(this, 28),
         Dock = DockStyle.Top,
-        ForeColor = Color.FromArgb(140, 140, 140),
+        ForeColor = UiTheme.TextMuted,
         TextAlign = ContentAlignment.MiddleLeft,
         Margin = new Padding(0),
-        Font = new Font("Microsoft YaHei UI", 9f)
+        Font = UiTheme.CreateFont(9f)
     };
 
     private static Color DotColorFor(AiActionKind kind) => kind switch
@@ -1119,7 +1228,7 @@ internal sealed class AiActionPickerPopup : Form
             Selection = selection;
             DoubleBuffered = true;
             Cursor = Cursors.Hand;
-            Font = new Font("Microsoft YaHei UI", 9.5f);
+            Font = UiTheme.CreateFont(9.5f);
         }
 
         public AiActionSelection Selection { get; }
@@ -1135,7 +1244,7 @@ internal sealed class AiActionPickerPopup : Form
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            e.Graphics.Clear(Parent?.BackColor ?? Color.White);
+            e.Graphics.Clear(Parent?.BackColor ?? UiTheme.Card);
             // 悬停高亮时用高速抗锯齿，降低手势拖动时的重绘成本
             e.Graphics.SmoothingMode = _highlighted
                 ? System.Drawing.Drawing2D.SmoothingMode.HighSpeed
@@ -1143,11 +1252,11 @@ internal sealed class AiActionPickerPopup : Form
 
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using var backBrush = new SolidBrush(_highlighted
-                ? Color.FromArgb(230, 240, 250)
-                : Color.FromArgb(255, 255, 255));
+                ? UiTheme.SelectionFill
+                : UiTheme.Card);
             using var borderPen = new Pen(_highlighted
-                ? Color.FromArgb(55, 138, 221)
-                : Color.FromArgb(230, 228, 220));
+                ? UiTheme.Accent
+                : UiTheme.BorderSubtle);
             using var path = CreateRoundRect(rect, LogicalScale(8));
             e.Graphics.FillPath(backBrush, path);
             e.Graphics.DrawPath(borderPen, path);
@@ -1160,8 +1269,8 @@ internal sealed class AiActionPickerPopup : Form
             using (var dotBrush = new SolidBrush(DotColorFor(Selection.Kind)))
                 e.Graphics.FillEllipse(dotBrush, dotX, dotY, dotSize, dotSize);
 
-            var titleColor = Color.FromArgb(35, 35, 35);
-            var metaColor = Color.FromArgb(120, 120, 120);
+            var titleColor = UiTheme.TextPrimary;
+            var metaColor = UiTheme.TextMuted;
             var textLeft = padX + dotSize + LogicalScale(8);
             var textWidth = Width - textLeft - padX;
 
@@ -1177,10 +1286,11 @@ internal sealed class AiActionPickerPopup : Form
                     new Rectangle(textLeft, titleTop, textWidth, titleH),
                     titleColor,
                     TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
+                using var metaFont = new Font(Font.FontFamily, Math.Max(7.5f, Font.Size - 1f));
                 TextRenderer.DrawText(
                     e.Graphics,
                     $"{Selection.StepCount} 步",
-                    new Font(Font.FontFamily, Math.Max(7.5f, Font.Size - 1f)),
+                    metaFont,
                     new Rectangle(textLeft, metaTop, textWidth, LogicalScale(16)),
                     metaColor,
                     TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
@@ -1222,7 +1332,7 @@ internal sealed class AiActionPickerPopup : Form
             Selection = selection;
             DoubleBuffered = true;
             Cursor = Cursors.Hand;
-            Font = new Font("Microsoft YaHei UI", 9f);
+            Font = UiTheme.CreateFont(9f);
             Width = 80;
         }
 
@@ -1258,18 +1368,18 @@ internal sealed class AiActionPickerPopup : Form
 
         protected override void OnPaint(PaintEventArgs e)
         {
-            e.Graphics.Clear(Parent?.BackColor ?? Color.FromArgb(250, 250, 250));
+            e.Graphics.Clear(Parent?.BackColor ?? UiTheme.Surface);
             e.Graphics.SmoothingMode = _highlighted
                 ? System.Drawing.Drawing2D.SmoothingMode.HighSpeed
                 : System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
 
             var rect = new Rectangle(0, 0, Width - 1, Height - 1);
             using var backBrush = new SolidBrush(_highlighted
-                ? Color.FromArgb(230, 240, 250)
-                : Color.FromArgb(245, 245, 245));
+                ? UiTheme.SelectionFill
+                : UiTheme.SurfaceAlt);
             using var borderPen = new Pen(_highlighted
-                ? Color.FromArgb(55, 138, 221)
-                : Color.FromArgb(220, 218, 210));
+                ? UiTheme.Accent
+                : UiTheme.Border);
             using var path = CreateRoundRect(rect, LogicalScale(14));
             e.Graphics.FillPath(backBrush, path);
             e.Graphics.DrawPath(borderPen, path);
@@ -1286,7 +1396,7 @@ internal sealed class AiActionPickerPopup : Form
                 Selection.Name,
                 Font,
                 new Rectangle(textLeft, 0, Width - textLeft - padX, Height),
-                Color.FromArgb(40, 40, 40),
+                UiTheme.TextPrimary,
                 TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter | TextFormatFlags.NoPrefix);
         }
 

@@ -42,7 +42,7 @@ public sealed class MainPopup : Form
     private int _iconRenderSize;
     private const int IconSourceSize = 48;
     private const int MaxTruncateCacheEntries = 2000;
-    private static readonly Font BoldMenuFont = new("Segoe UI", 9f, FontStyle.Bold);
+    private static readonly Font BoldMenuFont = UiTheme.CreateFont(9f, FontStyle.Bold);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PathStatus> _pathExistsCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, byte> _pathChecksInFlight = new(StringComparer.OrdinalIgnoreCase);
     private readonly SemaphoreSlim _pathCheckGate = new(4);
@@ -63,6 +63,7 @@ public sealed class MainPopup : Form
     private readonly TableLayoutPanel _toolbarLayout;
     private readonly Button _addButton;
     private readonly Button _settingsButton;
+    private readonly Button _fileSearchButton;
     private readonly ToolTip _toolTip = new();
     private readonly Label _countLabel;
     private readonly Panel _listHost;
@@ -89,6 +90,8 @@ public sealed class MainPopup : Form
     private int _appliedMetricsDpi;
 
     public event Action? ShowSettings;
+    public event Action? ShowFileSearch;
+    public IntPtr SourceWindow => _deliveryTargetWindow;
 
     public MainPopup(ConfigManager configManager, ProcessLauncher launcher, ClipboardHistoryService? clipboardHistory = null)
     {
@@ -104,7 +107,8 @@ public sealed class MainPopup : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
         Size = ExpandedPopupLogicalSize;
-        BackColor = Color.FromArgb(250, 250, 250);
+        BackColor = UiTheme.Surface;
+        Font = UiTheme.CreateFont(9f);
         TopMost = true;
         FormStyler.ApplyRounded(this);
 
@@ -112,13 +116,13 @@ public sealed class MainPopup : Form
         {
             Dock = DockStyle.Fill,
             Padding = new Padding(1),
-            BackColor = Color.FromArgb(220, 220, 220)
+            BackColor = UiTheme.Border
         };
 
         var inner = new Panel
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.FromArgb(250, 250, 250)
+            BackColor = UiTheme.Surface
         };
 
         _outerLayout = new TableLayoutPanel
@@ -138,16 +142,16 @@ public sealed class MainPopup : Form
         _searchBox = new TextBox
         {
             Dock = DockStyle.Fill,
-            Font = new Font("Segoe UI", 11f),
+            Font = UiTheme.CreateFont(10.5f),
             PlaceholderText = "搜索文件夹... (拼音首字母也可)",
             BorderStyle = BorderStyle.None,
             Margin = new Padding(0),
-            BackColor = Color.White
+            BackColor = UiTheme.Card
         };
 
         _searchCollapsedIndicator = new Panel
         {
-            BackColor = Color.FromArgb(205, 205, 205),
+            BackColor = UiTheme.Divider,
             Cursor = Cursors.Hand
         };
 
@@ -155,7 +159,7 @@ public sealed class MainPopup : Form
         {
             Dock = DockStyle.Fill,
             Margin = new Padding(0),
-            BackColor = Color.White,
+            BackColor = UiTheme.Card,
             Cursor = Cursors.Hand
         };
         _searchCollapsedPanel.Controls.Add(_searchCollapsedIndicator);
@@ -163,7 +167,7 @@ public sealed class MainPopup : Form
         _searchPanel = new Panel
         {
             Dock = DockStyle.Fill,
-            BackColor = Color.White,
+            BackColor = UiTheme.Card,
             Margin = new Padding(0)
         };
         _searchPanel.Controls.Add(_searchBox);
@@ -173,7 +177,7 @@ public sealed class MainPopup : Form
         {
             Dock = DockStyle.Fill,
             Height = 1,
-            BackColor = Color.FromArgb(220, 220, 220),
+            BackColor = UiTheme.Border,
             Margin = new Padding(0)
         };
 
@@ -191,7 +195,8 @@ public sealed class MainPopup : Form
             HeaderStyle = ColumnHeaderStyle.None,
             SmallImageList = _imageList,
             BorderStyle = BorderStyle.None,
-            Font = new Font("Segoe UI", 9.5f),
+            Font = UiTheme.CreateFont(9.5f),
+            ForeColor = UiTheme.TextPrimary,
             ShowGroups = false,
             MultiSelect = false,
             Margin = new Padding(0)
@@ -207,9 +212,9 @@ public sealed class MainPopup : Form
             Text = "已复制",
             AutoSize = false,
             TextAlign = ContentAlignment.MiddleCenter,
-            Font = new Font("Microsoft YaHei UI", 9f),
+            Font = UiTheme.CreateFont(9f),
             ForeColor = Color.White,
-            BackColor = Color.FromArgb(60, 60, 60),
+            BackColor = UiTheme.ToastFill,
             Visible = false
         };
 
@@ -236,7 +241,7 @@ public sealed class MainPopup : Form
             RowCount = _tabOrder.Count + 1,
             Margin = new Padding(0),
             Padding = new Padding(0),
-            BackColor = Color.FromArgb(240, 240, 240)
+            BackColor = UiTheme.SurfaceAlt
         };
         _tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var i = 0; i < _tabOrder.Count; i++)
@@ -246,12 +251,12 @@ public sealed class MainPopup : Form
         for (var i = 0; i < _tabOrder.Count; i++)
         {
             var kind = _tabOrder[i];
-            var label = new Label
+            var label = new CategoryLabel
             {
                 Text = GetTabText(kind),
                 Tag = kind,
                 TextAlign = ContentAlignment.MiddleCenter,
-                Font = new Font("Microsoft YaHei UI", 9f),
+                Font = UiTheme.CreateFont(9f),
                 Dock = DockStyle.Fill,
                 Cursor = Cursors.Hand,
                 Margin = new Padding(0)
@@ -276,7 +281,7 @@ public sealed class MainPopup : Form
         {
             Dock = DockStyle.Fill,
             Width = 1,
-            BackColor = Color.FromArgb(220, 220, 220),
+            BackColor = UiTheme.Border,
             Margin = new Padding(0)
         };
 
@@ -284,7 +289,7 @@ public sealed class MainPopup : Form
         {
             Dock = DockStyle.Fill,
             Width = 1,
-            BackColor = Color.FromArgb(220, 220, 220),
+            BackColor = UiTheme.Border,
             Margin = new Padding(0)
         };
 
@@ -296,7 +301,7 @@ public sealed class MainPopup : Form
             AutoScroll = true,
             Margin = new Padding(0),
             Padding = new Padding(0),
-            BackColor = Color.FromArgb(240, 240, 240)
+            BackColor = UiTheme.SurfaceAlt
         };
         _groupLayout.Resize += (_, _) => UpdateGroupLabelMetrics();
 
@@ -331,9 +336,10 @@ public sealed class MainPopup : Form
         {
             AutoSize = false,
             Dock = DockStyle.Fill,
-            Font = new Font("Segoe UI", 8.5f),
-            ForeColor = Color.FromArgb(150, 150, 150),
+            Font = UiTheme.CreateFont(8.5f),
+            ForeColor = UiTheme.TextMuted,
             TextAlign = ContentAlignment.MiddleRight,
+            AutoEllipsis = true,
             Margin = new Padding(8, 0, 0, 0)
         };
 
@@ -348,6 +354,10 @@ public sealed class MainPopup : Form
         };
         buttonFlow.Controls.Add(_addButton);
         buttonFlow.Controls.Add(_settingsButton);
+        _fileSearchButton = CreateToolbarIconButton("\uE721", "本地文件搜索（Ctrl+F）");
+        _fileSearchButton.Margin = new Padding(4, 0, 0, 0);
+        _fileSearchButton.Click += (_, _) => ShowFileSearch?.Invoke();
+        buttonFlow.Controls.Add(_fileSearchButton);
 
         _toolbarLayout = new TableLayoutPanel
         {
@@ -356,7 +366,7 @@ public sealed class MainPopup : Form
             AutoSize = true,
             Margin = new Padding(0),
             Padding = new Padding(8, 0, 8, 0),
-            BackColor = Color.FromArgb(245, 245, 245)
+            BackColor = UiTheme.SurfaceAlt
         };
         _toolbarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _toolbarLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -378,13 +388,7 @@ public sealed class MainPopup : Form
 
         _listView.MouseUp += OnListMouseUp;
 
-        _listView.MouseDoubleClick += (_, _) =>
-        {
-            if (_listView.SelectedItems.Count > 0)
-                OpenSelectedEntry();
-        };
-
-        // 左键单击历史/文本复制；右键弹出条目菜单（见 OnListMouseUp）
+        // 左键单击打开/复制；右键弹出条目菜单（见 OnListMouseUp）
 
         if (_clipboardHistory != null)
             _clipboardHistory.Changed += OnClipboardHistoryChanged;
@@ -511,16 +515,16 @@ public sealed class MainPopup : Form
             Font = new Font("Segoe MDL2 Assets", 10f),
             TextAlign = ContentAlignment.MiddleCenter,
             FlatStyle = FlatStyle.Flat,
-            BackColor = Color.FromArgb(250, 250, 250),
-            ForeColor = Color.FromArgb(72, 72, 72),
+            BackColor = UiTheme.Surface,
+            ForeColor = UiTheme.TextSecondary,
             UseVisualStyleBackColor = false,
             Cursor = Cursors.Hand,
             Margin = new Padding(0),
             TabStop = false
         };
         button.FlatAppearance.BorderSize = 0;
-        button.FlatAppearance.MouseOverBackColor = Color.FromArgb(235, 235, 235);
-        button.FlatAppearance.MouseDownBackColor = Color.FromArgb(225, 225, 225);
+        button.FlatAppearance.MouseOverBackColor = UiTheme.ButtonHoverFill;
+        button.FlatAppearance.MouseDownBackColor = UiTheme.ButtonPressedFill;
         _toolTip.SetToolTip(button, tooltip);
         return button;
     }
@@ -570,6 +574,7 @@ public sealed class MainPopup : Form
         var toolbarButtonSize = UiScaleHelper.Scale(this, 28);
         _addButton.Size = new Size(toolbarButtonSize, toolbarButtonSize);
         _settingsButton.Size = new Size(toolbarButtonSize, toolbarButtonSize);
+        _fileSearchButton.Size = new Size(toolbarButtonSize, toolbarButtonSize);
         _countLabel.MinimumSize = new Size(UiScaleHelper.Scale(this, 64), Math.Max(_addButton.Height, _settingsButton.Height));
         _countLabel.Margin = new Padding(UiScaleHelper.Scale(this, 8), 0, 0, 0);
         _countLabel.Padding = new Padding(0);
@@ -904,7 +909,7 @@ public sealed class MainPopup : Form
         _tabDropIndex = targetIndex;
         ApplyTabStyles();
         if (_tabLabels[targetIndex].Tag is TabKind targetKind && targetKind != _activeTab)
-            _tabLabels[targetIndex].BackColor = Color.FromArgb(220, 232, 246);
+            _tabLabels[targetIndex].BackColor = UiTheme.DropTargetFill;
     }
 
     private void OnTabLabelMouseUp(object? sender, MouseEventArgs e)
@@ -995,12 +1000,12 @@ public sealed class MainPopup : Form
                     continue;
                 }
 
-                var label = new Label
+                var label = new CategoryLabel
                 {
                     Text = GetTabText(kind),
                     Tag = kind,
                     TextAlign = ContentAlignment.MiddleCenter,
-                    Font = new Font("Microsoft YaHei UI", 9f),
+                    Font = UiTheme.CreateFont(9f),
                     Dock = DockStyle.Fill,
                     Cursor = Cursors.Hand,
                     Margin = new Padding(0)
@@ -1082,11 +1087,19 @@ public sealed class MainPopup : Form
             var kind = label.Tag is TabKind taggedKind ? taggedKind : TabKind.Folders;
             var active = kind == _activeTab;
             var available = kind != TabKind.ClipboardHistory || historyEnabled || active;
-            label.BackColor = active ? Color.FromArgb(60, 60, 60) : Color.FromArgb(240, 240, 240);
-            label.ForeColor = active
-                ? Color.White
-                : available ? Color.FromArgb(80, 80, 80) : Color.FromArgb(165, 165, 165);
+            ApplyCategoryStyle(label, active);
+            if (!active && !available)
+                label.ForeColor = UiTheme.TextDisabled;
         }
+    }
+
+    /// <summary>当前分类与圆环轮一致：浅蓝底、主色文字、外侧主色指示条。</summary>
+    private static void ApplyCategoryStyle(Label label, bool active)
+    {
+        label.BackColor = active ? UiTheme.SelectionFill : UiTheme.SurfaceAlt;
+        label.ForeColor = active ? UiTheme.AccentText : UiTheme.TextSecondary;
+        if (label is CategoryLabel category)
+            category.Active = active;
     }
 
     private void ApplyGroupStyles()
@@ -1095,8 +1108,7 @@ public sealed class MainPopup : Form
         {
             var group = label.Tag as string ?? AllGroupsLabel;
             var active = string.Equals(group, _activeGroup, StringComparison.OrdinalIgnoreCase);
-            label.BackColor = active ? Color.FromArgb(60, 60, 60) : Color.FromArgb(240, 240, 240);
-            label.ForeColor = active ? Color.White : Color.FromArgb(80, 80, 80);
+            ApplyCategoryStyle(label, active);
         }
     }
 
@@ -1142,7 +1154,7 @@ public sealed class MainPopup : Form
             return;
         }
 
-        // 左键单击：与手势松手一致，直接打开/复制（拖拽排序走 ItemDrag，不会走到这里）
+        // 左键单击：直接打开/复制（拖拽排序走 ItemDrag，不会走到这里）
         if (e.Button != MouseButtons.Left)
             return;
 
@@ -1159,11 +1171,8 @@ public sealed class MainPopup : Form
 
     /// <summary>
     /// Details 模式下 GetItemAt 常只命中图标/文字区域，行内空白点不中；
-    /// 手势高亮/松手需要按「整行」命中，与 FullRowSelect 视觉一致。
+    /// 点击需要按「整行」命中，与 FullRowSelect 视觉一致。
     /// </summary>
-    private ListViewItem? FindListItemAtScreenPoint(Point screenPt)
-        => FindListItemAtClientPoint(_listView.PointToClient(screenPt));
-
     private ListViewItem? FindListItemAtClientPoint(Point clientPt)
     {
         if (!_listView.ClientRectangle.Contains(clientPt))
@@ -1713,6 +1722,11 @@ public sealed class MainPopup : Form
     {
         try
         {
+            if (entry.Type == EntryType.Folder && overrideWith == null)
+            {
+                _ = _launcher.OpenFolderOrNavigateAsync(entry, _deliveryTargetWindow);
+                return;
+            }
             if (entry.Type == EntryType.Url)
             {
                 _configManager.TouchEntry(entry.Id);
@@ -2011,7 +2025,9 @@ public sealed class MainPopup : Form
         }
         else
         {
-            entries = _configManager.Config.SortByRecentUsage
+            entries = _activeTab == TabKind.Folders && _configManager.Config.SortFoldersByFrequency
+                ? EntryQueries.ByUsageFrequency(entries).ToList()
+                : _configManager.Config.SortByRecentUsage
                 ? entries.OrderBy(e => e.SortOrder).ThenByDescending(e => e.LastUsedAt).ToList()
                 : entries.OrderBy(e => e.SortOrder).ToList();
         }
@@ -2121,7 +2137,7 @@ public sealed class MainPopup : Form
 
         _listView.EndUpdate();
 
-        _countLabel.Text = $"{entries.Count} 项";
+        SetCountText(entries.Count);
         UpdateListColumnWidth();
 
         foreach (var url in faviconsToLoad.Distinct(StringComparer.OrdinalIgnoreCase))
@@ -2462,7 +2478,7 @@ public sealed class MainPopup : Form
                 ? "暂无 Windows 最近使用记录"
                 : "无匹配的最近使用记录")
             {
-                ForeColor = Color.FromArgb(140, 140, 140)
+                ForeColor = UiTheme.TextMuted
             };
             _listView.Items.Add(empty);
         }
@@ -2510,7 +2526,7 @@ public sealed class MainPopup : Form
         }
 
         _listView.EndUpdate();
-        _countLabel.Text = items.Count == 0 ? "0 项" : $"{items.Count} 项";
+        SetCountText(items.Count);
         UpdateListColumnWidth();
     }
 
@@ -2564,7 +2580,7 @@ public sealed class MainPopup : Form
                 string.IsNullOrEmpty(query)
                     ? "暂无历史 · 复制文本后自动出现"
                     : "无匹配历史");
-            empty.ForeColor = Color.FromArgb(140, 140, 140);
+            empty.ForeColor = UiTheme.TextMuted;
             empty.Tag = null;
             _listView.Items.Add(empty);
         }
@@ -2581,9 +2597,13 @@ public sealed class MainPopup : Form
         }
 
         _listView.EndUpdate();
-        _countLabel.Text = items.Count == 0 ? "0 项" : $"{items.Count} 项";
+        SetCountText(items.Count);
         UpdateListColumnWidth();
     }
+
+    /// <summary>底栏右侧：操作提示 + 条目数。右滑面板是“松手停留、点击执行”，与左滑的拖选不同，在这里点明。</summary>
+    private void SetCountText(int count)
+        => _countLabel.Text = $"点击或 Enter 执行 · {count} 项";
 
     private static string FormatRelativeTime(DateTime time)
     {
@@ -2701,7 +2721,7 @@ public sealed class MainPopup : Form
 
     private void AddGroupLabel(string group)
     {
-        var label = new Label
+        var label = new CategoryLabel
         {
             Text = GetVerticalLabelText(group),
             Tag = group,
@@ -2709,7 +2729,8 @@ public sealed class MainPopup : Form
             Cursor = Cursors.Hand,
             Margin = new Padding(0),
             AutoSize = false,
-            AutoEllipsis = true
+            AutoEllipsis = true,
+            IndicatorOnRight = true
         };
         label.Click += (_, _) => SwitchGroup(group);
         _groupLabels.Add(label);
@@ -2739,9 +2760,6 @@ public sealed class MainPopup : Form
         if (groups.All(group => !string.Equals(group, _activeGroup, StringComparison.OrdinalIgnoreCase)))
             _activeGroup = AllGroupsLabel;
     }
-
-    private Label? GetGroupLabelAtScreenPoint(Point screenPt)
-        => _groupLabels.FirstOrDefault(label => label.RectangleToScreen(label.ClientRectangle).Contains(screenPt));
 
     private static string NormalizeGroupName(string? group)
         => string.IsNullOrWhiteSpace(group) ? string.Empty : group.Trim();
@@ -2783,8 +2801,10 @@ public sealed class MainPopup : Form
 
     private void OnDrawListItem(object? sender, DrawListViewItemEventArgs e)
     {
-        using var bg = new SolidBrush(e.Item.Selected ? Color.FromArgb(235, 245, 255) : _listView.BackColor);
-        e.Graphics.FillRectangle(bg, e.Bounds);
+        using (var bg = new SolidBrush(_listView.BackColor))
+            e.Graphics.FillRectangle(bg, e.Bounds);
+        if (e.Item.Selected)
+            DrawSelectedRow(e.Graphics, e.Bounds);
 
         // 拖拽插入提示线
         if (_dragInsertIndex >= 0)
@@ -2797,9 +2817,35 @@ public sealed class MainPopup : Form
         }
     }
 
+    /// <summary>选中行与轮盘、动作面板一致：浅蓝圆角底 + 主色描边。</summary>
+    private void DrawSelectedRow(Graphics g, Rectangle bounds)
+    {
+        var inset = UiScaleHelper.Scale(this, 2);
+        var radius = UiScaleHelper.Scale(this, 4);
+        var rect = new Rectangle(bounds.X + inset, bounds.Y + 1, bounds.Width - inset * 2 - 1, bounds.Height - 3);
+        if (rect.Width <= radius * 2 || rect.Height <= radius * 2)
+            return;
+
+        using var path = new System.Drawing.Drawing2D.GraphicsPath();
+        var d = radius * 2;
+        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+
+        var previous = g.SmoothingMode;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using (var fill = new SolidBrush(UiTheme.SelectionFill))
+            g.FillPath(fill, path);
+        using (var pen = new Pen(UiTheme.Accent))
+            g.DrawPath(pen, path);
+        g.SmoothingMode = previous;
+    }
+
     private static void DrawDragInsertionLine(Graphics g, int y, int width)
     {
-        var color = Color.FromArgb(59, 130, 246);
+        var color = UiTheme.Accent;
         using var pen = new Pen(color, 2);
         g.DrawLine(pen, 2, y, width - 2, y);
         // 两端小三角箭头
@@ -2828,7 +2874,7 @@ public sealed class MainPopup : Form
             }
         }
 
-        var textColor = item.Selected ? Color.FromArgb(59, 130, 246) : item.ForeColor;
+        var textColor = item.Selected ? UiTheme.AccentText : item.ForeColor;
         var textBounds = new Rectangle(textX, bounds.Y, bounds.Right - textX - UiScaleHelper.Scale(this, 2), bounds.Height);
         var display = GetTruncatedText(item.Text, textBounds.Width);
 
@@ -3146,6 +3192,7 @@ public sealed class MainPopup : Form
         int x = Math.Max(workingArea.Left + popupMargin, Math.Min(screenPt.X - popupMargin, workingArea.Right - Width - popupMargin));
         int y = Math.Max(workingArea.Top + popupMargin, Math.Min(screenPt.Y - listAnchorOffsetY, workingArea.Bottom - Height - popupMargin));
         Location = new Point(x, y);
+        PopupMotion.SlideIn(this, direction: +1);
 
         Show();
     }
@@ -3153,104 +3200,40 @@ public sealed class MainPopup : Form
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
-    public void HighlightAtScreenPoint(Point screenPt)
+    /// <summary>右滑松手后停留，条目统一由左键点击或 Enter 执行。</summary>
+    public void EnterInteractiveMode()
     {
-        var tabClientPt = _tabLayout.PointToClient(screenPt);
-        if (_tabLayout.ClientRectangle.Contains(tabClientPt))
-        {
-            foreach (var label in _tabLabels)
-            {
-                if (label.Bounds.Contains(tabClientPt) && label.Tag is TabKind kind)
-                {
-                    if (_activeTab != kind && CanSwitchTab(kind))
-                        SwitchTab(kind);
-                    break;
-                }
-            }
-
-            if (_listView.SelectedItems.Count > 0)
-                _listView.SelectedItems.Clear();
+        if (!Visible || IsDisposed)
             return;
-        }
 
-        var groupLabel = GetGroupLabelAtScreenPoint(screenPt);
-        if (groupLabel?.Tag is string group)
+        SuspendAutoHide();
+        try
         {
-            if (!string.Equals(_activeGroup, group, StringComparison.OrdinalIgnoreCase))
-                SwitchGroup(group);
-
-            if (_listView.SelectedItems.Count > 0)
-                _listView.SelectedItems.Clear();
-            return;
+            WindowActivator.TryForceForeground(Handle);
+            if (_isSearchExpanded)
+                _searchBox.Focus();
+            else
+                _listView.Focus();
         }
-
-        var item = FindListItemAtScreenPoint(screenPt);
-        if (item != null)
+        finally
         {
-            if (!item.Selected)
-            {
-                _listView.SelectedItems.Clear();
-                item.Selected = true;
-                item.Focused = true;
-            }
-        }
-        else if (_listView.SelectedItems.Count > 0)
-        {
-            _listView.SelectedItems.Clear();
+            ResumeAutoHide();
         }
     }
 
-    public bool TryReleaseAtScreenPoint(Point screenPt)
+    protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
-        if (!Bounds.Contains(screenPt))
+        if (keyData == (Keys.Control | Keys.F))
+        {
+            ShowFileSearch?.Invoke();
+            return true;
+        }
+        if (keyData == Keys.Escape)
         {
             Hide();
-            return false;
-        }
-
-        // 整行命中；松手点在列表区内但略偏时，回退到当前高亮项（手势高亮与松手可能差 1 帧）
-        var hitItem = FindListItemAtScreenPoint(screenPt);
-        if (hitItem == null)
-        {
-            var listClient = _listView.PointToClient(screenPt);
-            if (_listView.ClientRectangle.Contains(listClient) && _listView.SelectedItems.Count > 0)
-                hitItem = _listView.SelectedItems[0];
-        }
-
-        if (hitItem?.Tag is ClipboardHistoryItem hist)
-        {
-            ExecuteHistoryItem(hist, hideFirst: true);
             return true;
         }
-
-        if (hitItem?.Tag is QuickEntry entry)
-        {
-            ExecuteEntry(entry, hideFirst: true);
-            return true;
-        }
-
-        if (hitItem?.Tag is WindowsRecentItem recent)
-        {
-            ExecuteRecentItem(recent, hideFirst: true);
-            return true;
-        }
-
-        if (GetGroupLabelAtScreenPoint(screenPt) != null)
-        {
-            Activate();
-            if (_isSearchExpanded)
-                _searchBox.Focus();
-            else if (_listView.Items.Count > 0)
-                _listView.Focus();
-            return false;
-        }
-
-        Activate();
-        if (_isSearchExpanded)
-            _searchBox.Focus();
-        else if (_listView.Items.Count > 0)
-            _listView.Focus();
-        return false;
+        return base.ProcessCmdKey(ref msg, keyData);
     }
 
     private void EnsurePopupSizeForScreen(Screen screen)
@@ -3403,7 +3386,7 @@ public sealed class MainPopup : Form
     protected override void OnPaintBackground(PaintEventArgs e)
     {
         base.OnPaintBackground(e);
-        using var pen = new Pen(Color.FromArgb(220, 220, 220));
+        using var pen = new Pen(UiTheme.Border);
         e.Graphics.DrawRectangle(pen, 0, 0, Width - 1, Height - 1);
     }
 
@@ -3431,5 +3414,39 @@ public sealed class MainPopup : Form
 
         if (disposing)
             _imageList.Dispose();
+    }
+
+    /// <summary>标签 / 分组按钮：当前项在外侧画一条主色指示条（标签在左、分组在右）。</summary>
+    private sealed class CategoryLabel : Label
+    {
+        private bool _active;
+
+        [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+        public bool IndicatorOnRight { get; init; }
+
+        [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+        public bool Active
+        {
+            get => _active;
+            set
+            {
+                if (_active == value)
+                    return;
+                _active = value;
+                Invalidate();
+            }
+        }
+
+        protected override void OnPaint(PaintEventArgs e)
+        {
+            base.OnPaint(e);
+            if (!_active)
+                return;
+
+            var barWidth = Math.Max(2, UiScaleHelper.Scale(this, 3));
+            var x = IndicatorOnRight ? ClientSize.Width - barWidth : 0;
+            using var brush = new SolidBrush(UiTheme.Accent);
+            e.Graphics.FillRectangle(brush, x, 0, barWidth, ClientSize.Height);
+        }
     }
 }

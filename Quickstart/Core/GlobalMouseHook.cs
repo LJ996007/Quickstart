@@ -27,6 +27,11 @@ public sealed class GlobalMouseHook : IDisposable
     private int _dragTolerateDy = DragTolerateDyLogical;
     private bool _downSuppressed;
     private bool _disposed;
+    private volatile bool _middleClickEnabled;
+    private bool _middleDownSuppressed;
+    private Point _middleStartPoint;
+    private IntPtr _middleSourceWindow;
+    private uint _middleDownTime;
 
     // UI 线程写、钩子线程读：用 volatile 保证可见性
     private volatile bool _enabled = true;
@@ -37,6 +42,7 @@ public sealed class GlobalMouseHook : IDisposable
     public event Action<RightDragDirection, Point>? GestureMove;
     public event Action<RightDragDirection, Point>? GestureReleased;
     public event Action? GestureCancelled;
+    public event Action<Point, IntPtr>? MiddleClicked;
 
     private IntPtr _hookHandle;
     private LowLevelMouseProc? _hookProc;
@@ -66,8 +72,9 @@ public sealed class GlobalMouseHook : IDisposable
         }
     }
 
-    public void UpdateSettings(bool enabled, int triggerDistance, int verticalTolerance)
+    public void UpdateSettings(bool enabled, int triggerDistance, int verticalTolerance, bool middleClickEnabled = false)
     {
+        _middleClickEnabled = middleClickEnabled;
         _enabled = enabled;
         _dragTriggerDxLogical = Math.Clamp(triggerDistance, 40, 600);
         _dragTolerateDyLogical = Math.Clamp(verticalTolerance, 10, 300);
@@ -189,8 +196,36 @@ public sealed class GlobalMouseHook : IDisposable
                     GestureMove?.Invoke(_direction, pt);
                     break;
 
-                case WM_LBUTTONDOWN:
                 case WM_MBUTTONDOWN:
+                    if (_state != GestureState.Idle)
+                    {
+                        _state = GestureState.Idle;
+                        GestureCancelled?.Invoke();
+                    }
+                    // Ignore injected events. Hook callbacks only capture state and post work to the UI.
+                    if (_middleClickEnabled && (info.flags & 1) == 0)
+                    {
+                        _middleDownSuppressed = true;
+                        _middleStartPoint = pt;
+                        _middleSourceWindow = GetForegroundWindow();
+                        _middleDownTime = info.time;
+                        return (IntPtr)1;
+                    }
+                    break;
+
+                case WM_MBUTTONUP:
+                    if (_middleDownSuppressed && (info.flags & 1) == 0)
+                    {
+                        _middleDownSuppressed = false;
+                        if (_middleClickEnabled && unchecked(info.time - _middleDownTime) <= 600
+                            && Math.Abs(pt.X - _middleStartPoint.X) <= 12
+                            && Math.Abs(pt.Y - _middleStartPoint.Y) <= 12)
+                            MiddleClicked?.Invoke(pt, _middleSourceWindow);
+                        return (IntPtr)1;
+                    }
+                    break;
+
+                case WM_LBUTTONDOWN:
                     if (_state != GestureState.Idle)
                     {
                         _state = GestureState.Idle;
@@ -373,6 +408,7 @@ public sealed class GlobalMouseHook : IDisposable
     private const int WM_RBUTTONDOWN = 0x0204;
     private const int WM_RBUTTONUP = 0x0205;
     private const int WM_MBUTTONDOWN = 0x0207;
+    private const int WM_MBUTTONUP = 0x0208;
     private const uint INPUT_MOUSE = 0;
     private const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
     private const uint MOUSEEVENTF_RIGHTUP = 0x0010;

@@ -7,6 +7,7 @@ public sealed class TrayIcon : IDisposable
     private readonly NotifyIcon _notifyIcon;
 
     public event Action? ShowMainWindow;
+    public event Action? ShowFileSearch;
     public event Action? ShowSettings;
     public event Action? ExitRequested;
 
@@ -30,6 +31,7 @@ public sealed class TrayIcon : IDisposable
     private ContextMenuStrip BuildContextMenu()
     {
         var menu = new ContextMenuStrip();
+        menu.Items.Add("本地文件搜索(&F)", null, (_, _) => ShowFileSearch?.Invoke());
 
         // AI 设置已并入「设置」页，托盘菜单不再单独入口
         var settingsItem = new ToolStripMenuItem("设置(&S)");

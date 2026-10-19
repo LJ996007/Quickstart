@@ -10,11 +10,11 @@
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
     <ApplicationIcon>Resources\app.ico</ApplicationIcon>
 
-    <!-- Publishing: self-contained trimmed single-file -->
-    <!-- NativeAOT requires VS C++ workload; using trimmed self-contained instead -->
+    <!-- Publishing: self-contained single-file. UI Automation's COM providers are not
+         trim-safe: trimmed release tests crash inside UiaNodeFromHandle. -->
     <PublishAot>false</PublishAot>
     <PublishSingleFile>true</PublishSingleFile>
-    <PublishTrimmed>true</PublishTrimmed>
+    <PublishTrimmed>false</PublishTrimmed>
     <!-- 预编译为 ReadyToRun，减少冷启动时的 JIT 开销 -->
     <PublishReadyToRun>true</PublishReadyToRun>
     <SelfContained>true</SelfContained>
@@ -38,6 +38,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- UIAutomationClient/Types are needed for WPS's Qt file dialogs. -->
+    <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
     <ProjectReference Include="..\Quickstart.Core\Quickstart.Core.csproj" />
   </ItemGroup>
 

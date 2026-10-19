@@ -29,7 +29,7 @@ public enum RightSwipePresentation
 {
     /// <summary>经典矩形列表面板（默认）。</summary>
     ClassicPanel = 0,
-    /// <summary>圆环轮：内环标签，外圈条目烟花式炸开。</summary>
+    /// <summary>圆环轮：点击分类和分组，再点击右侧条目执行。</summary>
     RadialRing = 1
 }
 
@@ -61,9 +61,17 @@ public sealed class AppConfig
     public bool StartWithWindows { get; set; }
     public bool ShellMenuEnabled { get; set; }
     public string HotKey { get; set; } = string.Empty;
+    public string FileSearchHotKey { get; set; } = "Ctrl+Alt+Space";
+    public bool FileDialogNavigationEnabled { get; set; } = true;
+    public FolderFavoriteSource FolderFavoriteSource { get; set; } = FolderFavoriteSource.Combined;
+    public string OpusFavoritesFile { get; set; } = string.Empty;
+    public bool TrackOpusRecentFolders { get; set; } = true;
+    public Dictionary<string, DateTime> RecentFolders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public bool RightDragEnabled { get; set; } = true;
+    /// <summary>中键单击呼出快捷启动 / 动作面板选择入口；关闭后保留中键原有行为。</summary>
+    public bool MiddleClickEnabled { get; set; } = true;
     public LeftDragAction LeftDragAction { get; set; } = LeftDragAction.AiActionPicker;
-    /// <summary>右滑呼出：经典列表面板，或圆环轮（标签 + 烟花列表）。</summary>
+    /// <summary>右滑呼出：松手停留，点击选择；默认经典列表面板，另可选圆环轮。</summary>
     public RightSwipePresentation RightSwipePresentation { get; set; } = RightSwipePresentation.ClassicPanel;
     public int RightDragTriggerDistance { get; set; } = 120;
     public int RightDragVerticalTolerance { get; set; } = 50;
@@ -71,6 +79,7 @@ public sealed class AppConfig
     public string LastViewTab { get; set; } = "Folders";
     public string LastViewGroup { get; set; } = "全部";
     public bool SortByRecentUsage { get; set; }
+    public bool SortFoldersByFrequency { get; set; } = true;
     /// <summary>右滑主面板左侧分类标签的显示顺序。</summary>
     public List<string> MainPopupTabOrder { get; set; } = [];
     public ClipboardHistoryConfig ClipboardHistory { get; set; } = new();
@@ -81,6 +90,8 @@ public sealed class AppConfig
     /// <summary>「剪贴板」历史条目点击后的动作（复制 / 直接粘贴到光标处）。</summary>
     public TextDeliveryAction ClipboardHistoryAction { get; set; } = TextDeliveryAction.CopyToClipboard;
 }
+
+public enum FolderFavoriteSource { Quickstart, DirectoryOpus, Combined }
 
 /// <summary>右滑主弹窗「历史」Tab：系统剪贴板文本历史。</summary>
 public sealed class ClipboardHistoryConfig
