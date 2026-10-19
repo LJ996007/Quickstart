@@ -2,11 +2,29 @@
 
 ## 核心原则
 
-1. **默认不升版本号**。日常改代码、修 bug、加功能都先记到 [`UNRELEASED.md`](./UNRELEASED.md)，**不要**每次改动都动 `<Version>`。
-2. **只有明确要求升版本**（例如「升版本」「bump 到 1.0.14」）时才升号。
-3. **升版本时**：把自上一个版本以来的**全部**未发布变更汇总进**新版本**的更新说明（应用内 `AppReleaseNotes` + GitHub Release 正文）。
-4. **升完版本后**：必须提醒同步 GitHub。
-5. **同步 GitHub（升版本后）**：提交推送代码，并 **编译 Release**，把便携版 / 安装包上传到 GitHub Release。
+1. **构建目录只有两个**：`artifacts/debug` 用于日常编译、测试和调试，`artifacts/release` 用于正式编译与发布。不得在 `artifacts/` 下新增其他顶层目录。
+2. **Debug 不升版本号**。日常改代码、修 bug、加功能、测试都先记到 [`UNRELEASED.md`](./UNRELEASED.md)，**不要**动 `<Version>`。
+3. **只有正式生成 Release 版本时才升版本号**（例如「发版」「升版本」「bump 到 1.0.14」），Debug 编译和测试永远不触发升号。
+4. **升版本时**：把自上一个版本以来的**全部**未发布变更汇总进**新版本**的更新说明（应用内 `AppReleaseNotes` + GitHub Release 正文）。
+5. **升完版本后**：必须提醒同步 GitHub。
+6. **同步 GitHub（升版本后）**：提交推送代码，并 **编译 Release**，把便携版 / 安装包上传到 GitHub Release。
+
+## 构建目录约定
+
+```text
+artifacts/
+├── debug/                  # 测试构建：可随时清理重建，不升版本号
+│   ├── win-x64/            # 可直接运行的 Debug 程序
+│   ├── build/              # dotnet build 输出
+│   ├── obj/                # 中间文件
+│   └── checks/             # 测试夹具与截图
+└── release/                # 正式构建：按版本归档，只有这里才升版本号
+    ├── vX.Y.Z/win-x64/     # 便携版、安装包、校验文件、发布说明
+    ├── build/              # dotnet build 输出
+    └── obj/                # 中间文件
+```
+
+新增脚本或测试时，临时文件必须落在 `artifacts/debug` 下，不能创建 `preview`、`publish`、`obj`、`build` 等新的顶层目录。
 
 ## 版本号来源
 

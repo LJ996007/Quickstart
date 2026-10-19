@@ -176,7 +176,7 @@ Quickstart.sln
 ├── installer/                  # Windows Inno Setup
 ├── docs/                       # 设计与实现笔记（手势、OCR、剪贴板等）
 ├── debug.cmd / release.cmd     # Windows 本地构建
-└── artifacts/                  # 统一构建输出目录
+└── artifacts/                  # 构建输出（仅 debug / release 两个目录）
 ```
 
 配置目录（Windows）：`%LOCALAPPDATA%\Quickstart\`  
@@ -205,12 +205,19 @@ dotnet publish Quickstart/Quickstart.csproj -c Release -r win-x64
 
 ```text
 artifacts/
-├── debug/win-x64/              # 可直接跑的 Debug
-├── release/vX.Y.Z/win-x64/     # 正式发布物与校验文件
-└── obj/                        # 中间文件
+├── debug/                      # 日常编译、测试、调试（不升版本号）
+│   ├── win-x64/                # 可直接跑的 Debug
+│   ├── build/                  # dotnet build 的 Debug 输出
+│   └── obj/                    # Debug 中间文件
+└── release/                    # 正式编译与发布（只有这里才升版本号）
+    ├── vX.Y.Z/win-x64/         # 正式发布物与校验文件
+    ├── build/                  # dotnet build 的 Release 输出
+    └── obj/                    # Release 中间文件
 ```
 
 `release.cmd` 默认尝试打安装包；只要便携版加 `-SkipInstaller`。
+
+`artifacts/` 顶层只保留 `debug` 和 `release` 两个目录。测试夹具放在 `artifacts/debug/checks/`，不要再新建 `preview`、`publish`、`build` 等顶层目录。
 
 
 ## 命令行与协议
@@ -228,7 +235,7 @@ artifacts/
 
 - 当前 Windows 程序版本见 `Quickstart/Quickstart.csproj` 的 `<Version>`（现为 **1.0.22**）。
 - 应用内「程序信息」页展示 `AppReleaseNotes` 中的更新列表。
-- **默认不升版本号**：日常改动先记到 `docs/UNRELEASED.md`，不改 `<Version>`。
+- **Debug 不升版本号**：日常编译、测试、修 bug 都先记到 `docs/UNRELEASED.md`，不改 `<Version>`。
 - **需要发版时**：运行 `bump-version.cmd`，会把 `UNRELEASED.md` 的全部条目汇总成新版本说明，更新 csproj / 安装脚本 / README，然后重置变更池。
 - **升版后同步 GitHub**：运行 `sync-github.cmd`，自动提交推送、编译 Release、把便携版 / 安装包 / 校验文件上传到 GitHub Releases。
 - 完整规则见 [`docs/versioning.md`](./docs/versioning.md)。

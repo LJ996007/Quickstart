@@ -3,7 +3,7 @@
 // Separate standard-dialog host: dotnet run --file scripts/check-dialog-navigation.cs -- --dialogs
 // With any tested file dialog focused, Ctrl+Shift+F11 opens the new search picker.
 // Single-file release check (same COM/non-trimmed settings as the app):
-// dotnet publish scripts/check-dialog-navigation.cs -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/preview/dialog-navigation-check
+// dotnet publish scripts/check-dialog-navigation.cs -c Release -r win-x64 --self-contained true -p:PublishSingleFile=true -p:IncludeNativeLibrariesForSelfExtract=true -o artifacts/debug/checks/dialog-navigation-check
 #:property TargetFramework=net10.0-windows
 #:property UseWindowsForms=true
 #:property PublishAot=false
@@ -25,7 +25,7 @@ static class DialogChecks
     [STAThread]
     static void Main(string[] args)
     {
-        var root = Path.GetFullPath("artifacts/dialog-navigation");
+        var root = Path.GetFullPath("artifacts/debug/checks/dialog-navigation");
         Directory.CreateDirectory(root);
         var target = Path.Combine(root, "目标 #100% 中文");
         Directory.CreateDirectory(target);

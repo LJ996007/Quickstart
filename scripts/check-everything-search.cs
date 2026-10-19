@@ -141,7 +141,7 @@ static class SearchChecks
                 for (var i = 0; i < 150 && !status.Text.StartsWith("共 "); i++) await Task.Delay(100, timeout.Token);
                 var list = (ListView)Field(popup, "_results");
                 Check(list.Items.Count > 0, "Popup results missing: " + status.Text);
-                var folder = Path.GetFullPath("artifacts/search-check");
+                var folder = Path.GetFullPath("artifacts/debug/checks/search-check");
                 Directory.CreateDirectory(folder);
                 using var bitmap = new Bitmap(popup.Width, popup.Height);
                 popup.DrawToBitmap(bitmap, new Rectangle(Point.Empty, popup.Size));

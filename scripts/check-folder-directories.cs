@@ -17,7 +17,7 @@ static class FolderChecks
     [STAThread]
     static void Main()
     {
-        var root = Path.GetFullPath("artifacts/folder-directory-checks"); Directory.CreateDirectory(root);
+        var root = Path.GetFullPath("artifacts/debug/checks/folder-directory-checks"); Directory.CreateDirectory(root);
         AppPaths.SetRootForTests(root);
         using var config = new ConfigManager();
         config.Config.TrackOpusRecentFolders = false;

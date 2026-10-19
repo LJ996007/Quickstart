@@ -80,7 +80,7 @@ if ([string]::IsNullOrWhiteSpace($PublishDir)) {
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDir)) {
-    $OutputDir = Join-Path $repoRoot "artifacts\installer"
+    $OutputDir = Join-Path $repoRoot "artifacts\release\installer"
 } else {
     $OutputDir = Resolve-RepoPath -RepoRoot $repoRoot -PathValue $OutputDir
 }

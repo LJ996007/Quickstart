@@ -1,7 +1,8 @@
 <Project>
   <PropertyGroup>
-    <!-- Keep generated files out of source project folders. -->
-    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
+    <!-- artifacts 下只允许 debug / release 两个顶层目录。 -->
+    <Configuration Condition="'$(Configuration)' == ''">Debug</Configuration>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts\debug\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Debug'">
@@ -9,10 +10,12 @@
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' == 'Release'">
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)artifacts\release\obj\$(MSBuildProjectName)\</BaseIntermediateOutputPath>
     <OutputPath>$(MSBuildThisFileDirectory)artifacts\release\build\$(MSBuildProjectName)\</OutputPath>
   </PropertyGroup>
 
   <PropertyGroup Condition="'$(Configuration)' != 'Debug' and '$(Configuration)' != 'Release'">
-    <OutputPath>$(MSBuildThisFileDirectory)artifacts\build\$(Configuration)\$(MSBuildProjectName)\</OutputPath>
+    <!-- 非标准配置按测试构建处理，避免产生第三个顶层目录。 -->
+    <OutputPath>$(MSBuildThisFileDirectory)artifacts\debug\build\$(MSBuildProjectName)\</OutputPath>
   </PropertyGroup>
 </Project>

@@ -4,7 +4,7 @@ using Quickstart.Core;
 using Quickstart.Models;
 
 static void Check(bool ok, string why) { if (!ok) throw new Exception(why); }
-AppPaths.SetRootForTests(Path.GetFullPath("artifacts/folder-frequency-check"));
+AppPaths.SetRootForTests(Path.GetFullPath("artifacts/debug/checks/folder-frequency-check"));
 using var config = new ConfigManager();
 var first = new QuickEntry { Name = "原先第一", Path = @"C:\first", SortOrder = 0 };
 var frequent = new QuickEntry { Name = "常用", Path = @"C:\frequent", SortOrder = 10 };
