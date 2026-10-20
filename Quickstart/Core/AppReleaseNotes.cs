@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 
 namespace Quickstart.Core;
 
@@ -6,6 +6,12 @@ internal static class AppReleaseNotes
 {
     private static readonly ReleaseNote[] Releases =
     [
+        new(
+            "1.0.23",
+            "2026-10-20",
+            [
+                "修复带版本号或重命名的便携版不显示文件对话框快捷栏：隔离识别进程使用当前程序的实际路径，不再依赖同目录下存在固定名称 Quickstart.exe。"
+            ]),
         new(
             "1.0.22",
             "2026-10-19",

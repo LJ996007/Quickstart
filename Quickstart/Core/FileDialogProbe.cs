@@ -40,8 +40,11 @@ internal static class FileDialogProbe
         if (!await Gate.WaitAsync(0, token)) return null;
         try
         {
-            // In integration harnesses use the referenced application's executable, not the harness itself.
-            var executable = Path.Combine(AppContext.BaseDirectory, "Quickstart.exe");
+            // Portable releases include a version in the filename. Relaunch the actual
+            // app host; retain the sibling executable only for integration harnesses.
+            var executable = System.Reflection.Assembly.GetEntryAssembly() == typeof(FileDialogProbe).Assembly
+                ? Environment.ProcessPath ?? throw new InvalidOperationException("Cannot locate the running Quickstart executable.")
+                : Path.Combine(AppContext.BaseDirectory, "Quickstart.exe");
             var pid = FileDialogNavigator.GetProcessId(source);
             var info = new ProcessStartInfo(executable) { UseShellExecute = false, CreateNoWindow = true,
                 RedirectStandardOutput = true, RedirectStandardError = true };
