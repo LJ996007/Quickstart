@@ -2,7 +2,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![.NET](https://img.shields.io/badge/.NET-10.0-purple)
-![Version](https://img.shields.io/badge/version-1.0.23-green)
+![Version](https://img.shields.io/badge/version-1.0.24-green)
 ![License](https://img.shields.io/github/license/LJ996007/Quickstart)
 ![Release](https://img.shields.io/github/v/release/LJ996007/Quickstart)
 
@@ -10,7 +10,7 @@ Quickstart 是一个常驻系统托盘 / 菜单栏的快捷启动与效率工具
 
 它不只是收藏夹：把**常用路径、网页、固定文本**收在一起，再用**右键拖动手势**在任意窗口秒级呼出。Windows 版还把 **AI 动作、Everything 搜索、截图 OCR、剪贴板历史、粘贴为纯文本** 接进同一套左滑手势里，尽量少点几下就能干完事。
 
-当前主线版本：**Windows 1.0.23**（.NET 10 / WinForms）。
+当前主线版本：**Windows 1.0.24**（.NET 10 / WinForms）。
 
 ---
 
@@ -33,8 +33,8 @@ Quickstart 是一个常驻系统托盘 / 菜单栏的快捷启动与效率工具
 - Windows：系统托盘。
 - 点击托盘 / 菜单栏打开主弹窗。
 - **全局快捷键**（设置里配置，例如 `Ctrl+Shift+Space`；留空禁用）。
-- **本地文件搜索快捷键**：默认 `Ctrl+Alt+Space`；若默认组合被占用，依次尝试 `Ctrl+Shift+Space`、`Ctrl+Alt+F`，成功后保存并提示实际组合。在设置 → 快捷启动中可修改或留空禁用，自定义组合不会自动替换。快捷键冲突不影响中键菜单、托盘菜单和对话框底栏。
-- **鼠标中键单击**：弹出选择入口，可打开快捷启动、动作面板或本地文件搜索；快捷启动遵循经典列表 / 圆环轮设置。设置 → 快捷启动可关闭中键接管，恢复浏览器中键开标签等原有行为。
+- **本地文件搜索快捷键**：默认 `Ctrl+Alt+Space`；若默认组合被占用，依次尝试 `Ctrl+Shift+Space`、`Ctrl+Alt+F`，成功后保存并提示实际组合。在设置 → 快捷启动中可修改或留空禁用，自定义组合不会自动替换。快捷键冲突不影响中键面板、托盘菜单和对话框底栏。
+- **鼠标中键单击**：一次展开完整快捷启动和动作面板（动作在光标左侧、快捷启动列表在右侧，与左滑/右滑方向一致；两栏等高、无外层大框），上方是与两栏同宽的独立 Everything 搜索条；输入关键词后按 Enter，点击目录或动作即可执行。中键固定使用列表，右滑仍遵循经典列表 / 圆环轮设置；再次按中键、按 Esc 或点击外部收起整组面板。设置 → 快捷启动可关闭中键接管，恢复浏览器中键开标签等原有行为。
 - **右键拖动手势**（可开关，可调触发距离与垂直容差）：
   - **向右拖** → 快捷启动主弹窗（收藏 / 最近 / 剪贴板历史）
   - **向左拖** → 动作面板（AI Prompt、Skill、工具），或配置为直接 Everything 搜索选中文本
@@ -99,14 +99,16 @@ Quickstart 是一个常驻系统托盘 / 菜单栏的快捷启动与效率工具
 
 设置里可将「向左动作」改成：**不弹面板，松手直接 Everything 搜索**。
 
-**内置本地搜索**：按 `Ctrl+Alt+Space`、点主面板底部放大镜，或在主面板/轮盘中按 `Ctrl+F`；托盘菜单和中键菜单也提供入口。搜索结果直接显示在 Quickstart，支持文件/文件夹筛选、名称/最近修改/大小排序、每页 100 条和 Everything 搜索语法。
+**内置本地搜索**：按 `Ctrl+Alt+Space`、点主面板底部放大镜，或在主面板/轮盘中按 `Ctrl+F`；托盘菜单和中键面板也提供入口。搜索结果直接显示在 Quickstart，支持文件/文件夹筛选、名称/最近修改/大小排序、每页 100 条和 Everything 搜索语法。
 
 - `↑ / ↓` 选择结果，`Enter` 打开，`Ctrl+Enter` 定位，结果列表中 `Ctrl+C` 复制完整路径；右键可加入收藏。
 - `Ctrl+L` 聚焦搜索框，`F5` 重试，`Esc` 关闭；可点「在 Everything 中打开」切回完整 Everything 界面。
 - 需要安装支持 IPC 的 Everything 1.4.1+ 客户端（非 Lite 版），未运行时会尝试后台启动。仅运行 Everything 服务不够；无需开启 HTTP 服务或额外安装 SDK DLL。
 - 搜索依赖本机 Everything 索引，Quickstart 不自建磁盘索引。
 
-**打开／保存对话框目录助手**：文件对话框出现时，底部自动显示目录小条，不抢走文件名输入焦点。底部四个按钮按最近使用顺序展示目录；空搜索展示最近目录，点击“☆ 收藏”才展开收藏。输入关键词后展示 Everything 文件夹搜索结果，单击结果或按 Enter 跳转。完整目录路径可直接输入并按 Enter。也可用本地搜索快捷键或中键 → 本地文件搜索聚焦该小条。
+**Office 快速预览**：在内置搜索结果中单击 DOCX、XLSX、XLS 或 PDF，右侧直接预览；双击或 Enter 仍用默认程序打开。Word 可选中文字复制，也可复制全文；Excel 支持选中单元格/拖选区域后 Ctrl+C，以及复制当前工作表；文字型 PDF 可选中文字后 Ctrl+C。右上角「预览」可收起面板。预览在本机完成，需要 WebView2 Runtime；第一版不支持旧 DOC/WPS/PPT、扫描件 OCR 和超过 64 MB 的文件。复杂排版以原文件为准，Excel 不重新计算公式。开发与验证见 [预览模块说明](Quickstart/OfficePreview/README.md)。
+
+**打开／保存对话框目录助手**：文件对话框出现时，底部自动显示目录小条，不抢走文件名输入焦点。底部四个按钮按最近使用顺序展示目录；空搜索展示最近目录，点击“☆ 收藏”才展开收藏。输入关键词后展示 Everything 文件夹搜索结果，单击结果或按 Enter 跳转。完整目录路径可直接输入并按 Enter。也可用本地搜索快捷键或中键面板顶部搜索框聚焦该小条。
 
 点击目录栏的齿轮，或设置 → 快捷启动 → 对话框目录，可选择 Quickstart、Directory Opus 或两者合并（默认合并去重），并添加、修改、删除 Quickstart 文件夹收藏。Quickstart 收藏与主面板共用；Opus 收藏只读，默认从用户配置的 `ConfigFiles/favorites.ofv` 读取，也可指定其他位置。每次展开收藏重新读取。最近目录记录 Quickstart 打开／跳转的目录，并可读取 Opus 已保存的最近目录及正在访问的源标签；不会记录全部应用中的任意文件访问。Opus 当前目录通过官方 [DOpusRT /info 接口](https://docs.dopus.com/doku.php?id=reference%3Adopusrt_reference) 读取，不新开文件窗口。
 
@@ -233,7 +235,7 @@ artifacts/
 
 ## 版本与发布
 
-- 当前 Windows 程序版本见 `Quickstart/Quickstart.csproj` 的 `<Version>`（现为 **1.0.23**）。
+- 当前 Windows 程序版本见 `Quickstart/Quickstart.csproj` 的 `<Version>`（现为 **1.0.24**）。
 - 应用内「程序信息」页展示 `AppReleaseNotes` 中的更新列表。
 - **Debug 不升版本号**：日常编译、测试、修 bug 都先记到 `docs/UNRELEASED.md`，不改 `<Version>`。
 - **需要发版时**：运行 `bump-version.cmd`，会把 `UNRELEASED.md` 的全部条目汇总成新版本说明，更新 csproj / 安装脚本 / README，然后重置变更池。

@@ -4,7 +4,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 
 /// <summary>
-/// 系统剪贴板文本历史：监听变化、去重入队、可选落盘、纯文本写回剪贴板。
+/// 系统剪贴板历史：文本、文件和图片的监听、去重、持久化与写回。
 /// </summary>
 public sealed class ClipboardHistoryService : IDisposable
 {
@@ -16,10 +16,15 @@ public sealed class ClipboardHistoryService : IDisposable
     private readonly List<ClipboardHistoryItem> _items = [];
     private readonly System.Threading.Timer _persistTimer;
     private ClipboardListenerWindow? _listener;
-    private bool _suppressSelfWrite;
+    private uint _lastWrittenSequence;
+    private int _readRevision;
+    private readonly SemaphoreSlim _readGate = new(1, 1);
+    private readonly SemaphoreSlim _writeGate = new(1, 1);
+    private readonly object _persistLock = new();
+    private int _clearRevision;
     private int _captureSuppressCount;
-    private bool _persistPending;
-    private bool _disposed;
+    private volatile bool _persistPending;
+    private volatile bool _disposed;
     private Control? _uiSync;
 
     public event Action? Changed;
@@ -66,7 +71,11 @@ public sealed class ClipboardHistoryService : IDisposable
     public void Clear()
     {
         lock (_lock)
+        {
+            _clearRevision++;
+            Interlocked.Increment(ref _readRevision);
             _items.Clear();
+        }
         RaiseChanged();
         SchedulePersist();
         if (!(_configManager.Config.ClipboardHistory?.Persist ?? true))
@@ -126,36 +135,35 @@ public sealed class ClipboardHistoryService : IDisposable
     /// <summary>再次写入纯文本剪贴板，并记入历史（会触发监听，去重后置顶）。</summary>
     public async Task CopyPlainTextAsync(string text, CancellationToken token = default)
     {
-        if (string.IsNullOrEmpty(text))
-            return;
+        if (!string.IsNullOrEmpty(text)) await CopyItemAsync(new() { Text = text }, token);
+    }
 
-        // 先主动入队，保证 UI 立即刷新；再写系统剪贴板
-        PushText(text, fromClipboardListener: false);
-
-        _suppressSelfWrite = true;
+    public async Task CopyItemAsync(ClipboardHistoryItem item, CancellationToken token = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        item = CloneItem(item);
+        await _writeGate.WaitAsync(token);
         try
         {
-            await SetClipboardPlainTextAsync(text, token);
-        }
-        finally
-        {
-            // 短暂抑制，避免立刻又读回同一内容重复处理
-            _ = Task.Run(async () =>
+            await ClipboardHistoryContent.RunAsync(() =>
             {
-                try
-                {
-                    await Task.Delay(400, CancellationToken.None);
-                }
-                catch
-                {
-                    // ignore
-                }
-                finally
-                {
-                    _suppressSelfWrite = false;
-                }
-            });
+                ObjectDisposedException.ThrowIf(_disposed, this);
+                if (!ClipboardHistoryContent.PreparePreview(item)) throw new InvalidDataException("图片无法读取或尺寸超出限制。");
+                ClipboardHistoryContent.Write(item);
+                Volatile.Write(ref _lastWrittenSequence, GetClipboardSequenceNumber());
+                return true;
+            }, token);
+            PushItem(item, fromClipboardListener: false);
         }
+        finally { _writeGate.Release(); }
+    }
+
+    /// <returns>True when Ctrl+V was sent; false when only copied.</returns>
+    public async Task<bool> DeliverItemAsync(ClipboardHistoryItem item, bool paste, IntPtr targetWindow)
+    {
+        if (!paste) { await CopyItemAsync(item); return false; }
+        return await PlainTextPasteService.PasteContentAsync(
+            ct => CopyItemAsync(item, ct), targetWindow);
     }
 
     public void Dispose()
@@ -178,8 +186,10 @@ public sealed class ClipboardHistoryService : IDisposable
         var cfg = _configManager.Config.ClipboardHistory ?? new ClipboardHistoryConfig();
         if (!cfg.Enabled)
             return;
-        if (_suppressSelfWrite || Volatile.Read(ref _captureSuppressCount) > 0)
+        if (Volatile.Read(ref _captureSuppressCount) > 0)
             return;
+
+        var revision = Interlocked.Increment(ref _readRevision);
 
         // 延迟一帧，等剪贴板 owner 写完
         _ = Task.Run(async () =>
@@ -187,13 +197,29 @@ public sealed class ClipboardHistoryService : IDisposable
             try
             {
                 await Task.Delay(80);
-                if (Volatile.Read(ref _captureSuppressCount) > 0)
-                    return;
-                var text = await ReadClipboardPlainTextAsync(CancellationToken.None);
-                if (string.IsNullOrWhiteSpace(text))
-                    return;
-
-                PushText(text, fromClipboardListener: true);
+                await _readGate.WaitAsync();
+                try
+                {
+                    if (_disposed || revision != Volatile.Read(ref _readRevision)
+                        || Volatile.Read(ref _captureSuppressCount) > 0) return;
+                    var sequence = GetClipboardSequenceNumber();
+                    if (sequence == Volatile.Read(ref _lastWrittenSequence)) return;
+                    var item = await ClipboardHistoryContent.RunAsync(() =>
+                    {
+                        var data = Clipboard.GetDataObject();
+                        return data == null ? null : ClipboardHistoryContent.Read(data);
+                    }, CancellationToken.None);
+                    if (!_disposed && revision == Volatile.Read(ref _readRevision)
+                        && Volatile.Read(ref _captureSuppressCount) == 0)
+                    {
+                        // Reading a delayed format may itself advance the Windows sequence
+                        // without another update message. Retry the now materialized data;
+                        // otherwise a perfectly valid copy could silently disappear.
+                        if (sequence != GetClipboardSequenceNumber()) OnClipboardChanged();
+                        else if (item != null) PushItem(item, fromClipboardListener: true);
+                    }
+                }
+                finally { _readGate.Release(); }
             }
             catch
             {
@@ -202,28 +228,27 @@ public sealed class ClipboardHistoryService : IDisposable
         });
     }
 
-    private void PushText(string rawText, bool fromClipboardListener)
+    private void PushItem(ClipboardHistoryItem incoming, bool fromClipboardListener)
     {
         var cfg = _configManager.Config.ClipboardHistory ?? new ClipboardHistoryConfig();
-        if (!cfg.Enabled && fromClipboardListener)
+        if (_disposed || (!cfg.Enabled && fromClipboardListener))
             return;
 
-        var text = NormalizeText(rawText, cfg.MaxTextLength);
-        if (string.IsNullOrEmpty(text))
-            return;
+        incoming = CloneItem(incoming);
+        if (!NormalizeItem(incoming, cfg.MaxTextLength)) return;
 
         lock (_lock)
         {
             if (cfg.IgnoreDuplicates
                 && _items.Count > 0
-                && string.Equals(_items[0].Text, text, StringComparison.Ordinal))
+                && _items[0].HasSameContent(incoming))
             {
                 _items[0].CopiedAt = DateTime.Now;
             }
             else
             {
                 // 同内容已在列表中：移到队首
-                var existing = _items.FindIndex(i => string.Equals(i.Text, text, StringComparison.Ordinal));
+                var existing = _items.FindIndex(i => i.HasSameContent(incoming));
                 if (existing >= 0)
                 {
                     var item = _items[existing];
@@ -233,11 +258,8 @@ public sealed class ClipboardHistoryService : IDisposable
                 }
                 else
                 {
-                    _items.Insert(0, new ClipboardHistoryItem
-                    {
-                        Text = text,
-                        CopiedAt = DateTime.Now
-                    });
+                    incoming.CopiedAt = DateTime.Now;
+                    _items.Insert(0, incoming);
                 }
             }
 
@@ -261,6 +283,28 @@ public sealed class ClipboardHistoryService : IDisposable
         return text;
     }
 
+    private static bool NormalizeItem(ClipboardHistoryItem item, int maxTextLength)
+    {
+        switch (item.Kind)
+        {
+            case ClipboardHistoryKind.Text:
+                item.Text = NormalizeText(item.Text ?? "", maxTextLength);
+                item.FilePaths = []; item.ImagePng = [];
+                return item.Text.Length > 0;
+            case ClipboardHistoryKind.Files:
+                item.FilePaths = (item.FilePaths ?? []).Where(p => !string.IsNullOrWhiteSpace(p)
+                    && Path.IsPathFullyQualified(p)).Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+                item.Text = ""; item.ImagePng = [];
+                return item.FilePaths.Length > 0;
+            case ClipboardHistoryKind.Image:
+                item.Text = ""; item.FilePaths = [];
+                return item.ImagePng is { Length: > 0 and <= ClipboardHistoryContent.MaxImageBytes }
+                    && item.ImageWidth > 0 && item.ImageHeight > 0
+                    && (long)item.ImageWidth * item.ImageHeight <= ClipboardHistoryContent.MaxImagePixels;
+            default: return false;
+        }
+    }
+
     private void ApplyMaxItems()
     {
         var max = _configManager.Config.ClipboardHistory?.MaxItems ?? 50;
@@ -273,10 +317,18 @@ public sealed class ClipboardHistoryService : IDisposable
         max = Math.Clamp(max, 5, 200);
         while (_items.Count > max)
             _items.RemoveAt(_items.Count - 1);
+        // Bound PNG payloads independently of the item count (JSON uses base64).
+        long imageBytes = 0;
+        for (var i = 0; i < _items.Count; i++)
+        {
+            imageBytes += _items[i].ImagePng.Length;
+            if (imageBytes > 64L * 1024 * 1024) { _items.RemoveRange(i, _items.Count - i); break; }
+        }
     }
 
     private void RaiseChanged()
     {
+        if (_disposed) return;
         var sync = _uiSync;
         if (sync is { IsDisposed: false, IsHandleCreated: true })
         {
@@ -299,6 +351,8 @@ public sealed class ClipboardHistoryService : IDisposable
 
     private void LoadFromDiskIfNeeded()
     {
+        int clearRevision;
+        lock (_lock) clearRevision = _clearRevision;
         var cfg = _configManager.Config.ClipboardHistory ?? new ClipboardHistoryConfig();
         if (!cfg.Persist || !File.Exists(HistoryPath))
             return;
@@ -314,11 +368,7 @@ public sealed class ClipboardHistoryService : IDisposable
             var diskItems = new List<ClipboardHistoryItem>();
             foreach (var item in file.Items)
             {
-                if (string.IsNullOrWhiteSpace(item.Text))
-                    continue;
-                item.Text = NormalizeText(item.Text, cfg.MaxTextLength);
-                if (string.IsNullOrEmpty(item.Text))
-                    continue;
+                if (!NormalizeItem(item, cfg.MaxTextLength) || !ClipboardHistoryContent.PreparePreview(item)) continue;
                 if (string.IsNullOrWhiteSpace(item.Id))
                     item.Id = Guid.NewGuid().ToString("N")[..8];
                 diskItems.Add(item);
@@ -329,17 +379,17 @@ public sealed class ClipboardHistoryService : IDisposable
 
             lock (_lock)
             {
+                if (_disposed || clearRevision != _clearRevision) return;
                 // 以磁盘项为底，启动后已入队的内存新项置顶（与首条剪贴板事件竞态安全）
                 var liveItems = _items.ToList();
                 _items.Clear();
                 _items.AddRange(diskItems);
 
-                // 内存新项按时间倒序插到前面，并按文本去重
+                // 内存新项按时间倒序插到前面，并按类型及内容去重
                 for (var i = liveItems.Count - 1; i >= 0; i--)
                 {
                     var live = liveItems[i];
-                    var existing = _items.FindIndex(x =>
-                        string.Equals(x.Text, live.Text, StringComparison.Ordinal));
+                    var existing = _items.FindIndex(x => x.HasSameContent(live));
                     if (existing >= 0)
                         _items.RemoveAt(existing);
                     _items.Insert(0, live);
@@ -356,6 +406,7 @@ public sealed class ClipboardHistoryService : IDisposable
 
     private void SchedulePersist()
     {
+        if (_disposed) return;
         var cfg = _configManager.Config.ClipboardHistory ?? new ClipboardHistoryConfig();
         if (!cfg.Persist)
         {
@@ -364,10 +415,16 @@ public sealed class ClipboardHistoryService : IDisposable
         }
 
         _persistPending = true;
-        _persistTimer.Change(800, Timeout.Infinite);
+        try { _persistTimer.Change(800, Timeout.Infinite); }
+        catch (ObjectDisposedException) when (_disposed) { }
     }
 
     private void FlushPersist()
+    {
+        lock (_persistLock) FlushPersistCore();
+    }
+
+    private void FlushPersistCore()
     {
         if (!_persistPending)
             return;
@@ -405,116 +462,29 @@ public sealed class ClipboardHistoryService : IDisposable
         {
             Id = src.Id,
             Text = src.Text,
+            Kind = src.Kind,
+            FilePaths = (src.FilePaths ?? []).ToArray(),
+            // PNG snapshots are immutable after capture; sharing avoids large per-refresh copies.
+            ImagePng = src.ImagePng ?? [],
+            ThumbnailPng = src.ThumbnailPng ?? [],
+            ImageWidth = src.ImageWidth,
+            ImageHeight = src.ImageHeight,
             CopiedAt = src.CopiedAt
         };
 
-    private static void TryDeleteHistoryFile()
-    {
-        try
-        {
-            if (File.Exists(HistoryPath))
-                File.Delete(HistoryPath);
-        }
-        catch
-        {
-            // ignore
-        }
-    }
+    [DllImport("user32.dll")]
+    private static extern uint GetClipboardSequenceNumber();
 
-    private static async Task<string?> ReadClipboardPlainTextAsync(CancellationToken token)
+    private void TryDeleteHistoryFile()
     {
-        var tcs = new TaskCompletionSource<string?>(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
+        lock (_persistLock)
         {
             try
             {
-                tcs.TrySetResult(ReadClipboardPlainTextCore());
+                if (File.Exists(HistoryPath)) File.Delete(HistoryPath);
             }
-            catch (Exception ex)
-            {
-                tcs.TrySetException(ex);
-            }
-        })
-        {
-            IsBackground = true,
-            Name = "Quickstart ClipboardHistory Read"
-        };
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        return await tcs.Task.WaitAsync(token);
-    }
-
-    private static string? ReadClipboardPlainTextCore()
-    {
-        for (var attempt = 0; attempt < 6; attempt++)
-        {
-            try
-            {
-                if (!Clipboard.ContainsText(TextDataFormat.UnicodeText)
-                    && !Clipboard.ContainsText(TextDataFormat.Text))
-                    return null;
-
-                var text = Clipboard.ContainsText(TextDataFormat.UnicodeText)
-                    ? Clipboard.GetText(TextDataFormat.UnicodeText)
-                    : Clipboard.GetText(TextDataFormat.Text);
-                return text;
-            }
-            catch (ExternalException)
-            {
-                Thread.Sleep(40 * (attempt + 1));
-            }
+            catch { /* ignore */ }
         }
-
-        return null;
-    }
-
-    private static async Task SetClipboardPlainTextAsync(string text, CancellationToken token)
-    {
-        for (var attempt = 0; attempt < 6; attempt++)
-        {
-            token.ThrowIfCancellationRequested();
-            try
-            {
-                if (Thread.CurrentThread.GetApartmentState() == ApartmentState.STA)
-                {
-                    Clipboard.SetText(text, TextDataFormat.UnicodeText);
-                    return;
-                }
-
-                await SetClipboardOnStaThreadAsync(text, token);
-                return;
-            }
-            catch (ExternalException)
-            {
-                await Task.Delay(40 * (attempt + 1), token);
-            }
-        }
-
-        throw new InvalidOperationException("无法写入剪贴板，请稍后重试。");
-    }
-
-    private static Task SetClipboardOnStaThreadAsync(string text, CancellationToken token)
-    {
-        var tcs = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
-        var thread = new Thread(() =>
-        {
-            try
-            {
-                Clipboard.SetText(text, TextDataFormat.UnicodeText);
-                tcs.TrySetResult();
-            }
-            catch (Exception ex)
-            {
-                tcs.TrySetException(ex);
-            }
-        })
-        {
-            IsBackground = true,
-            Name = "Quickstart ClipboardHistory Write"
-        };
-        thread.SetApartmentState(ApartmentState.STA);
-        thread.Start();
-        return tcs.Task.WaitAsync(token);
     }
 
     private sealed class ClipboardListenerWindow : NativeWindow

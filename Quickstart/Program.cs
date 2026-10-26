@@ -85,9 +85,7 @@ static class Program
         FileSearchPopup? fileSearchPopup = null;
         using var dialogQuickBar = new DialogQuickBarController(configManager);
         launcher.DialogTargetResolver = dialogQuickBar.ResolveAsync;
-        using var middleClickMenu = new ContextMenuStrip();
-        Point middleClickPoint = Point.Empty;
-        IntPtr middleClickSourceWindow = IntPtr.Zero;
+        MiddleClickPopup? middleClickPopup = null;
         IntPtr leftGestureSourceWindow = IntPtr.Zero;
         CancellationTokenSource? everythingSearchCts = null;
         var settingsDialogOpen = false;
@@ -121,11 +119,12 @@ static class Program
 
             if (aiActionPicker is { IsDisposed: false })
                 aiActionPicker.HandleDisplayEnvironmentChanged();
+            middleClickPopup?.HandleDisplayEnvironmentChanged();
 
             // 正在显示的对话框（设置等）可能因分辨率变小落到屏幕外，夹回可见工作区。
             foreach (Form form in Application.OpenForms)
             {
-                if (form is MainPopup or RadialMenuPopup or AiPopup or AiActionPickerPopup)
+                if (form is MainPopup or RadialMenuPopup or AiPopup or AiActionPickerPopup or MiddleClickPopup)
                     continue;
                 if (form is { IsDisposed: false, Visible: true } && form.Opacity >= 1f && form.Width > 1)
                     EnsureFormVisibleOnScreen(form);
@@ -184,6 +183,7 @@ static class Program
 
         trayIcon.ShowMainWindow += () =>
         {
+            middleClickPopup?.HidePanels();
             var popup = EnsureMainPopup();
             if (popup.Visible)
                 popup.Hide();
@@ -223,6 +223,7 @@ static class Program
                     }
 
                     var popup = EnsureMainPopup();
+                    middleClickPopup?.HidePanels();
                     if (message == "__SHOW__")
                         popup.ShowPopup();
                     else
@@ -296,6 +297,7 @@ static class Program
 
         globalHotKey.Pressed += () =>
         {
+            middleClickPopup?.HidePanels();
             var popup = EnsureMainPopup();
             if (popup.Visible)
                 popup.Hide();
@@ -335,7 +337,7 @@ static class Program
             }
             else if (showRegistrationError)
                 trayIcon.ShowBalloon("本地搜索", searchError +
-                    " 可在设置 → 快捷启动中修改；仍可使用中键菜单、托盘菜单和对话框底栏。", ToolTipIcon.Warning);
+                    " 可在设置 → 快捷启动中修改；仍可使用中键面板、托盘菜单和对话框底栏。", ToolTipIcon.Warning);
         }
 
         fileSearchHotKey.Pressed += () =>
@@ -349,6 +351,7 @@ static class Program
 
         void HideInputPanels()
         {
+            middleClickPopup?.HidePanels();
             mainPopup?.Hide();
             radialMenuPopup?.Hide();
             aiActionPicker?.Hide();
@@ -374,41 +377,19 @@ static class Program
             }
         }
 
-        // As with the tray menu, wait for the menu's modal loop to close before showing a panel.
-        middleClickMenu.Items.Add("快捷启动（右滑界面）", null, (_, _) => PostToUi(() =>
-        {
-            HideInputPanels();
-            if (configManager.Config.RightSwipePresentation == RightSwipePresentation.RadialRing)
-            {
-                var popup = EnsureRadialMenuPopup();
-                popup.ShowAtGesturePoint(middleClickPoint, middleClickSourceWindow);
-                popup.EnterInteractiveMode();
-            }
-            else
-            {
-                var popup = EnsureMainPopup();
-                popup.ShowAtGesturePoint(middleClickPoint, middleClickSourceWindow);
-                popup.EnterInteractiveMode();
-            }
-        }));
-        middleClickMenu.Items.Add("动作面板（左滑界面）", null, (_, _) => PostToUi(() =>
-        {
-            HideInputPanels();
-            leftGestureSourceWindow = middleClickSourceWindow;
-            var popup = EnsureAiActionPicker();
-            popup.ShowAtGesturePoint(middleClickPoint);
-            popup.EnterInteractiveMode();
-        }));
-        middleClickMenu.Items.Add("本地文件搜索", null, (_, _) => PostToUi(() => ShowFileSearch(sourceWindow: middleClickSourceWindow)));
         mouseHook.MiddleClicked += (point, sourceWindow) => PostToUi(() =>
         {
             if (settingsDialogOpen) return;
-            if (middleClickMenu.Visible) { middleClickMenu.Close(); return; }
+            if (middleClickPopup is { Visible: true }) { middleClickPopup.HidePanels(); return; }
             HideInputPanels();
-            middleClickPoint = point;
-            middleClickSourceWindow = sourceWindow;
-            WindowActivator.ClaimForegroundRights();
-            middleClickMenu.Show(point);
+            leftGestureSourceWindow = sourceWindow;
+            if (middleClickPopup == null || middleClickPopup.IsDisposed)
+            {
+                middleClickPopup = new MiddleClickPopup();
+                middleClickPopup.SearchRequested += (query, source) => ShowFileSearch(query, source);
+            }
+            // 中键是点击呼出，不需要扇区的拖动连贯性，固定用列表与动作面板对齐成两栏。
+            middleClickPopup.ShowPanels(EnsureMainPopup(), EnsureAiActionPicker(), point, sourceWindow);
         });
 
         mouseHook.GestureTriggered += (direction, pt, sourceWindow) =>
@@ -416,6 +397,7 @@ static class Program
             // 低级鼠标钩子必须尽快返回。所有窗口创建、布局和显示都投递到 UI 消息队列。
             PostGestureAction(() =>
             {
+                middleClickPopup?.HidePanels();
                 if (direction == RightDragDirection.Left && !gestureMoveTimer.Enabled)
                     gestureMoveTimer.Start();
 
@@ -519,6 +501,7 @@ static class Program
             aiPopupPrewarmTimer.Stop();
             aiPopupPrewarmTimer.Dispose();
             mouseHook.Dispose();
+            middleClickPopup?.Dispose();
             fileSearchPopup?.Dispose();
             everythingSearchCts?.Cancel();
             everythingSearchCts?.Dispose();
@@ -830,6 +813,7 @@ static class Program
 
         void ShowSettings()
         {
+            middleClickPopup?.HidePanels();
             // 防止托盘/快捷方式/IPC 重复触发时叠多个设置窗
             if (settingsDialogOpen)
             {

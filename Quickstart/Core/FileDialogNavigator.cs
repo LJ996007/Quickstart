@@ -201,6 +201,8 @@ public static class FileDialogNavigator
         var navigationClock = Stopwatch.StartNew();
         void Trace(string stage) => NavigationDiagnostic?.Invoke($"Navigation {navigationClock.ElapsedMilliseconds}ms: {stage}");
         token.ThrowIfCancellationRequested();
+        if (!target.IsWps && IsNativeFileNameTarget(target))
+            return NavigateNative(target, directory, token, Trace);
         Trace("root");
         var root = GetLiveRoot(target);
         Trace("filename lookup");
@@ -252,7 +254,7 @@ public static class FileDialogNavigator
                     if (AddressMatches(root, directory))
                     {
                         Trace("address confirmed");
-                        RestoreFileName(target, original, directory, token);
+                        RestoreFileName(target, original, directory, token, fileName);
                         Trace("filename restored");
                         return true;
                     }
@@ -277,16 +279,18 @@ public static class FileDialogNavigator
             token.ThrowIfCancellationRequested();
             SendEnter();
             var consumed = false;
-            for (var i = 0; i < 40; i++)
+            var consumeClock = Stopwatch.StartNew();
+            while (consumeClock.ElapsedMilliseconds < 3000)
             {
-                Thread.Sleep(60);
+                if (token.WaitHandle.WaitOne(25)) token.ThrowIfCancellationRequested();
                 token.ThrowIfCancellationRequested();
                 RequireForeground(target);
-                var current = FindFileName(GetLiveRoot(target));
+                var current = ReuseFileName(target, fileName);
+                if (current != null) fileName = current;
                 if (current != null && Value(current) != directory) { consumed = true; break; }
             }
             if (!consumed) throw new InvalidOperationException("对话框未响应目录跳转，请确认它处于本地文件选择界面。");
-            RestoreFileName(target, original, directory, token);
+            RestoreFileName(target, original, directory, token, fileName);
             return true;
         }
         catch
@@ -294,18 +298,155 @@ public static class FileDialogNavigator
             // Only undo our own injected value; never overwrite subsequent user input.
             if (IsLiveWindow(target) && GetForegroundWindow() == target.Window)
             {
-                try { var edit = FindFileName(GetLiveRoot(target)); if (edit != null && Value(edit) == directory) SetValue(edit, original); }
+                try { var edit = ReuseFileName(target, fileName); if (edit != null && Value(edit) == directory) SetValue(edit, original); }
                 catch { /* Closed or changed while recovering. */ }
             }
             throw;
         }
     }
 
-    private static void RestoreFileName(FileDialogTarget target, string original, string directory, CancellationToken token)
+    private static bool NavigateNative(FileDialogTarget target, string directory, CancellationToken token, Action<string> trace)
+    {
+        RequireForeground(target);
+        var filename = target.FileNameWindow;
+        var original = ReadNativeText(filename);
+        WaitForKeysReleased(token);
+        RequireForeground(target);
+        token.ThrowIfCancellationRequested();
+        SendChord(0x11, 0x4C);
+        trace("native address chord sent");
+
+        var address = IntPtr.Zero;
+        var clock = Stopwatch.StartNew();
+        while (clock.ElapsedMilliseconds < 1200)
+        {
+            token.ThrowIfCancellationRequested();
+            RequireForeground(target);
+            address = FindNativeAddress(target.Window);
+            if (address != IntPtr.Zero && address != filename && GetNativeFocus(target) == address) break;
+            address = IntPtr.Zero;
+            if (token.WaitHandle.WaitOne(15)) token.ThrowIfCancellationRequested();
+        }
+        if (address == IntPtr.Zero)
+            throw new InvalidOperationException("无法确认地址栏焦点，已停止跳转，未发送打开/保存按键。");
+        SetNativeText(address, directory);
+        RequireForeground(target);
+        if (GetNativeFocus(target) != address || ReadNativeText(address) != directory)
+            throw new InvalidOperationException("地址栏焦点已变化，已停止跳转。");
+        token.ThrowIfCancellationRequested();
+        SendEnter();
+        trace("native address enter sent");
+
+        // Only inspect the breadcrumb toolbar, never walk the file-list UIA subtree.
+        // Do not accept the editable address value: it still contains our injected path
+        // before the Shell has actually navigated.
+        clock.Restart();
+        while (clock.ElapsedMilliseconds < 6000)
+        {
+            token.ThrowIfCancellationRequested();
+            RequireForeground(target);
+            if (NativeAddressMatches(target.Window, directory))
+            {
+                if (!IsNativeFileNameTarget(target))
+                    throw new InvalidOperationException("文件对话框已更换，已停止跳转。");
+                var value = ReadNativeText(filename);
+                if (value != original && value != "" && value != directory && value != "*.*")
+                    throw new InvalidOperationException("文件名已被修改，已停止自动操作。");
+                token.ThrowIfCancellationRequested();
+                RequireForeground(target);
+                if (value != original) SetNativeText(filename, original);
+                PostMessage(target.Window, 0x0028, filename, new IntPtr(1)); // WM_NEXTDLGCTL
+                trace("native address confirmed; filename preserved");
+                return true;
+            }
+            if (token.WaitHandle.WaitOne(25)) token.ThrowIfCancellationRequested();
+        }
+        throw new InvalidOperationException("已发送目录跳转，但未确认新地址；请检查原对话框后重试。");
+    }
+
+    private static bool NativeAddressMatches(IntPtr dialog, string directory)
+    {
+        var toolbars = new List<IntPtr>();
+        EnumChildWindows(dialog, (window, _) =>
+        {
+            var cls = new StringBuilder(64);
+            GetClassName(window, cls, cls.Capacity);
+            if (cls.ToString() == "ToolbarWindow32" && IsWindowVisible(window)) toolbars.Add(window);
+            return true;
+        }, IntPtr.Zero);
+        bool Matches(string name)
+        {
+            var colon = name.IndexOfAny([':', '：']);
+            return colon >= 0 && string.Equals(Path.TrimEndingDirectorySeparator(name[(colon + 1)..].Trim()),
+                Path.TrimEndingDirectorySeparator(directory), StringComparison.OrdinalIgnoreCase);
+        }
+        // GetWindowText reads cross-process window captions without sending a synchronous
+        // message to the Shell, which can be busy loading a folder after Enter.
+        foreach (var toolbar in toolbars)
+        {
+            var caption = new StringBuilder(32768);
+            GetWindowText(toolbar, caption, caption.Capacity);
+            var name = caption.ToString();
+            if (Has(name, "地址", "address")) return Matches(name);
+        }
+        // Some Shell versions publish the caption only through UIA. Restrict that query
+        // to the breadcrumb instead of every toolbar or the entire file list.
+        foreach (var toolbar in toolbars)
+        {
+            var parentClass = new StringBuilder(128);
+            GetClassName(GetParent(toolbar), parentClass, parentClass.Capacity);
+            if (!parentClass.ToString().Contains("Breadcrumb", StringComparison.OrdinalIgnoreCase)) continue;
+            var name = AutomationElement.FromHandle(toolbar).Current.Name;
+            if (Has(name, "地址", "address")) return Matches(name);
+        }
+        return false;
+    }
+
+    private static bool IsNativeFileNameTarget(FileDialogTarget target)
+    {
+        var window = target.FileNameWindow;
+        if (window == IntPtr.Zero || !IsWindowVisible(window) || !IsWindowEnabled(window)
+            || !IsChild(target.Window, window) || GetProcessId(window) != target.ProcessId) return false;
+        var cls = new StringBuilder(64);
+        GetClassName(window, cls, cls.Capacity);
+        if (cls.ToString() != "Edit") return false;
+        if (FindNativeFileName(target.Window) == window) return true;
+        // Windows 11's DirectUI Save dialog uses Edit 1001 beneath a nameless ComboBox.
+        // The detector already identified its filename role; validate just that cached
+        // element's identity instead of rebuilding the dialog's UIA root and subtree.
+        return target.FileNameRuntimeId.Length > 0
+            && AutomationElement.FromHandle(window).GetRuntimeId().SequenceEqual(target.FileNameRuntimeId);
+    }
+
+    private static string ReadNativeText(IntPtr window)
+    {
+        var buffer = new StringBuilder(32768);
+        if (SendMessageTimeout(window, 0x000D, (IntPtr)buffer.Capacity, buffer, 0x0002, 250, out _) == IntPtr.Zero)
+            throw new InvalidOperationException("对话框暂时无响应，请稍后重试。");
+        return buffer.ToString();
+    }
+
+    private static void SetNativeText(IntPtr window, string text)
+    {
+        if (SendMessageTimeout(window, 0x000C, IntPtr.Zero, text, 0x0002, 250, out var result) == IntPtr.Zero || result == IntPtr.Zero)
+            throw new InvalidOperationException("无法填写目录地址，请稍后重试。");
+    }
+
+    private static AutomationElement? ReuseFileName(FileDialogTarget target, AutomationElement? cached)
+    {
+        // Qt keeps the filename edit alive while loading the new folder. Reuse it rather
+        // than querying the entire control tree on every navigation-completion poll.
+        try { if (cached != null && IsVisible(cached) && cached.Current.IsEnabled) return cached; }
+        catch (ElementNotAvailableException) { }
+        return FindTargetFileName(target, GetLiveRoot(target));
+    }
+
+    private static void RestoreFileName(FileDialogTarget target, string original, string directory, CancellationToken token,
+        AutomationElement? cached = null)
     {
         token.ThrowIfCancellationRequested();
         RequireForeground(target);
-        var edit = FindTargetFileName(target, GetLiveRoot(target)) ?? throw new InvalidOperationException("跳转后未找到文件名输入框。");
+        var edit = ReuseFileName(target, cached) ?? throw new InvalidOperationException("跳转后未找到文件名输入框。");
         var value = Value(edit);
         // WPS Save As restores the original basename without its selected file-type
         // extension when changing directories. This is a known provider rewrite.
@@ -536,6 +677,9 @@ public static class FileDialogNavigator
     [StructLayout(LayoutKind.Sequential)] private struct KeyboardInput { public ushort Key, Scan; public uint Flags, Time; public UIntPtr Extra; }
     [StructLayout(LayoutKind.Sequential)] private struct MouseInput { public int X, Y; public uint Data, Flags, Time; public UIntPtr Extra; }
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr wParam, StringBuilder text, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)] private static extern IntPtr SendMessageTimeout(IntPtr window, uint message, IntPtr wParam, string text, uint flags, uint timeout, out IntPtr result);
+    [DllImport("user32.dll")] private static extern bool PostMessage(IntPtr window, uint message, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll")] private static extern IntPtr GetDlgItem(IntPtr window, int id);
     private delegate bool EnumWindowProc(IntPtr window, IntPtr parameter);
     [DllImport("user32.dll")] private static extern bool EnumChildWindows(IntPtr window, EnumWindowProc callback, IntPtr parameter);

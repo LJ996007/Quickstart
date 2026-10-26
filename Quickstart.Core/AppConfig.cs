@@ -68,7 +68,7 @@ public sealed class AppConfig
     public bool TrackOpusRecentFolders { get; set; } = true;
     public Dictionary<string, DateTime> RecentFolders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public bool RightDragEnabled { get; set; } = true;
-    /// <summary>中键单击呼出快捷启动 / 动作面板选择入口；关闭后保留中键原有行为。</summary>
+    /// <summary>中键单击展开快捷启动、动作面板与文件搜索框；关闭后保留中键原有行为。</summary>
     public bool MiddleClickEnabled { get; set; } = true;
     public LeftDragAction LeftDragAction { get; set; } = LeftDragAction.AiActionPicker;
     /// <summary>右滑呼出：松手停留，点击选择；默认经典列表面板，另可选圆环轮。</summary>
@@ -93,7 +93,7 @@ public sealed class AppConfig
 
 public enum FolderFavoriteSource { Quickstart, DirectoryOpus, Combined }
 
-/// <summary>右滑主弹窗「历史」Tab：系统剪贴板文本历史。</summary>
+/// <summary>右滑主弹窗「历史」Tab：系统剪贴板文本、文件和图片历史。</summary>
 public sealed class ClipboardHistoryConfig
 {
     public bool Enabled { get; set; } = true;

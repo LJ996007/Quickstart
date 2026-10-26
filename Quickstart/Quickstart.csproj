@@ -28,19 +28,24 @@
     <!-- Assembly info -->
     <AssemblyName>Quickstart</AssemblyName>
     <RootNamespace>Quickstart</RootNamespace>
-    <Version>1.0.23</Version>
+    <Version>1.0.24</Version>
     <Description>Windows tray app for quick folder/file access</Description>
   </PropertyGroup>
 
   <ItemGroup>
     <EmbeddedResource Include="Resources\app.ico" />
     <EmbeddedResource Include="Resources\web-url.png" />
+    <EmbeddedResource Include="OfficePreview\wwwroot\**\*" LogicalName="OfficePreview/%(RecursiveDir)%(Filename)%(Extension)" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- UIAutomationClient/Types are needed for WPS's Qt file dialogs. -->
     <FrameworkReference Include="Microsoft.WindowsDesktop.App" />
     <ProjectReference Include="..\Quickstart.Core\Quickstart.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Microsoft.Web.WebView2" Version="1.0.4314.35" />
   </ItemGroup>
 
 </Project>

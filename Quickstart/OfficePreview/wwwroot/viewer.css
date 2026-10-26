@@ -1,0 +1,13 @@
+html, body { margin: 0; height: 100%; font: 14px "Segoe UI", "Microsoft YaHei", sans-serif; background: #f1f3f5; color: #303944; }
+body { overflow: hidden; }
+#message { padding: 32px 24px; line-height: 1.8; }
+#message[hidden] { display: none; }
+#content { height: 100%; overflow: auto; }
+#content:empty { display: none; }
+.vue-office-docx { min-height: 100%; }
+.vue-office-docx-main { padding: 16px !important; }
+.docx-wrapper { padding: 16px !important; }
+.docx-wrapper > section.docx { margin-bottom: 16px; }
+body.excel #content, .vue-office-excel, .vue-office-excel-main { height: 100%; }
+/* Selection is allowed; editing and external navigation remain disabled. */
+body.docx #content { user-select: text; }

@@ -21,6 +21,10 @@ public sealed class FileSearchPopup : Form
     private readonly System.Windows.Forms.Timer _debounce = new() { Interval = 150 };
     private readonly ImageList _icons = new() { ColorDepth = ColorDepth.Depth32Bit, ImageSize = new Size(20, 20) };
     private readonly ContextMenuStrip _menu = new();
+    private readonly OfficePreviewPane _preview = new() { Dock = DockStyle.Fill };
+    private readonly SplitContainer _split = new() { Dock = DockStyle.Fill, FixedPanel = FixedPanel.Panel1 };
+    private readonly CheckBox _previewEnabled = new() { Text = "预览", Checked = true, AutoSize = true, Anchor = AnchorStyles.None };
+    private readonly System.Windows.Forms.Timer _previewDelay = new() { Interval = 180 };
     private CancellationTokenSource? _searchCts;
     private int _revision;
     private uint _offset;
@@ -43,8 +47,8 @@ public sealed class FileSearchPopup : Form
         Font = UiTheme.CreateFont(9f);
         AutoScaleMode = AutoScaleMode.Dpi;
         AutoScaleDimensions = new SizeF(96, 96);
-        ClientSize = new Size(860, 480);
-        MinimumSize = new Size(580, 320);
+        ClientSize = new Size(1180, 650);
+        MinimumSize = new Size(860, 380);
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
         TopMost = true;
@@ -52,13 +56,15 @@ public sealed class FileSearchPopup : Form
         _filter.Items.AddRange(["全部", "文件", "文件夹"]);
         _sort.Items.AddRange(["名称排序", "最近修改", "文件最大"]);
         _filter.SelectedIndex = _sort.SelectedIndex = 0;
-        var top = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 3, AutoSize = true, Padding = new Padding(0, 0, 0, 6) };
+        var top = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, AutoSize = true, Padding = new Padding(0, 0, 0, 6) };
         top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         top.Controls.Add(_query, 0, 0);
         top.Controls.Add(_filter, 1, 0);
         top.Controls.Add(_sort, 2, 0);
+        top.Controls.Add(_previewEnabled, 3, 0);
         var footer = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 4, AutoSize = true };
         footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var i = 0; i < 3; i++) footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -76,7 +82,9 @@ public sealed class FileSearchPopup : Form
         layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
         layout.Controls.Add(_dialogMode, 0, 0);
         layout.Controls.Add(top, 0, 1);
-        layout.Controls.Add(_results, 0, 2);
+        _split.Panel1.Controls.Add(_results);
+        _split.Panel2.Controls.Add(_preview);
+        layout.Controls.Add(_split, 0, 2);
         layout.Controls.Add(footer, 0, 3);
         Controls.Add(layout);
         _results.Columns.Add("名称", 250);
@@ -93,6 +101,22 @@ public sealed class FileSearchPopup : Form
         _previous.Click += async (_, _) => { _offset -= EverythingIpcProtocol.PageSize; await SearchAsync(); };
         _next.Click += async (_, _) => { _offset += EverythingIpcProtocol.PageSize; await SearchAsync(); };
         _results.DoubleClick += (_, _) => RunAction(OpenSelected);
+        _results.ItemSelectionChanged += (_, e) =>
+        {
+            if (!e.IsSelected) { _previewDelay.Stop(); _preview.Clear(); }
+            else if (_results.Focused) SchedulePreview();
+        };
+        _results.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && _results.GetItemAt(e.X, e.Y) != null) SchedulePreview(); };
+        _results.KeyUp += (_, e) => { if (e.KeyCode is Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.PageUp or Keys.PageDown) SchedulePreview(); };
+        _previewDelay.Tick += async (_, _) =>
+        {
+            _previewDelay.Stop();
+            if (CanPreview && Selected is { IsFolder: false } result) await _preview.PreviewAsync(result.FullPath);
+        };
+        _preview.OpenRequested += (_, _) => RunAction(OpenSelected);
+        _preview.EscapeRequested += (_, _) => Hide();
+        _previewEnabled.CheckedChanged += (_, _) => UpdatePreviewLayout();
+        _dialogMode.CheckedChanged += (_, _) => UpdatePreviewLayout();
         _query.KeyDown += (_, e) =>
         {
             if (e.KeyCode == Keys.Down && _results.Items.Count > 0)
@@ -125,9 +149,30 @@ public sealed class FileSearchPopup : Form
             if (Visible) return;
             _debounce.Stop(); _searchCts?.Cancel(); _revision++;
             _dialogProbe?.Cancel();
+            _previewDelay.Stop(); _preview.Clear();
         };
         ResumeLayout(true);
+        var dpiScale = DeviceDpi / 96d;
+        _split.Panel1MinSize = (int)Math.Round(330 * dpiScale);
+        _split.Panel2MinSize = (int)Math.Round(300 * dpiScale);
+        _split.SplitterDistance = (int)Math.Round(540 * dpiScale);
         ResizeColumns();
+    }
+
+    private bool CanPreview => Visible && _previewEnabled.Checked && !UseDialog && !_detectingDialog && !_dialogDetectionFailed;
+
+    private void SchedulePreview()
+    {
+        _previewDelay.Stop();
+        if (CanPreview && Selected is { IsFolder: false }) _previewDelay.Start();
+        else _preview.Clear(Selected?.IsFolder == true ? "文件夹不提供文档预览。" : null);
+    }
+
+    private void UpdatePreviewLayout()
+    {
+        _split.Panel2Collapsed = !_previewEnabled.Checked || UseDialog;
+        if (_split.Panel2Collapsed) { _previewDelay.Stop(); _preview.Clear(); }
+        else if (CanPreview) { _ = _preview.WarmUpAsync(); SchedulePreview(); }
     }
 
     private void ResizeColumns()
@@ -135,10 +180,10 @@ public sealed class FileSearchPopup : Form
         if (_results.Columns.Count != 4) return;
         var scale = DeviceDpi / 96d;
         int S(int value) => (int)Math.Round(value * scale);
-        var width = Math.Max(S(550), _results.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
-        _results.Columns[2].Width = S(85);
-        _results.Columns[3].Width = S(145);
-        var remaining = width - S(230);
+        var width = Math.Max(S(420), _results.ClientSize.Width - SystemInformation.VerticalScrollBarWidth - 4);
+        _results.Columns[2].Width = S(70);
+        _results.Columns[3].Width = S(125);
+        var remaining = width - S(195);
         _results.Columns[0].Width = (int)(remaining * .42);
         _results.Columns[1].Width = remaining - _results.Columns[0].Width;
         var iconSize = Math.Clamp(S(20), 16, 64);
@@ -171,6 +216,7 @@ public sealed class FileSearchPopup : Form
         Show(); Activate(); _query.Focus(); _query.SelectAll();
         ScheduleSearch();
         if (_detectingDialog) _ = DetectDialogAsync(sourceWindow, session, _dialogProbe.Token);
+        else UpdatePreviewLayout();
     }
 
     private bool UseDialog => _dialogTarget != null && _dialogMode.Checked;
@@ -198,7 +244,14 @@ public sealed class FileSearchPopup : Form
             _dialogDetectionError = ex is OperationCanceledException ? "识别文件对话框超时，请重新呼出搜索。" : $"无法识别文件对话框：{ex.GetBaseException().Message}";
             _status.Text = _dialogDetectionError;
         }
-        finally { if (!IsDisposed && session == _showSession) _detectingDialog = false; }
+        finally
+        {
+            if (!IsDisposed && session == _showSession)
+            {
+                _detectingDialog = false;
+                UpdatePreviewLayout();
+            }
+        }
     }
 
     private string EffectiveQuery => _filter.SelectedIndex switch
@@ -211,6 +264,7 @@ public sealed class FileSearchPopup : Form
     private void ScheduleSearch()
     {
         if (_changing) return;
+        _previewDelay.Stop(); _preview.Clear();
         _revision++;
         _searchCts?.Cancel();
         _debounce.Stop();
@@ -360,6 +414,8 @@ public sealed class FileSearchPopup : Form
     {
         if (keyData == Keys.Escape) { Hide(); return true; }
         if (keyData == (Keys.Control | Keys.L)) { _query.Focus(); _query.SelectAll(); return true; }
+        // Let the browser/PDF viewer handle text copy, selection and document navigation.
+        if (_preview.HasPreviewFocus) return base.ProcessCmdKey(ref msg, keyData);
         if (keyData == Keys.F5) { ScheduleSearch(); return true; }
         if (keyData == Keys.Enter) { RunAction(OpenSelected); return true; }
         if (keyData == (Keys.Control | Keys.Enter)) { RunAction(LocateSelected); return true; }
@@ -368,11 +424,12 @@ public sealed class FileSearchPopup : Form
     }
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && !IsDisposed)
         {
             _showSession++; _dialogProbe?.Cancel(); _dialogProbe?.Dispose();
             _revision++; _searchCts?.Cancel(); _searchCts?.Dispose();
             _debounce.Dispose(); _client.Dispose(); _menu.Dispose(); _icons.Dispose();
+            _previewDelay.Dispose(); _preview.Dispose();
         }
         base.Dispose(disposing);
     }

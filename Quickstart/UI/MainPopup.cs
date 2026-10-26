@@ -82,6 +82,29 @@ public sealed class MainPopup : Form
     // 嵌套计数：右键菜单 / 子对话框打开期间禁止失焦自动隐藏
     private int _autoHideSuspendCount;
     private bool SuppressAutoHide => _autoHideSuspendCount > 0;
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal Form? MiddleClickHost { get; set; }
+    internal bool IsContextInteraction => SuppressAutoHide;
+    private Size? _middleClickViewport;
+    // 中键两栏：头部与动作面板顶栏同高（无分隔线），筛选框画成与「最近」chip 同款的胶囊；
+    // 行高 = 动作行高 + 行距，视觉上对齐成一组。
+    private const int MiddleClickHeaderLogicalHeight = 55;
+    private const int MiddleClickPillLogicalHeight = 28;
+    private const int MiddleClickPillLogicalInset = 12;
+    private const int MiddleClickRowLogicalHeight = 40;
+    private bool InMiddleClickLayout => _middleClickViewport != null;
+
+    /// <summary>null 恢复独立面板；有值时按该尺寸精确铺满（可放大），筛选框常驻头部。</summary>
+    internal void FitMiddleClickPanel(Size? viewport)
+    {
+        _middleClickViewport = viewport;
+        if (viewport == null && _isSearchExpanded && string.IsNullOrWhiteSpace(_searchBox.Text))
+            _isSearchExpanded = false;
+        _listView.BackColor = viewport == null ? SystemColors.Window : UiTheme.Surface;
+        _searchPanel.BackColor = viewport == null ? UiTheme.Card : UiTheme.Surface;
+        _separatorPanel.Visible = viewport == null;
+        ApplyScaledMetrics();
+    }
     /// <summary>呼出前的目标窗口，用于「直接粘贴到光标处」。</summary>
     private IntPtr _deliveryTargetWindow;
     /// <summary>本次呼出的目标显示器；句柄未创建时用它估算布局，跨屏呼出时先搬屏再算尺寸。</summary>
@@ -447,6 +470,12 @@ public sealed class MainPopup : Form
 
         _searchCollapsedPanel.Click += (_, _) => ExpandSearch();
         _searchCollapsedIndicator.Click += (_, _) => ExpandSearch();
+        _searchPanel.Paint += (_, e) =>
+        {
+            if (InMiddleClickLayout && _isSearchExpanded)
+                DrawMiddleClickPill(e.Graphics, GetMiddleClickPillBounds(_searchPanel.ClientSize.Width));
+        };
+        _searchPanel.Resize += (_, _) => _searchPanel.Invalidate();
         _searchPanel.Click += (_, _) =>
         {
             if (_isSearchExpanded)
@@ -502,7 +531,7 @@ public sealed class MainPopup : Form
         Deactivate += (_, _) =>
         {
             // 右键菜单 / 编辑对话框期间不自动隐藏，方便连续操作
-            if (Visible && !SuppressAutoHide) Hide();
+            if (Visible && !SuppressAutoHide && MiddleClickHost == null) Hide();
         };
     }
 
@@ -545,6 +574,16 @@ public sealed class MainPopup : Form
         var collapsedPadding = UiScaleHelper.ScalePadding(this, new Padding(0));
         var expandedSearchHeight = Math.Max(UiScaleHelper.Scale(this, 24), _searchBox.PreferredHeight);
         var collapsedSearchHeight = Math.Max(UiScaleHelper.Scale(this, 8), UiScaleHelper.Scale(this, 6));
+        if (InMiddleClickLayout)
+        {
+            // 文字在胶囊内垂直居中；胶囊本身由 _searchPanel.Paint 绘制
+            expandedSearchHeight = _searchBox.PreferredHeight;
+            var headerHeight = UiScaleHelper.Scale(this, MiddleClickHeaderLogicalHeight);
+            var pill = GetMiddleClickPillBounds(0);
+            var top = pill.Top + (pill.Height - expandedSearchHeight) / 2;
+            var sidePadding = UiScaleHelper.Scale(this, MiddleClickPillLogicalInset * 2);
+            expandedPadding = new Padding(sidePadding, top, sidePadding, headerHeight - expandedSearchHeight - top);
+        }
         var expandedRowHeight = expandedSearchHeight + expandedPadding.Vertical;
         var collapsedRowHeight = collapsedSearchHeight + collapsedPadding.Vertical;
 
@@ -560,7 +599,7 @@ public sealed class MainPopup : Form
         _outerLayout.RowStyles[0].SizeType = SizeType.Absolute;
         _outerLayout.RowStyles[0].Height = activeRowHeight;
         _outerLayout.RowStyles[1].SizeType = SizeType.Absolute;
-        _outerLayout.RowStyles[1].Height = separatorWidth;
+        _outerLayout.RowStyles[1].Height = InMiddleClickLayout ? 0 : separatorWidth;
         UpdateSearchIndicatorBounds();
         UpdateSearchPresentation();
 
@@ -724,7 +763,7 @@ public sealed class MainPopup : Form
 
     private void CollapseSearchIfIdle()
     {
-        if (!_isSearchExpanded)
+        if (!_isSearchExpanded || MiddleClickHost != null)
             return;
 
         if (!string.IsNullOrWhiteSpace(_searchBox.Text))
@@ -740,11 +779,12 @@ public sealed class MainPopup : Form
     {
         var iconSize = UiScaleHelper.GetIconSize(this, 20);
         _iconRenderSize = iconSize;
-        if (_imageList.ImageSize.Width == iconSize)
+        var rowSize = new Size(iconSize, InMiddleClickLayout ? UiScaleHelper.Scale(this, MiddleClickRowLogicalHeight) : iconSize);
+        if (_imageList.ImageSize == rowSize)
             return;
 
         // ImageList 仅用于撑起行高；实际绘制用 _iconImages 的高分原图
-        _imageList.ImageSize = new Size(iconSize, iconSize);
+        _imageList.ImageSize = rowSize;
         _imageList.Images.Clear();
         DisposeRenderedIcons();
         // 通用网页占位图按固定高分辨率生成一次，缩放交给自绘
@@ -1291,14 +1331,13 @@ public sealed class MainPopup : Form
             if (hist == null)
                 return menu;
 
-            var copy = new ToolStripMenuItem("复制为纯文本") { Font = BoldMenuFont };
-            copy.Click += (_, _) =>
+            var copy = new ToolStripMenuItem(hist.Kind == ClipboardHistoryKind.Text ? "复制为纯文本" : "复制") { Font = BoldMenuFont };
+            copy.Click += async (_, _) =>
             {
                 var selected = GetSelectedHistoryItem();
-                if (selected == null || string.IsNullOrEmpty(selected.Text))
+                if (selected == null)
                     return;
-                ShowToast("已复制");
-                _ = CopyHistoryItemAsync(selected.Text);
+                await DeliverHistoryItemAsync(selected, paste: false, IntPtr.Zero);
             };
             menu.Items.Add(copy);
 
@@ -1471,7 +1510,7 @@ public sealed class MainPopup : Form
         if (!preserveGroup)
             _activeGroup = AllGroupsLabel;
         _searchBox.Clear();
-        SetSearchExpanded(false);
+        SetSearchExpanded(MiddleClickHost != null);
         ApplyTabStyles();
         UpdateSearchPlaceholder();
         PrepareTargetScreen(GetTrayScreen());
@@ -1667,14 +1706,26 @@ public sealed class MainPopup : Form
 
     private void ExecuteHistoryItem(ClipboardHistoryItem item, bool hideFirst = false)
     {
-        if (_clipboardHistory == null || string.IsNullOrEmpty(item.Text))
-            return;
+        if (_clipboardHistory == null) return;
+        var paste = _configManager.Config.ClipboardHistoryAction == TextDeliveryAction.PasteAtCursor;
+        var target = _deliveryTargetWindow == Handle ? IntPtr.Zero : _deliveryTargetWindow;
+        if (hideFirst || paste) Hide();
+        _ = DeliverHistoryItemAsync(item, paste, target);
+    }
 
-        DeliverText(
-            item.Text,
-            _configManager.Config.ClipboardHistoryAction,
-            fromHistory: true,
-            hideFirst);
+    private async Task DeliverHistoryItemAsync(ClipboardHistoryItem item, bool paste, IntPtr target)
+    {
+        try
+        {
+            if (_clipboardHistory == null) return;
+            var pasted = await _clipboardHistory.DeliverItemAsync(item, paste, target);
+            if (!IsDisposed) ShowToast(pasted ? "已粘贴" : paste ? "已复制（无法粘贴）" : "已复制");
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+                MessageBox.Show(this, ex.Message, "剪贴板", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
     }
 
     private async Task CopyHistoryItemAsync(string text)
@@ -1901,7 +1952,7 @@ public sealed class MainPopup : Form
         _activeTab = GetTabKind(entry.Type);
         _activeGroup = AllGroupsLabel;
         _searchBox.Clear();
-        SetSearchExpanded(false);
+        SetSearchExpanded(MiddleClickHost != null);
         ApplyTabStyles();
         UpdateSearchPlaceholder();
         PrepareTargetScreen(GetTrayScreen());
@@ -2563,10 +2614,14 @@ public sealed class MainPopup : Form
 
         var query = _searchBox.Text.Trim();
         var items = _clipboardHistory?.GetItems().ToList() ?? [];
+        var liveImageKeys = items.Where(i => i.Kind == ClipboardHistoryKind.Image)
+            .Select(i => "<CLIP:" + i.Id + ">").ToHashSet();
+        foreach (var key in _iconImages.Keys.Where(k => k.StartsWith("<CLIP:") && !liveImageKeys.Contains(k)).ToArray())
+            RemoveCachedIcon(key);
         if (!string.IsNullOrEmpty(query))
         {
             items = items
-                .Where(i => i.Text.Contains(query, StringComparison.OrdinalIgnoreCase)
+                .Where(i => i.SearchText.Contains(query, StringComparison.OrdinalIgnoreCase)
                             || PinyinHelper.MatchesPinyin(i.Preview(80), query))
                 .ToList();
         }
@@ -2578,7 +2633,7 @@ public sealed class MainPopup : Form
         {
             var empty = new ListViewItem(
                 string.IsNullOrEmpty(query)
-                    ? "暂无历史 · 复制文本后自动出现"
+                    ? "暂无历史 · 复制文本、文件或图片后自动出现"
                     : "无匹配历史");
             empty.ForeColor = UiTheme.TextMuted;
             empty.Tag = null;
@@ -2590,8 +2645,15 @@ public sealed class MainPopup : Form
             {
                 var item = new ListViewItem(hist.Preview());
                 item.Tag = hist;
-                var tip = hist.Text.Length > 800 ? hist.Text[..800] + "…" : hist.Text;
-                item.ToolTipText = $"{FormatRelativeTime(hist.CopiedAt)} · {hist.CharCount} 字\n{tip}";
+                if (hist.Kind == ClipboardHistoryKind.Image)
+                {
+                    var key = "<CLIP:" + hist.Id + ">";
+                    if (!_iconImages.ContainsKey(key)) RegisterIcon(key, ClipboardHistoryContent.CreateThumbnail(hist));
+                    item.ImageKey = key;
+                }
+                var text = hist.SearchText;
+                var tip = text.Length > 800 ? text[..800] + "…" : text;
+                item.ToolTipText = $"{FormatRelativeTime(hist.CopiedAt)} · {hist.Details}\n{tip}";
                 _listView.Items.Add(item);
             }
         }
@@ -2803,7 +2865,9 @@ public sealed class MainPopup : Form
     {
         using (var bg = new SolidBrush(_listView.BackColor))
             e.Graphics.FillRectangle(bg, e.Bounds);
-        if (e.Item.Selected)
+        if (InMiddleClickLayout)
+            DrawMiddleClickCard(e.Graphics, e.Bounds, e.Item.Selected);
+        else if (e.Item.Selected)
             DrawSelectedRow(e.Graphics, e.Bounds);
 
         // 拖拽插入提示线
@@ -2843,6 +2907,61 @@ public sealed class MainPopup : Form
         g.SmoothingMode = previous;
     }
 
+    /// <summary>与动作面板「最近」chip 同一垂直中线（窗体顶 + 边框 + 内边距 + 半个顶栏）。</summary>
+    private Rectangle GetMiddleClickPillBounds(int panelWidth)
+    {
+        var inset = UiScaleHelper.Scale(this, MiddleClickPillLogicalInset);
+        var height = UiScaleHelper.Scale(this, MiddleClickPillLogicalHeight);
+        var center = UiScaleHelper.Scale(this, 28) + 1;
+        return new Rectangle(inset, center - height / 2, Math.Max(0, panelWidth - inset * 2 - 1), height);
+    }
+
+    private static void DrawMiddleClickPill(Graphics g, Rectangle rect)
+    {
+        var d = rect.Height;
+        if (rect.Width <= d)
+            return;
+
+        using var path = new System.Drawing.Drawing2D.GraphicsPath();
+        path.AddArc(rect.X, rect.Y, d, d, 90, 180);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 180);
+        path.CloseFigure();
+        var previous = g.SmoothingMode;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using (var fill = new SolidBrush(UiTheme.Card))
+            g.FillPath(fill, path);
+        using (var pen = new Pen(UiTheme.Border))
+            g.DrawPath(pen, path);
+        g.SmoothingMode = previous;
+    }
+
+    /// <summary>中键两栏：行画成与动作面板相同的圆角卡片，行间留 4 px 间距。</summary>
+    private void DrawMiddleClickCard(Graphics g, Rectangle bounds, bool selected)
+    {
+        var insetX = UiScaleHelper.Scale(this, 6);
+        var insetY = UiScaleHelper.Scale(this, 2);
+        var radius = UiScaleHelper.Scale(this, 8);
+        var rect = new Rectangle(bounds.X + insetX, bounds.Y + insetY, bounds.Width - insetX * 2 - 1, bounds.Height - insetY * 2 - 1);
+        if (rect.Width <= radius * 2 || rect.Height <= radius * 2)
+            return;
+
+        using var path = new System.Drawing.Drawing2D.GraphicsPath();
+        var d = radius * 2;
+        path.AddArc(rect.X, rect.Y, d, d, 180, 90);
+        path.AddArc(rect.Right - d, rect.Y, d, d, 270, 90);
+        path.AddArc(rect.Right - d, rect.Bottom - d, d, d, 0, 90);
+        path.AddArc(rect.X, rect.Bottom - d, d, d, 90, 90);
+        path.CloseFigure();
+
+        var previous = g.SmoothingMode;
+        g.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        using (var fill = new SolidBrush(selected ? UiTheme.SelectionFill : UiTheme.Card))
+            g.FillPath(fill, path);
+        using (var pen = new Pen(selected ? UiTheme.Accent : UiTheme.BorderSubtle))
+            g.DrawPath(pen, path);
+        g.SmoothingMode = previous;
+    }
+
     private static void DrawDragInsertionLine(Graphics g, int y, int width)
     {
         var color = UiTheme.Accent;
@@ -2860,7 +2979,7 @@ public sealed class MainPopup : Form
         var item = e.Item!;
         var bounds = e.Bounds;
 
-        int textX = bounds.X + UiScaleHelper.Scale(this, 2);
+        int textX = bounds.X + UiScaleHelper.Scale(this, InMiddleClickLayout ? 16 : 2);
         if (e.ColumnIndex == 0)
         {
             var key = item.ImageKey;
@@ -2875,7 +2994,7 @@ public sealed class MainPopup : Form
         }
 
         var textColor = item.Selected ? UiTheme.AccentText : item.ForeColor;
-        var textBounds = new Rectangle(textX, bounds.Y, bounds.Right - textX - UiScaleHelper.Scale(this, 2), bounds.Height);
+        var textBounds = new Rectangle(textX, bounds.Y, bounds.Right - textX - UiScaleHelper.Scale(this, InMiddleClickLayout ? 14 : 2), bounds.Height);
         var display = GetTruncatedText(item.Text, textBounds.Width);
 
         TextRenderer.DrawText(
@@ -3177,7 +3296,7 @@ public sealed class MainPopup : Form
             _activeGroup = AllGroupsLabel;
         }
         _searchBox.Clear();
-        SetSearchExpanded(false);
+        SetSearchExpanded(MiddleClickHost != null);
         ApplyTabStyles();
         UpdateSearchPlaceholder();
 
@@ -3192,7 +3311,7 @@ public sealed class MainPopup : Form
         int x = Math.Max(workingArea.Left + popupMargin, Math.Min(screenPt.X - popupMargin, workingArea.Right - Width - popupMargin));
         int y = Math.Max(workingArea.Top + popupMargin, Math.Min(screenPt.Y - listAnchorOffsetY, workingArea.Bottom - Height - popupMargin));
         Location = new Point(x, y);
-        PopupMotion.SlideIn(this, direction: +1);
+        if (MiddleClickHost == null) PopupMotion.SlideIn(this, direction: +1);
 
         Show();
     }
@@ -3249,7 +3368,7 @@ public sealed class MainPopup : Form
         var maxWidth = Math.Max(minimum.Width, screen.WorkingArea.Width - margin * 2);
         var maxHeight = Math.Max(minimum.Height, screen.WorkingArea.Height - margin * 2);
 
-        Size = new Size(
+        Size = _middleClickViewport ?? new Size(
             Math.Min(preferred.Width, maxWidth),
             Math.Min(preferred.Height, maxHeight));
     }

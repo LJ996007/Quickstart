@@ -75,6 +75,19 @@ internal sealed class AiActionPickerPopup : Form
     private bool _gestureMode = true;
     private bool _showWithoutActivation = true;
     private bool _suppressAutoHide;
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal Form? MiddleClickHost { get; set; }
+    private Size? _middleClickViewport;
+
+    /// <summary>null 恢复独立面板；有值时精确铺满该尺寸，操作提示并入中键搜索条。</summary>
+    internal void FitMiddleClickPanel(Size? viewport)
+    {
+        _middleClickViewport = viewport;
+        _lastPopupSize = Size.Empty;
+        _footerHint.Visible = viewport == null;
+        _root.RowStyles[2].Height = viewport == null ? UiScaleHelper.Scale(this, FooterLogicalHeight) : 0;
+        EnsurePopupSizeForScreen(Screen.FromHandle(Handle));
+    }
 
     public event Action<AiActionSelection, Point>? ActionSelected;
     public event Action? ShowSettings;
@@ -230,7 +243,7 @@ internal sealed class AiActionPickerPopup : Form
 
         Deactivate += (_, _) =>
         {
-            if (Visible && _interactiveDocked && !_suppressAutoHide)
+            if (Visible && _interactiveDocked && !_suppressAutoHide && MiddleClickHost == null)
                 Hide();
         };
 
@@ -300,7 +313,7 @@ internal sealed class AiActionPickerPopup : Form
             var x = Math.Max(workingArea.Left + margin, Math.Min(screenPt.X - Width + margin, workingArea.Right - Width - margin));
             var y = Math.Max(workingArea.Top + margin, Math.Min(screenPt.Y - (Height / 2), workingArea.Bottom - Height - margin));
             Location = new Point(x, y);
-            PopupMotion.SlideIn(this, direction: -1);
+            if (MiddleClickHost == null) PopupMotion.SlideIn(this, direction: -1);
         }
         finally
         {
@@ -352,7 +365,7 @@ internal sealed class AiActionPickerPopup : Form
             BeginInvoke(new Action(() =>
             {
                 _suppressAutoHide = false;
-                if (Visible && !ContainsFocus && Form.ActiveForm != this)
+                if (MiddleClickHost == null && Visible && !ContainsFocus && Form.ActiveForm != this)
                 {
                     // 仍未拿到焦点时再试一次，避免 ESC 失效。
                     WindowActivator.TryForceForeground(Handle);
@@ -889,6 +902,8 @@ internal sealed class AiActionPickerPopup : Form
 
         var finalW = Math.Min(Math.Max(S(logicalW), recentNeededW), maxFormW);
         var finalH = Math.Clamp(neededHeight, S(MinHeight), Math.Min(S(MaxHeight), maxFormH));
+        if (_middleClickViewport is { } viewport)
+            (finalW, finalH) = (viewport.Width, viewport.Height);
         var finalSize = new Size(finalW, finalH);
 
         // 尺寸与 DPI 未变且动作列表未重建时，跳过重布局
@@ -1142,7 +1157,7 @@ internal sealed class AiActionPickerPopup : Form
     private void BeginSystemMove()
     {
         ReleaseCapture();
-        SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
+        SendMessage(MiddleClickHost?.Handle ?? Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
     }
 
     private Button CreateSettingsButton()

@@ -193,7 +193,7 @@ public sealed class SettingsForm : Form
         var fileSearchHotKeyRow = CreateLabeledFieldRow("本地搜索", _fileSearchHotKeyBox, labelWidth: 88);
 
         _rightDragCheck = CreateCheckBox("启用右键拖动手势", config.RightDragEnabled);
-        _middleClickCheck = CreateCheckBox("中键单击呼出面板选择入口", config.MiddleClickEnabled);
+        _middleClickCheck = CreateCheckBox("中键单击展开快捷启动、动作面板和搜索框", config.MiddleClickEnabled);
         _fileDialogNavigationCheck = CreateCheckBox("打开/保存时自动显示目录搜索与收藏栏（含 WPS）", config.FileDialogNavigationEnabled);
         _rightDragCheck.Margin = new Padding(0, 4, 0, 2);
 
@@ -495,13 +495,13 @@ public sealed class SettingsForm : Form
         var textDeliveryHint = CreateHintLabel(
             "点击「文本」收藏条目后的默认动作。「直接粘贴」会写回呼出启动器前的窗口光标处；失败时退回仅复制。右键「复制文本」始终只写剪贴板。");
         var clipboardActionHint = CreateHintLabel(
-            "点击「剪贴板」历史条目后的默认动作。「直接粘贴」写回呼出前窗口光标处；失败时退回仅复制。右键「复制为纯文本」始终只写剪贴板。");
+            "点击「剪贴板」历史条目后的默认动作。「直接粘贴」将文本、文件或图片写回呼出前窗口；目标应用需支持对应格式。右键「复制」只写剪贴板。");
 
         // 剪贴板
         var hist = config.ClipboardHistory ?? new ClipboardHistoryConfig();
         _clipboardHistoryEnabledCheck = CreateCheckBox("启用剪贴板历史（右滑「剪贴板」Tab）", hist.Enabled);
         var histHint = CreateHintLabel(
-            "系统复制的文本会自动记入历史。点选后的动作见下方「点击后动作」。");
+            "自动记录文本、文件和图片。文件记录原路径，移走或删除后不可用；图片保存副本（单张 PNG ≤16 MB、≤3200 万像素，历史图片合计≤64 MB）。历史文件始终按复制处理。");
         _clipboardHistoryPersistCheck = CreateCheckBox("退出后保存到本地", hist.Persist);
 
         _clipboardHistoryMaxBox = CreateNumericUpDown(5, 200, 1, Math.Clamp(hist.MaxItems, 5, 200));
@@ -603,7 +603,7 @@ public sealed class SettingsForm : Form
             CreateCard("快捷键", hotKeyRow, fileSearchHotKeyRow, _fileDialogNavigationCheck),
             CreateCard("对话框目录", CreateHintLabel("底部按钮显示最近使用目录；点击 ☆ 收藏查看收藏，支持 Opus、Quickstart 或合并。"), folderFavoritesButton),
             CreateCard("鼠标中键", _middleClickCheck,
-                CreateHintLabel("单击滚轮后选择快捷启动、动作面板或本地搜索。开启后接管中键，关闭可恢复浏览器中键开标签等原有功能。")),
+                CreateHintLabel("单击滚轮即显示完整快捷启动和动作面板，上方可直接输入关键词进行 Everything 搜索。开启后接管中键，关闭可恢复浏览器中键开标签等原有功能。")),
             CreateCard("右键拖动手势",
                 _rightDragCheck, gestureHintLabel, gestureOptionsPanel));
 

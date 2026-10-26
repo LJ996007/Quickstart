@@ -68,6 +68,21 @@ internal static class PlainTextPasteService
     public static bool IsValidTargetWindow(IntPtr hwnd)
         => hwnd != IntPtr.Zero && IsWindow(hwnd);
 
+    /// <summary>Keep the typed payload intact while serializing clipboard writes and Ctrl+V.</summary>
+    public static async Task<bool> PasteContentAsync(Func<CancellationToken, Task> copy, IntPtr targetWindow,
+        CancellationToken token = default)
+    {
+        await PasteGate.WaitAsync(token);
+        try
+        {
+            await copy(token);
+            if (!IsValidTargetWindow(targetWindow)) return false;
+            try { return await ActivateAndPasteAsync(targetWindow, token); }
+            catch (InvalidOperationException) { return false; }
+        }
+        finally { PasteGate.Release(); }
+    }
+
     private static async Task<bool> ActivateAndPasteAsync(IntPtr targetWindow, CancellationToken token)
     {
         token.ThrowIfCancellationRequested();

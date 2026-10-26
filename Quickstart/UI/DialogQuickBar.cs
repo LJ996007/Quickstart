@@ -216,6 +216,7 @@ public sealed class DialogQuickBar : Form
         _navigating = true;
         var target = _target;
         CancelSearch();
+        _status.Text = "正在切换目录…";
         try
         {
             // Keep the captured target. No ProcessLauncher/Explorer fallback, including failures.

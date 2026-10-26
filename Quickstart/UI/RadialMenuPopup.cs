@@ -1229,13 +1229,14 @@ internal sealed class RadialMenuPopup : Form
             case TabKind.ClipboardHistory:
                 foreach (var hist in (_clipboardHistory?.GetItems() ?? []))
                 {
+                    var thumbnail = ClipboardHistoryContent.CreateThumbnail(hist);
                     _items.Add(new ItemSlot
                     {
                         Title = hist.Preview(40),
-                        Subtitle = FormatRelativeTime(hist.CopiedAt),
+                        Subtitle = $"{FormatRelativeTime(hist.CopiedAt)} · {hist.Details}",
                         Payload = hist,
-                        Icon = GetCachedGlyphIcon("clipboard"),
-                        OwnsIcon = false
+                        Icon = thumbnail ?? GetCachedGlyphIcon("clipboard"),
+                        OwnsIcon = thumbnail != null
                     });
                 }
                 break;
@@ -2247,9 +2248,23 @@ internal sealed class RadialMenuPopup : Form
 
     private void ExecuteHistory(ClipboardHistoryItem item)
     {
-        if (_clipboardHistory == null || string.IsNullOrEmpty(item.Text))
-            return;
-        DeliverText(item.Text, _configManager.Config.ClipboardHistoryAction, fromHistory: true);
+        if (_clipboardHistory == null) return;
+        var target = _deliveryTargetWindow == Handle ? IntPtr.Zero : _deliveryTargetWindow;
+        _ = DeliverHistoryAsync(item, target);
+    }
+
+    private async Task DeliverHistoryAsync(ClipboardHistoryItem item, IntPtr target)
+    {
+        try
+        {
+            await _clipboardHistory!.DeliverItemAsync(item,
+                _configManager.Config.ClipboardHistoryAction == TextDeliveryAction.PasteAtCursor, target);
+        }
+        catch (Exception ex)
+        {
+            if (!IsDisposed)
+                MessageBox.Show(ex.Message, "剪贴板", MessageBoxButtons.OK, MessageBoxIcon.Information);
+        }
     }
 
     private void DeliverText(string text, TextDeliveryAction action, bool fromHistory)
