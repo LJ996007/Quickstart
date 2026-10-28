@@ -288,7 +288,11 @@ public sealed class FileSearchPopup : Form
         try
         {
             var page = await _client.SearchAsync(_config.Config.EverythingPath, EffectiveQuery, _offset,
-                _sort.SelectedIndex switch { 1 => 14u, 2 => 6u, _ => 1u }, cts.Token);
+                _sort.SelectedIndex switch { 1 => 14u, 2 => 6u, _ => 1u }, cts.Token, retry =>
+                {
+                    if (!IsDisposed && Visible && revision == _revision && !cts.IsCancellationRequested)
+                        _status.Text = $"Everything 查询超时，正在自动重试（{retry}/2）…";
+                });
             if (revision != _revision || IsDisposed || !Visible) return;
             _results.BeginUpdate();
             try

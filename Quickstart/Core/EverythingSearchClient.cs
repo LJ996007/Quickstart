@@ -13,7 +13,39 @@ public sealed class EverythingSearchClient : NativeWindow, IDisposable
 
     public EverythingSearchClient() => CreateHandle(new CreateParams { Caption = "Quickstart.Everything.Replies" });
 
-    public async Task<FileSearchPage> SearchAsync(string executable, string query, uint offset, uint sort,
+    public Task<FileSearchPage> SearchAsync(string executable, string query, uint offset, uint sort,
+        CancellationToken token, Action<int>? retrying = null)
+        => ExecuteWithRetryAsync(ct => SearchOnceAsync(executable, query, offset, sort, ct), token, retrying,
+            TimeSpan.FromMilliseconds(500));
+
+    // Keep the policy separate from native IPC so timeout/cancellation paths can be
+    // tested without stalling the user's Everything process. Continuations stay on the UI thread.
+    internal static async Task<FileSearchPage> ExecuteWithRetryAsync(
+        Func<CancellationToken, Task<FileSearchPage>> search, CancellationToken token,
+        Action<int>? retrying, TimeSpan retryDelay)
+    {
+        const int maxRetries = 2;
+        for (var attempt = 0; ; attempt++)
+        {
+            token.ThrowIfCancellationRequested();
+            try
+            {
+                var page = await search(token);
+                token.ThrowIfCancellationRequested();
+                return page;
+            }
+            catch (TimeoutException ex)
+            {
+                token.ThrowIfCancellationRequested();
+                if (attempt == maxRetries)
+                    throw new TimeoutException("Everything 未在时限内返回结果，自动重试 2 次后仍超时。可在 Everything 中检查搜索是否正常。", ex);
+                retrying?.Invoke(attempt + 1);
+                await Task.Delay(retryDelay, token);
+            }
+        }
+    }
+
+    private async Task<FileSearchPage> SearchOnceAsync(string executable, string query, uint offset, uint sort,
         CancellationToken token)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -60,7 +92,7 @@ public sealed class EverythingSearchClient : NativeWindow, IDisposable
         }
         catch (OperationCanceledException) when (!token.IsCancellationRequested)
         {
-            throw new TimeoutException("Everything 查询超时，请等待索引加载完成后重试。");
+            throw new TimeoutException("Everything 未在时限内返回查询结果。");
         }
         finally { _pending.Remove(id); }
     }
@@ -89,8 +121,14 @@ public sealed class EverythingSearchClient : NativeWindow, IDisposable
         {
             Marshal.Copy(bytes, 0, buffer, bytes.Length);
             var data = new CopyData { Kind = (UIntPtr)18, Length = bytes.Length, Data = buffer };
-            if (SendMessageTimeout(target, 0x004A, reply, ref data, 0x0002, 1500, out var accepted) == IntPtr.Zero
-                || accepted == UIntPtr.Zero)
+            Marshal.SetLastPInvokeError(0);
+            if (SendMessageTimeout(target, 0x004A, reply, ref data, 0x0002, 1500, out var accepted) == IntPtr.Zero)
+            {
+                var error = Marshal.GetLastWin32Error();
+                if (error is 0 or 1460) throw new TimeoutException("Everything 未在时限内响应查询请求。");
+                throw new InvalidOperationException($"无法向 Everything 发送查询（Windows 错误 {error}），请检查两个程序的运行权限是否一致。");
+            }
+            if (accepted == UIntPtr.Zero)
                 throw new InvalidOperationException("Everything 未接受查询，请检查版本（需 1.4.1+）及两个程序的运行权限是否一致。");
         }
         finally { Marshal.FreeHGlobal(buffer); }

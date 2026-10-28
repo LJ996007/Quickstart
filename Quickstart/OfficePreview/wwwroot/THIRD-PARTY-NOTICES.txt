@@ -4,6 +4,7 @@ Offline modules: docx-preview 0.4.1 (vue-office's DOCX engine), JSZip 3.10.1,
 and @js-preview/excel 1.7.14 from https://github.com/501351981/vue-office. Bundled with esbuild; the
 application adds a read-only copy adapter without altering the upstream grid.
 PDF rendering is supplied by the separately installed Microsoft WebView2 Runtime.
+Markdown uses marked 18.1.2 and DOMPurify 3.4.17; their licenses are included in vendor/DEPENDENCY-LICENSES.txt.
 
 
 ===== vue-office =====

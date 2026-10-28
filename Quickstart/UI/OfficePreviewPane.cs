@@ -10,8 +10,8 @@ public sealed class OfficePreviewPane : UserControl
 {
     private const string Origin = "https://quickstart-preview.invalid";
     private readonly Label _title = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Text = "文件预览" };
-    private readonly Label _message = new() { Dock = DockStyle.Fill, Padding = new Padding(24), Text = "单击 DOCX、XLSX、XLS 或 PDF 文件即可预览。", BackColor = Color.FromArgb(241, 243, 245) };
-    private readonly Label _hint = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Text = "预览内容可选择复制 · 双击结果用默认程序打开" };
+    private readonly Label _message = new() { Dock = DockStyle.Fill, Padding = new Padding(24), Text = "选择文件预览", BackColor = Color.FromArgb(241, 243, 245) };
+    private readonly Label _hint = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, Text = "" };
     private readonly Button _copy = new() { Text = "复制选中", AutoSize = true, Enabled = false };
     private readonly Button _copyAll = new() { Text = "复制全文", AutoSize = true, Enabled = false };
     private readonly Button _open = new() { Text = "默认程序打开", AutoSize = true, Enabled = false };
@@ -26,6 +26,8 @@ public sealed class OfficePreviewPane : UserControl
     private int _revision;
     private int _copyRevision;
     private bool _ready;
+    private readonly SemaphoreSlim _imageGate = new(1, 1);
+    private long _imageBytes;
 
     public event EventHandler? OpenRequested;
     public event EventHandler? EscapeRequested;
@@ -126,10 +128,11 @@ public sealed class OfficePreviewPane : UserControl
     {
         _revision++; _copyRevision++; _readCts?.Cancel();
         _document = null; _path = null; _ready = false;
+        _imageBytes = 0;
         _copy.Enabled = _copyAll.Enabled = _open.Enabled = false;
         _title.Text = "文件预览";
-        _hint.Text = "预览内容可选择复制 · 双击结果用默认程序打开";
-        ShowMessage(message ?? "单击 DOCX、XLSX、XLS 或 PDF 文件即可预览。");
+        _hint.Text = "";
+        ShowMessage(message ?? "选择文件预览");
         if (_web?.CoreWebView2 != null) Navigate(Origin + "/index.html");
     }
 
@@ -155,8 +158,10 @@ public sealed class OfficePreviewPane : UserControl
             if (IsDisposed || revision != _revision || cts.IsCancellationRequested) return;
             _document = document;
             var isPdf = document.Kind == "pdf";
-            _copy.Visible = _copyAll.Visible = !isPdf;
-            _copyAll.Text = document.Kind == "docx" ? "复制全文" : "复制工作表";
+            _copy.Visible = !isPdf;
+            _copyAll.Visible = !isPdf && !document.IsImage;
+            _copy.Text = document.IsImage ? "复制图片" : "复制选中";
+            _copyAll.Text = document.Kind is "docx" or "md" or "markdown" ? "复制全文" : "复制工作表";
             _hint.Text = isPdf ? "选择 PDF 文字后按 Ctrl+C；扫描件不提供文字识别。" : "正在解析文档…";
             _message.Visible = false;
             _web!.Visible = true; _web.BringToFront();
@@ -191,6 +196,17 @@ public sealed class OfficePreviewPane : UserControl
         var core = _web?.CoreWebView2;
         if (core == null) return;
         var uri = new Uri(e.Request.Uri);
+        if (uri.GetLeftPart(UriPartial.Authority) == Origin && e.Request.Method == "GET"
+            && e.ResourceContext == CoreWebView2WebResourceContext.Image
+            && _document is { Kind: "md" or "markdown" } markdown
+            && uri.AbsolutePath == $"/image/{markdown.Token}" && uri.Query.StartsWith("?path=", StringComparison.Ordinal)
+            && _path != null && _readCts != null)
+        {
+            var deferral = e.GetDeferral();
+            _ = ServeMarkdownImageAsync(e, deferral, core, markdown, _path,
+                Uri.UnescapeDataString(uri.Query[6..]), _readCts.Token);
+            return;
+        }
         byte[]? bytes = null;
         string mime = "application/octet-stream";
         var isDocument = false;
@@ -200,7 +216,7 @@ public sealed class OfficePreviewPane : UserControl
             {
                 bytes = _document.Bytes;
                 isDocument = true;
-                if (_document.Kind == "pdf") mime = "application/pdf";
+                mime = _document.ContentType;
             }
             else if (_assets.TryGetValue(uri.AbsolutePath, out bytes))
             {
@@ -240,6 +256,41 @@ public sealed class OfficePreviewPane : UserControl
         e.Response = core.Environment.CreateWebResourceResponse(new MemoryStream(bytes, false), 200, "OK", headers + $"\r\nContent-Length: {bytes.Length}");
     }
 
+    private async Task ServeMarkdownImageAsync(CoreWebView2WebResourceRequestedEventArgs request,
+        CoreWebView2Deferral deferral, CoreWebView2 core, OfficePreviewDocument markdown,
+        string path, string reference, CancellationToken token)
+    {
+        try
+        {
+            await _imageGate.WaitAsync(token);
+            try
+            {
+                token.ThrowIfCancellationRequested();
+                if (_document?.Token != markdown.Token || _imageBytes >= 64L * 1024 * 1024) return;
+                var image = await Task.Run(() => MarkdownImageReader.ReadAsync(path, reference, token), token);
+                if (IsDisposed || token.IsCancellationRequested || _document?.Token != markdown.Token) return;
+                if (_imageBytes + image.Bytes.Length > 64L * 1024 * 1024) return;
+                _imageBytes += image.Bytes.Length;
+                request.Response = core.Environment.CreateWebResourceResponse(new MemoryStream(image.Bytes, false), 200, "OK",
+                    $"Content-Type: {image.ContentType}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff");
+            }
+            finally { _imageGate.Release(); }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException or OperationCanceledException or System.Runtime.InteropServices.COMException)
+        { /* Missing or rejected images retain the document and show an inline placeholder. */ }
+        finally
+        {
+            try
+            {
+                if (request.Response == null)
+                    request.Response = core.Environment.CreateWebResourceResponse(Stream.Null, 404, "Not Found", "Content-Type: text/plain");
+            }
+            catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException) { }
+            try { deferral.Complete(); }
+            catch (Exception ex) when (ex is InvalidOperationException or System.Runtime.InteropServices.COMException) { }
+        }
+    }
+
     private async void MessageReceived(object? sender, CoreWebView2WebMessageReceivedEventArgs e)
     {
         if (_document == null || e.Source != _allowedNavigation) return;
@@ -253,20 +304,29 @@ public sealed class OfficePreviewPane : UserControl
             {
                 case "ready":
                     _ready = true; _copy.Enabled = _copyAll.Enabled = true;
-                    _hint.Text = _document.Kind == "docx" ? "拖选文字后 Ctrl+C · 复杂排版以原文件为准" : "选择单元格或拖选区域后 Ctrl+C · 可粘贴回 Excel";
+                    _hint.Text = _document.IsImage ? "点击图片切换原始大小" : "";
                     break;
                 case "copy" when _ready && text.Length is > 0 and <= 8 * 1024 * 1024:
-                    await CopyTextAsync(text, _document.Token); break;
+                    await CopyDataAsync(text, _document.Token); break;
+                case "copyImage" when _ready && _document.IsImage && text.Length is > 0 and <= 24 * 1024 * 1024:
+                    using (var stream = new MemoryStream(Convert.FromBase64String(text)))
+                    using (var image = Image.FromStream(stream))
+                    {
+                        if ((long)image.Width * image.Height > 32000000) { _hint.Text = "图片过大，请用默认程序复制。"; break; }
+                        using var bitmap = new Bitmap(image);
+                        await CopyDataAsync(new DataObject(DataFormats.Bitmap, bitmap), _document.Token);
+                    }
+                    break;
                 case "hint": _hint.Text = text; break;
                 case "error": _ready = false; _copy.Enabled = _copyAll.Enabled = false; _hint.Text = text; break;
                 case "escape": EscapeRequested?.Invoke(this, EventArgs.Empty); break;
             }
         }
-        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or System.Runtime.InteropServices.ExternalException)
+        catch (Exception ex) when (ex is JsonException or InvalidOperationException or KeyNotFoundException or FormatException or ArgumentException or System.Runtime.InteropServices.ExternalException)
         { _hint.Text = "复制未完成，请重试。"; }
     }
 
-    private async Task CopyTextAsync(string text, string token)
+    private async Task CopyDataAsync(object data, string token)
     {
         var revision = ++_copyRevision;
         for (var attempt = 0; attempt < 6; attempt++)
@@ -275,7 +335,7 @@ public sealed class OfficePreviewPane : UserControl
             try
             {
                 // Clipboard managers can briefly hold the clipboard. Retry without blocking search/UI.
-                Clipboard.SetDataObject(text, true, 0, 0);
+                Clipboard.SetDataObject(data, true, 0, 0);
                 _hint.Text = "已复制内容";
                 return;
             }

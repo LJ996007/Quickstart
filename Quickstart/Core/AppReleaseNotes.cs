@@ -7,6 +7,13 @@ internal static class AppReleaseNotes
     private static readonly ReleaseNote[] Releases =
     [
         new(
+            "1.0.25",
+            "2026-10-28",
+            [
+                "文件预览增加 Markdown（MD、Markdown）和 PNG/JPG/JPEG/GIF/BMP/WebP/ICO；Markdown 支持排版及选中/全文复制，图片支持适应窗口/原始大小切换和复制图片。Markdown 引用图片按文档目录解析，支持相对、上级和本机绝对路径。",
+                "Everything 文件和目录查询超时后自动重试最多 2 次；显示重试进度，最终提示改为未收到响应，不再推断索引未加载。切换关键词或关闭搜索会取消等待和重试，旧结果不会覆盖新查询。"
+            ]),
+        new(
             "1.0.24",
             "2026-10-26",
             [

@@ -199,7 +199,11 @@ public sealed class DialogQuickBar : Form
         var query = _query.Text.Trim();
         try
         {
-            var page = await _search.SearchAsync(_config.Config.EverythingPath, $"folder: <{query}>", 0, 1, token);
+            var page = await _search.SearchAsync(_config.Config.EverythingPath, $"folder: <{query}>", 0, 1, token, retry =>
+            {
+                if (!IsDisposed && Visible && revision == _revision && !token.IsCancellationRequested)
+                    _status.Text = $"Everything 查询超时，正在自动重试（{retry}/2）…";
+            });
             if (IsDisposed || token.IsCancellationRequested || revision != _revision) return;
             _results.Items.Clear();
             foreach (var item in page.Items.Where(i => i.IsFolder)) AddRow(item.Name, item.FullPath);

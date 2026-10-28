@@ -9,11 +9,20 @@ public sealed record OfficePreviewDocument(string Token, string Kind, string Nam
     public string ResourcePath => $"/document/{Token}.{Kind}";
 
     public static bool IsSupported(string path) => Path.GetExtension(path).ToLowerInvariant() is
-        ".docx" or ".xlsx" or ".xls" or ".pdf";
+        ".docx" or ".xlsx" or ".xls" or ".pdf" or ".md" or ".markdown" or
+        ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".webp" or ".ico";
+
+    public bool IsImage => Kind is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp" or "ico";
+    public string ContentType => Kind switch
+    {
+        "pdf" => "application/pdf", "md" or "markdown" => "text/plain; charset=utf-8",
+        "jpg" or "jpeg" => "image/jpeg", "ico" => "image/x-icon",
+        _ when IsImage => "image/" + Kind, _ => "application/octet-stream"
+    };
 
     public static async Task<OfficePreviewDocument> ReadAsync(string path, CancellationToken token)
     {
-        if (!IsSupported(path)) throw new NotSupportedException("仅支持 DOCX、XLSX、XLS 和 PDF 预览。");
+        if (!IsSupported(path)) throw new NotSupportedException("此文件类型暂不支持预览。");
         await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read,
             FileShare.ReadWrite | FileShare.Delete, 65536, FileOptions.Asynchronous | FileOptions.SequentialScan);
         if (stream.Length > MaxFileBytes) throw new InvalidDataException("文件超过 64 MB，请用默认程序打开。");

@@ -170,6 +170,93 @@ static class PreviewChecks
                 await pane.PreviewAsync(Path.Combine(root, "万行表格.xlsx"));
                 await Until(() => Field<bool>(pane, "_ready"), "10k workbook timed out", 30000);
                 Console.WriteLine($"PASS 10,000-row workbook preview: {stopwatch.ElapsedMilliseconds} ms");
+                var markdown = Path.Combine(root, "说明.md");
+                await File.WriteAllTextAsync(markdown, "# 中文 Markdown\n\n**复制测试**\n\n| 名称 | 数值 |\n| --- | --- |\n| 金额 | 123 |\n\n```cs\nvar x = 1;\n```\n\n<script>window.injected=true</script><img src=x onerror='window.injected=true'>");
+                await pane.PreviewAsync(markdown);
+                await Until(() => Field<bool>(pane, "_ready"), "Markdown not ready");
+                Check(await Js(web, "!!document.querySelector('h1') && !!document.querySelector('table') && !!document.querySelector('pre code') && !window.injected && !document.querySelector('#content script, #content [onerror]')") == "true", "Markdown structure/sanitization failed");
+                await Js(web, "window.quickstartCopy(true)");
+                await Until(() => Clipboard.ContainsText() && Clipboard.GetText().Contains("中文 Markdown"), "Markdown copy failed");
+                await using (var shot = File.Create(Path.Combine(root, "markdown-preview.png")))
+                    await web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, shot);
+                await File.WriteAllTextAsync(Path.Combine(root, "说明.markdown"), "# UTF16 中文", Encoding.Unicode);
+                await pane.PreviewAsync(Path.Combine(root, "说明.markdown"));
+                await Until(() => Field<bool>(pane, "_ready"), "Markdown alias not ready");
+                Check((await Js(web, "document.body.innerText")).Contains("UTF16 中文"), "UTF16 Markdown decoding failed");
+                var localRoot = Path.Combine(root, "markdown-images");
+                var localDocs = Path.Combine(localRoot, "文档");
+                var localAssets = Path.Combine(localDocs, "图片 目录");
+                Directory.CreateDirectory(localAssets);
+                var localImage = Path.Combine(localAssets, "示例 #1.png");
+                using (var sample = new Bitmap(800, 200))
+                {
+                    using var graphics = Graphics.FromImage(sample);
+                    graphics.Clear(Color.CornflowerBlue);
+                    graphics.DrawString("Markdown local image", SystemFonts.DefaultFont, Brushes.White, 30, 50);
+                    sample.Save(localImage, System.Drawing.Imaging.ImageFormat.Png);
+                    sample.Save(Path.Combine(localRoot, "上级.png"), System.Drawing.Imaging.ImageFormat.Png);
+                }
+                var illustrated = Path.Combine(localDocs, "图文.md");
+                await File.WriteAllTextAsync(illustrated, "# 本地图文\n\n![编码路径](图片%20目录/示例%20%231.png)\n\n![上级](../上级.png)\n\n"
+                    + "![绝对路径](<" + localImage.Replace('\\', '/').Replace("#", "%23") + ">)\n\n"
+                    + "<img alt=\"HTML图片\" src=\"./图片 目录/示例 %231.png\">\n\n"
+                    + "![文件URI](" + new Uri(localImage).AbsoluteUri + ")\n\n"
+                    + "![缺失](missing.png)\n\n![外网](https://example.invalid/a.png)\n\n![非图片](图文.md)\n\n正文仍可复制");
+                await pane.PreviewAsync(illustrated);
+                await Until(() => Field<bool>(pane, "_ready"), "Illustrated Markdown not ready");
+                var localImagesReady = false;
+                for (var wait = 0; wait < 100; wait++)
+                {
+                    localImagesReady = await Js(web, "[...document.querySelectorAll('#content img')].filter(i=>i.complete&&i.naturalWidth===800).length===5 && document.querySelectorAll('.image-missing').length===3") == "true";
+                    if (localImagesReady) break;
+                    await Task.Delay(50);
+                }
+                Check(localImagesReady, "Local Markdown images missing: " + await Js(web, "document.querySelector('#content').innerHTML"));
+                Check(await Js(web, "document.querySelectorAll('.image-missing').length") == "3", "Missing/external/non-image references must fail inline");
+                Check(await Js(web, "[...document.querySelectorAll('#content img')].every(i=>i.getBoundingClientRect().width<=document.querySelector('#content').clientWidth)") == "true", "Markdown image overflows");
+                await Js(web, "window.quickstartCopy(true)");
+                await Until(() => Clipboard.ContainsText() && Clipboard.GetText().Contains("正文仍可复制"), "Illustrated Markdown copy failed");
+                await using (var shot = File.Create(Path.Combine(root, "markdown-local-images.png")))
+                    await web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, shot);
+                var formerImageToken = Field<OfficePreviewDocument>(pane, "_document").Token;
+                await pane.PreviewAsync(markdown);
+                await Until(() => Field<bool>(pane, "_ready"), "Switch from illustrated Markdown failed");
+                await Js(web, "(()=>{const i=new Image();i.id='stale-image';i.src=" + JsonSerializer.Serialize($"/image/{formerImageToken}?path=../上级.png") + ";document.querySelector('#content').append(i)})()");
+                await Task.Delay(150);
+                Check(await Js(web, "document.querySelector('#stale-image').naturalWidth") == "0", "Stale image token remained readable");
+                Console.WriteLine("PASS Markdown local images: encoded Chinese/spaces/#, parent and absolute paths, file URI, HTML img, missing/remote/non-image rejection, copying and stale tokens.");
+                using (var bitmap = new Bitmap(320, 180))
+                {
+                    using var graphics = Graphics.FromImage(bitmap);
+                    graphics.Clear(Color.CornflowerBlue);
+                    graphics.DrawString("Quickstart 图片", SystemFonts.DefaultFont, Brushes.White, 20, 40);
+                    foreach (var pair in new[] { ("png", System.Drawing.Imaging.ImageFormat.Png), ("jpg", System.Drawing.Imaging.ImageFormat.Jpeg), ("jpeg", System.Drawing.Imaging.ImageFormat.Jpeg), ("bmp", System.Drawing.Imaging.ImageFormat.Bmp), ("gif", System.Drawing.Imaging.ImageFormat.Gif) })
+                        bitmap.Save(Path.Combine(root, "图片." + pair.Item1), pair.Item2);
+                }
+                using (var icon = File.Create(Path.Combine(root, "图片.ico"))) SystemIcons.Information.Save(icon);
+                var webp = JsonSerializer.Deserialize<string>(await Js(web, "(()=>{const c=document.createElement('canvas');c.width=320;c.height=180;c.getContext('2d').fillRect(0,0,320,180);return c.toDataURL('image/webp').split(',')[1]})()"))!;
+                await File.WriteAllBytesAsync(Path.Combine(root, "图片.webp"), Convert.FromBase64String(webp));
+                foreach (var extension in new[] { "png", "jpg", "jpeg", "gif", "bmp", "webp", "ico" })
+                {
+                    await pane.PreviewAsync(Path.Combine(root, "图片." + extension));
+                    await Until(() => Field<bool>(pane, "_ready"), "Image not ready: " + extension);
+                    Check(await Js(web, "document.querySelector('#content img').naturalWidth > 0") == "true", "Image decode failed");
+                    Check(Field<Button>(pane, "_copy").Text == "复制图片" && !Field<Button>(pane, "_copyAll").Visible, "Image toolbar incorrect");
+                    await Js(web, "document.querySelector('#content img').click()");
+                    Check(await Js(web, "document.querySelector('#content img').classList.contains('actual-size')") == "true", "Image zoom failed");
+                    Clipboard.Clear();
+                    await Js(web, "window.quickstartCopy()");
+                    await Until(() => Clipboard.ContainsImage(), "Image copy failed: " + extension);
+                    using var copied = Clipboard.GetImage();
+                    Check(copied != null && copied.Width > 0, "Image clipboard is empty");
+                }
+                await using (var shot = File.Create(Path.Combine(root, "image-preview.png")))
+                    await web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, shot);
+                using (var tall = new Bitmap(320, 2000)) tall.Save(Path.Combine(root, "长图.png"), System.Drawing.Imaging.ImageFormat.Png);
+                await pane.PreviewAsync(Path.Combine(root, "长图.png"));
+                await Until(() => Field<bool>(pane, "_ready"), "Tall image not ready");
+                Check(await Js(web, "document.querySelector('#content img').getBoundingClientRect().height <= innerHeight - 24") == "true", "Tall image did not fit viewport");
+                Console.WriteLine("PASS Markdown render/table/code/sanitization/copy/UTF16; PNG/JPG/JPEG/GIF/BMP/WebP/ICO decode, zoom and clipboard images.");
                 await pane.PreviewAsync(Path.Combine(root, "文字 PDF.pdf"));
                 await Until(() => web.Source?.AbsolutePath.EndsWith(".pdf") == true, "PDF did not navigate");
                 await Task.Delay(1000);

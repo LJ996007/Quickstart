@@ -3,11 +3,17 @@
   "private": true,
   "version": "1.0.0",
   "type": "module",
-  "scripts": { "vendor": "node vendor.mjs" },
-  "devDependencies": { "esbuild": "0.28.2" },
+  "scripts": {
+    "vendor": "node vendor.mjs"
+  },
+  "devDependencies": {
+    "esbuild": "0.28.2"
+  },
   "dependencies": {
     "@js-preview/excel": "1.7.14",
     "docx-preview": "0.4.1",
-    "jszip": "3.10.1"
+    "dompurify": "3.4.17",
+    "jszip": "3.10.1",
+    "marked": "18.1.2"
   }
 }

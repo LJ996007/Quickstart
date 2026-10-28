@@ -21,6 +21,10 @@ for (const kind of ['docx', 'excel']) {
     hashes[target] = createHash('sha256').update(await readFile(destination)).digest('hex');
   }
 }
+await build({ entryPoints: [fileURLToPath(new URL('markdown-adapter.js', root))],
+  outfile: fileURLToPath(new URL('wwwroot/vendor/markdown.js', root)), bundle: true,
+  format: 'esm', platform: 'browser', target: 'chrome110', minify: true, legalComments: 'inline' });
+hashes['wwwroot/vendor/markdown.js'] = createHash('sha256').update(await readFile(new URL('wwwroot/vendor/markdown.js', root))).digest('hex');
 await writeFile(new URL('vendor-sha256.json', root), JSON.stringify(hashes, null, 2) + '\n');
 // Preserve installed production dependency license files alongside the browser assets.
 const lock = JSON.parse(await readFile(new URL('package-lock.json', root), 'utf8'));

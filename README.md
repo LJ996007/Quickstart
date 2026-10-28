@@ -2,7 +2,7 @@
 
 ![Platform](https://img.shields.io/badge/platform-Windows-blue)
 ![.NET](https://img.shields.io/badge/.NET-10.0-purple)
-![Version](https://img.shields.io/badge/version-1.0.24-green)
+![Version](https://img.shields.io/badge/version-1.0.25-green)
 ![License](https://img.shields.io/github/license/LJ996007/Quickstart)
 ![Release](https://img.shields.io/github/v/release/LJ996007/Quickstart)
 
@@ -10,7 +10,7 @@ Quickstart 是一个常驻系统托盘 / 菜单栏的快捷启动与效率工具
 
 它不只是收藏夹：把**常用路径、网页、固定文本**收在一起，再用**右键拖动手势**在任意窗口秒级呼出。Windows 版还把 **AI 动作、Everything 搜索、截图 OCR、剪贴板历史、粘贴为纯文本** 接进同一套左滑手势里，尽量少点几下就能干完事。
 
-当前主线版本：**Windows 1.0.24**（.NET 10 / WinForms）。
+当前主线版本：**Windows 1.0.25**（.NET 10 / WinForms）。
 
 ---
 
@@ -106,7 +106,7 @@ Quickstart 是一个常驻系统托盘 / 菜单栏的快捷启动与效率工具
 - 需要安装支持 IPC 的 Everything 1.4.1+ 客户端（非 Lite 版），未运行时会尝试后台启动。仅运行 Everything 服务不够；无需开启 HTTP 服务或额外安装 SDK DLL。
 - 搜索依赖本机 Everything 索引，Quickstart 不自建磁盘索引。
 
-**Office 快速预览**：在内置搜索结果中单击 DOCX、XLSX、XLS 或 PDF，右侧直接预览；双击或 Enter 仍用默认程序打开。Word 可选中文字复制，也可复制全文；Excel 支持选中单元格/拖选区域后 Ctrl+C，以及复制当前工作表；文字型 PDF 可选中文字后 Ctrl+C。右上角「预览」可收起面板。预览在本机完成，需要 WebView2 Runtime；第一版不支持旧 DOC/WPS/PPT、扫描件 OCR 和超过 64 MB 的文件。复杂排版以原文件为准，Excel 不重新计算公式。开发与验证见 [预览模块说明](Quickstart/OfficePreview/README.md)。
+**文件快速预览**：在内置搜索结果中单击 DOCX、XLSX、XLS、PDF、MD/Markdown 或 PNG/JPG/JPEG/GIF/BMP/WebP/ICO，右侧直接预览；双击或 Enter 仍用默认程序打开。Word 可选中文字复制，也可复制全文；Excel 支持选中单元格/拖选区域后 Ctrl+C，以及复制当前工作表；文字型 PDF 可选中文字后 Ctrl+C。Markdown 支持排版和文字复制（支持本地引用图片）；图片支持适应窗口/原始大小切换及复制图片。右上角「预览」可收起面板。预览在本机完成，需要 WebView2 Runtime；第一版不支持旧 DOC/WPS/PPT、扫描件 OCR 和超过 64 MB 的文件。复杂排版以原文件为准，Excel 不重新计算公式。开发与验证见 [预览模块说明](Quickstart/OfficePreview/README.md)。
 
 **打开／保存对话框目录助手**：文件对话框出现时，底部自动显示目录小条，不抢走文件名输入焦点。底部四个按钮按最近使用顺序展示目录；空搜索展示最近目录，点击“☆ 收藏”才展开收藏。输入关键词后展示 Everything 文件夹搜索结果，单击结果或按 Enter 跳转。完整目录路径可直接输入并按 Enter。也可用本地搜索快捷键或中键面板顶部搜索框聚焦该小条。
 
@@ -235,7 +235,7 @@ artifacts/
 
 ## 版本与发布
 
-- 当前 Windows 程序版本见 `Quickstart/Quickstart.csproj` 的 `<Version>`（现为 **1.0.24**）。
+- 当前 Windows 程序版本见 `Quickstart/Quickstart.csproj` 的 `<Version>`（现为 **1.0.25**）。
 - 应用内「程序信息」页展示 `AppReleaseNotes` 中的更新列表。
 - **Debug 不升版本号**：日常编译、测试、修 bug 都先记到 `docs/UNRELEASED.md`，不改 `<Version>`。
 - **需要发版时**：运行 `bump-version.cmd`，会把 `UNRELEASED.md` 的全部条目汇总成新版本说明，更新 csproj / 安装脚本 / README，然后重置变更池。

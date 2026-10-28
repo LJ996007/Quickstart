@@ -11,3 +11,14 @@ body { overflow: hidden; }
 body.excel #content, .vue-office-excel, .vue-office-excel-main { height: 100%; }
 /* Selection is allowed; editing and external navigation remain disabled. */
 body.docx #content { user-select: text; }
+body.markdown #content { box-sizing: border-box; padding: 20px; background: white; line-height: 1.7; user-select: text; overflow-wrap: anywhere; }
+.markdown pre { overflow: auto; padding: 12px; background: #f1f3f5; }
+.markdown code { font-family: Consolas, monospace; }
+.markdown table { border-collapse: collapse; }
+.markdown th, .markdown td { border: 1px solid #d6dde5; padding: 6px 12px; }
+.markdown blockquote { margin-left: 0; padding-left: 16px; border-left: 3px solid #b6c2ce; color: #566474; }
+.markdown img { max-width: 100%; height: auto; }
+.markdown .image-missing { color: #687582; }
+body.image #content { box-sizing: border-box; padding: 12px; display: grid; place-items: center; }
+.image img { max-width: 100%; max-height: calc(100vh - 24px); object-fit: contain; cursor: zoom-in; }
+.image img.actual-size { max-width: none; max-height: none; cursor: zoom-out; justify-self: start; align-self: start; }
