@@ -38,7 +38,7 @@ static class RadialNavigationCheck
     [STAThread]
     private static void Main()
     {
-        AppPaths.SetRootForTests(Path.Combine(Path.GetTempPath(), "Quickstart-radial-check-" + Guid.NewGuid()));
+        AppPaths.SetRootForTests(Path.GetFullPath(Path.Combine("artifacts/debug/checks/radial-navigation", Guid.NewGuid().ToString("N"))));
         Application.SetHighDpiMode(HighDpiMode.PerMonitorV2);
         using var config = new ConfigManager();
         config.Config.RememberLastView = false;

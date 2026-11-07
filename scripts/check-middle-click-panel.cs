@@ -21,6 +21,8 @@ static class MiddleClickChecks
     static T Field<T>(object target, string name) => (T)target.GetType().GetField(name, Flags)!.GetValue(target)!;
     static T Property<T>(object target, string name) => (T)target.GetType().GetProperty(name, Flags)!.GetValue(target)!;
     static void Check(bool value, string message) { if (!value) throw new Exception(message); }
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern IntPtr GetForegroundWindow();
 
     [STAThread]
     static void Main(string[] args)
@@ -47,10 +49,26 @@ static class MiddleClickChecks
         {
             try
             {
-                void Show(Form panel) => Call(host, "ShowPanels", panel, actions, new Point(500, 300), source.Handle);
+                await Task.Delay(250); // let the source window complete its initial activation
+                if (args.Contains("--prewarm"))
+                {
+                    var warm = System.Diagnostics.Stopwatch.StartNew();
+                    var foreground = GetForegroundWindow();
+                    Call(host, "Prewarm", classic, actions, new Point(500, 300));
+                    Console.WriteLine($"TIMING hidden prewarm: {warm.Elapsed.TotalMilliseconds:F1} ms");
+                    Check(!host.Visible && !classic.Visible && !actions.Visible, "Prewarm must stay hidden");
+                    Check(GetForegroundWindow() == foreground, $"Prewarm changed foreground from {foreground} to {GetForegroundWindow()} (source={source.Handle}, bar={host.Handle}, main={classic.Handle}, actions={actions.Handle})");
+                }
+                var showNumber = 0;
+                void Show(Form panel)
+                {
+                    var clock = System.Diagnostics.Stopwatch.StartNew();
+                    Call(host, "ShowPanels", panel, actions, new Point(500, 300), source.Handle);
+                    Console.WriteLine($"TIMING show {++showNumber}: {clock.Elapsed.TotalMilliseconds:F1} ms");
+                }
                 void AssertLayout(Form panel)
                 {
-                    Check(host.Visible && panel.Visible && actions.Visible, "All three areas must be visible");
+                    Check(host.Visible && panel.Visible && actions.Visible, $"All three areas must be visible (bar={host.Visible}, list={panel.Visible}, actions={actions.Visible})");
                     var area = Screen.FromControl(host).WorkingArea;
                     foreach (var bounds in new[] { host.Bounds, panel.Bounds, actions.Bounds })
                         Check(area.Contains(bounds), "Group extends outside screen");
@@ -65,7 +83,7 @@ static class MiddleClickChecks
                 foreach (var panel in new Form[] { classic }) // middle-click always uses the list
                 {
                     Show(panel);
-                    await Task.Delay(1500); // let the slide-in animation finish
+                    await Task.Delay(200);
                     AssertLayout(panel);
                     Check(Field<TextBox>(host, "_query").Focused, "Search field must initially have focus");
                     foreach (var target in new[] { panel, actions, host })
@@ -93,6 +111,17 @@ static class MiddleClickChecks
                     Show(panel);
                     source.Activate(); await Task.Delay(350);
                     Check(!host.Visible && !panel.Visible && !actions.Visible, "External click must dismiss group");
+                    var list = Field<ListView>(classic, "_listView");
+                    config.Config.Entries[0].Name = "已更新目录";
+                    Show(panel);
+                    Check(list.Items.Cast<ListViewItem>().Any(i => i.Text == "已更新目录"), "Cached list must reflect config edits");
+                    Call(host, "HidePanels");
+                    classic.ShowAtGesturePoint(new Point(500, 300), source.Handle);
+                    Check(!Property<bool>(classic, "InMiddleClickLayout"), "Right swipe must restore standalone layout");
+                    classic.Hide();
+                    Show(panel);
+                    AssertLayout(panel);
+                    Call(host, "HidePanels");
                     Console.WriteLine($"PASS {panel.GetType().Name}: layout, focus, source, movement, search, action, Escape, external dismissal");
                 }
                 if (args.Contains("--interactive"))

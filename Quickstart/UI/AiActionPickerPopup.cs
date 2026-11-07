@@ -82,6 +82,7 @@ internal sealed class AiActionPickerPopup : Form
     /// <summary>null 恢复独立面板；有值时精确铺满该尺寸，操作提示并入中键搜索条。</summary>
     internal void FitMiddleClickPanel(Size? viewport)
     {
+        if (_middleClickViewport == viewport) return;
         _middleClickViewport = viewport;
         _lastPopupSize = Size.Empty;
         _footerHint.Visible = viewport == null;
@@ -247,9 +248,14 @@ internal sealed class AiActionPickerPopup : Form
                 Hide();
         };
 
-        // DPI 变化（跨不同缩放的显示器）：条目/标题栏高度都是按 DPI 预先算好的固定像素，
-        // 必须丢弃缓存并整表重建，否则会出现行高与字体不匹配。
-        DpiChanged += (_, _) => InvalidateScaledLayout();
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        UiScaleHelper.InvalidateDeviceDpiCache();
+        base.OnDpiChanged(e);
+        // Rebuild fixed-pixel rows only after WinForms finishes scaling children.
+        HandleDisplayEnvironmentChanged();
     }
 
     /// <summary>丢弃按 DPI 计算出的尺寸缓存与已构建条目，让下次布局按新 DPI 重算。</summary>
@@ -294,6 +300,16 @@ internal sealed class AiActionPickerPopup : Form
 
     public void ShowAtGesturePoint(Point screenPt)
     {
+        PrepareAtGesturePoint(screenPt);
+        if (!HasActions) return;
+        if (MiddleClickHost == null) PopupMotion.SlideIn(this, direction: -1);
+        if (!Visible) Show();
+        HighlightAtScreenPoint(screenPt);
+    }
+
+    internal void PrepareAtGesturePoint(Point screenPt)
+    {
+        if (MiddleClickHost == null) FitMiddleClickPanel(null);
         SuspendLayout();
         try
         {
@@ -313,17 +329,12 @@ internal sealed class AiActionPickerPopup : Form
             var x = Math.Max(workingArea.Left + margin, Math.Min(screenPt.X - Width + margin, workingArea.Right - Width - margin));
             var y = Math.Max(workingArea.Top + margin, Math.Min(screenPt.Y - (Height / 2), workingArea.Bottom - Height - margin));
             Location = new Point(x, y);
-            if (MiddleClickHost == null) PopupMotion.SlideIn(this, direction: -1);
         }
         finally
         {
             ResumeLayout(performLayout: true);
         }
 
-        // 手势阶段不抢前台：来源窗（微信等）保持激活，松手后 Ctrl+C 才能命中选区。
-        if (!Visible)
-            Show();
-        HighlightAtScreenPoint(screenPt);
     }
 
     /// <summary>
@@ -342,6 +353,9 @@ internal sealed class AiActionPickerPopup : Form
         // 停留后给键盘一个起点：沿用手势最后悬停的条目，否则选中第一项
         if (_lastHighlightedItem == null)
             MoveKeyboardHighlight(_items.FirstOrDefault());
+
+        // The group's search bar activates once after all three windows are ready.
+        if (MiddleClickHost != null) return;
 
         // 手势阶段一直 NOACTIVATE，松手后必须真正抢到前台，ESC / 拖动 / 点击才可靠。
         // 先抑制失焦自动隐藏，避免 Activate 过程中的瞬时 Deactivate 把面板关掉。
@@ -873,8 +887,8 @@ internal sealed class AiActionPickerPopup : Form
 
         var logicalW = Math.Min(MaxWidth, hasBothColumns ? PreferredWidth : CompactWidth);
         var margin = S(8);
-        var maxFormW = Math.Max(S(CompactWidth), screen.WorkingArea.Width - margin * 2);
-        var maxFormH = Math.Max(S(MinHeight), screen.WorkingArea.Height - margin * 2);
+        var maxFormW = Math.Max(1, screen.WorkingArea.Width - margin * 2);
+        var maxFormH = Math.Max(1, screen.WorkingArea.Height - margin * 2);
 
         // 列表内容高度：优先用控件已设高度；若尚未布局则按逻辑行高回退
         var listContentPx = Math.Max(
@@ -901,7 +915,7 @@ internal sealed class AiActionPickerPopup : Form
         var recentNeededW = EstimateRecentBarWidth(chipNaturalWidths, dpi);
 
         var finalW = Math.Min(Math.Max(S(logicalW), recentNeededW), maxFormW);
-        var finalH = Math.Clamp(neededHeight, S(MinHeight), Math.Min(S(MaxHeight), maxFormH));
+        var finalH = Math.Clamp(neededHeight, Math.Min(S(MinHeight), maxFormH), Math.Min(S(MaxHeight), maxFormH));
         if (_middleClickViewport is { } viewport)
             (finalW, finalH) = (viewport.Width, viewport.Height);
         var finalSize = new Size(finalW, finalH);

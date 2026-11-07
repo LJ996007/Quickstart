@@ -124,7 +124,7 @@ static class Program
             // 正在显示的对话框（设置等）可能因分辨率变小落到屏幕外，夹回可见工作区。
             foreach (Form form in Application.OpenForms)
             {
-                if (form is MainPopup or RadialMenuPopup or AiPopup or AiActionPickerPopup or MiddleClickPopup)
+                if (form is MainPopup or RadialMenuPopup or AiPopup or AiActionPickerPopup or MiddleClickPopup or RegionCaptureOverlay)
                     continue;
                 if (form is { IsDisposed: false, Visible: true } && form.Opacity >= 1f && form.Width > 1)
                     EnsureFormVisibleOnScreen(form);
@@ -377,19 +377,24 @@ static class Program
             }
         }
 
+        MiddleClickPopup EnsureMiddleClickPopup()
+        {
+            if (middleClickPopup == null || middleClickPopup.IsDisposed)
+            {
+                middleClickPopup = new MiddleClickPopup();
+                middleClickPopup.SearchRequested += (query, source) => ShowFileSearch(query, source);
+            }
+            return middleClickPopup;
+        }
+
         mouseHook.MiddleClicked += (point, sourceWindow) => PostToUi(() =>
         {
             if (settingsDialogOpen) return;
             if (middleClickPopup is { Visible: true }) { middleClickPopup.HidePanels(); return; }
             HideInputPanels();
             leftGestureSourceWindow = sourceWindow;
-            if (middleClickPopup == null || middleClickPopup.IsDisposed)
-            {
-                middleClickPopup = new MiddleClickPopup();
-                middleClickPopup.SearchRequested += (query, source) => ShowFileSearch(query, source);
-            }
             // 中键是点击呼出，不需要扇区的拖动连贯性，固定用列表与动作面板对齐成两栏。
-            middleClickPopup.ShowPanels(EnsureMainPopup(), EnsureAiActionPicker(), point, sourceWindow);
+            EnsureMiddleClickPopup().ShowPanels(EnsureMainPopup(), EnsureAiActionPicker(), point, sourceWindow);
         });
 
         mouseHook.GestureTriggered += (direction, pt, sourceWindow) =>
@@ -611,7 +616,10 @@ static class Program
             var popup = EnsureMainPopup();
             try
             {
-                popup.RefreshList();
+                if (configManager.Config.MiddleClickEnabled)
+                    EnsureMiddleClickPopup().Prewarm(popup, EnsureAiActionPicker(), Cursor.Position);
+                else
+                    popup.RefreshList();
             }
             catch
             {

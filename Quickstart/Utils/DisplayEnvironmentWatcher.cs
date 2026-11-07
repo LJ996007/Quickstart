@@ -78,8 +78,9 @@ internal static class DisplayEnvironmentWatcher
 
     private static void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs e)
     {
-        // 只有桌面类别（分辨率/显示器布局/主题）会影响布局；配色、键盘等不触发重排。
-        if (e.Category == UserPreferenceCategory.Desktop)
+        // Scaling / work-area changes can be reported as Window or General,
+        // without a resolution change (and hence without DisplaySettingsChanged).
+        if (e.Category is UserPreferenceCategory.Desktop or UserPreferenceCategory.Window or UserPreferenceCategory.General)
             Schedule();
     }
 

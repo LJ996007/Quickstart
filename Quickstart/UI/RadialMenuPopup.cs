@@ -184,6 +184,7 @@ internal sealed class RadialMenuPopup : Form
         _configManager = configManager;
         _launcher = launcher;
         _clipboardHistory = clipboardHistory;
+        if (_clipboardHistory != null) _clipboardHistory.Changed += OnClipboardHistoryChanged;
 
         AutoScaleMode = AutoScaleMode.Dpi;
         FormBorderStyle = FormBorderStyle.None;
@@ -216,7 +217,6 @@ internal sealed class RadialMenuPopup : Form
             InvalidateStaticLayer();
             RequestRender();
         };
-        DpiChanged += (_, _) => RefreshForDisplayEnvironment();
 
         LocationChanged += (_, _) =>
         {
@@ -471,10 +471,16 @@ internal sealed class RadialMenuPopup : Form
     {
         if (!Visible || _gestureMode)
             return;
-        if (e.Button != MouseButtons.Left)
-            return;
 
         HitTest(e.Location, out var tab, out var group, out var itemIndex);
+
+        if (e.Button == MouseButtons.Right && itemIndex >= 0 && itemIndex < _items.Count
+            && _items[itemIndex].Payload is ClipboardHistoryItem history)
+        {
+            ShowHistoryContextMenu(history, e.Location);
+            return;
+        }
+        if (e.Button != MouseButtons.Left) return;
 
         if (itemIndex >= 0 && itemIndex < _items.Count)
         {
@@ -515,6 +521,33 @@ internal sealed class RadialMenuPopup : Form
         // 点在中心或当前扇区：保持打开；点在窗体透明区不会进到这里（分层窗体 hit-test 透明穿透）
     }
 
+    private void ShowHistoryContextMenu(ClipboardHistoryItem item, Point location)
+    {
+        var menu = new ContextMenuStrip();
+        var target = _deliveryTargetWindow;
+        menu.Items.Add("复制", null, async (_, _) =>
+        {
+            Hide();
+            await DeliverHistoryAsync(item, target, paste: false);
+        });
+        menu.Items.Add("粘贴到原窗口", null, async (_, _) =>
+        {
+            Hide();
+            await DeliverHistoryAsync(item, target, paste: true);
+        });
+        menu.Items.Add(new ToolStripSeparator());
+        menu.Items.Add("删除本条", null, (_, _) => _clipboardHistory?.Remove(item.Id));
+        _suppressAutoHide = true;
+        menu.Closed += (_, _) =>
+        {
+            _suppressAutoHide = false;
+            // Dispose after ToolStrip finishes dispatching ItemClicked.
+            if (!IsDisposed && IsHandleCreated) BeginInvoke(() => menu.Dispose());
+            else menu.Dispose();
+        };
+        menu.Show(this, location);
+    }
+
     private void ApplyPointerAtClientPoint(Point client)
     {
         HitTest(client, out var tab, out var group, out var itemIndex);
@@ -544,6 +577,7 @@ internal sealed class RadialMenuPopup : Form
     {
         if (disposing)
         {
+            if (_clipboardHistory != null) _clipboardHistory.Changed -= OnClipboardHistoryChanged;
             _animTimer.Stop();
             _animTimer.Dispose();
             _iconLoader.Dispose();
@@ -564,6 +598,13 @@ internal sealed class RadialMenuPopup : Form
         }
 
         base.Dispose(disposing);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        UiScaleHelper.InvalidateDeviceDpiCache();
+        base.OnDpiChanged(e);
+        RefreshForDisplayEnvironment();
     }
 
     private void UpdateDpiScale()
@@ -1207,6 +1248,21 @@ internal sealed class RadialMenuPopup : Form
         _scrollIndex = 0;
     }
 
+    private void OnClipboardHistoryChanged()
+    {
+        if (IsDisposed || !IsHandleCreated || !Visible) return;
+        if (_activeTab == TabKind.ClipboardHistory)
+        {
+            var scroll = _scrollIndex;
+            LoadItemsForActiveTab(restartAnim: false);
+            _scrollIndex = scroll;
+            LayoutItemList();
+        }
+        else
+            foreach (var tab in _tabs) tab.Count = CountForTab(tab.Kind);
+        RequestRender();
+    }
+
     private void LoadItemsForActiveTab(bool restartAnim)
     {
         ClearItems(disposeOwned: true);
@@ -1233,9 +1289,10 @@ internal sealed class RadialMenuPopup : Form
                     _items.Add(new ItemSlot
                     {
                         Title = hist.Preview(40),
-                        Subtitle = $"{FormatRelativeTime(hist.CopiedAt)} · {hist.Details}",
+                        Subtitle = hist.Kind == ClipboardHistoryKind.Image ? FormatRelativeTime(hist.CopiedAt)
+                            : $"{FormatRelativeTime(hist.CopiedAt)} · {hist.Details}",
                         Payload = hist,
-                        Icon = thumbnail ?? GetCachedGlyphIcon("clipboard"),
+                        Icon = thumbnail ?? GetCachedGlyphIcon(hist.Kind == ClipboardHistoryKind.Files ? "file" : "clipboard"),
                         OwnsIcon = thumbnail != null
                     });
                 }
@@ -2062,7 +2119,6 @@ internal sealed class RadialMenuPopup : Form
             return;
         }
 
-        var iconSize = S(IconLogical);
         var corner = S(10f);
         var accentBarW = S(3f);
         var visStart = _scrollIndex;
@@ -2110,6 +2166,7 @@ internal sealed class RadialMenuPopup : Form
                     continue;
 
                 var contentLeft = bounds.X + S(hot ? 12 : 10);
+                var iconSize = S(item.Payload is ClipboardHistoryItem { ThumbnailPng.Length: > 0 } ? 36 : IconLogical);
                 if (item.Icon != null)
                 {
                     var ix = contentLeft;
@@ -2253,12 +2310,12 @@ internal sealed class RadialMenuPopup : Form
         _ = DeliverHistoryAsync(item, target);
     }
 
-    private async Task DeliverHistoryAsync(ClipboardHistoryItem item, IntPtr target)
+    private async Task DeliverHistoryAsync(ClipboardHistoryItem item, IntPtr target, bool? paste = null)
     {
         try
         {
             await _clipboardHistory!.DeliverItemAsync(item,
-                _configManager.Config.ClipboardHistoryAction == TextDeliveryAction.PasteAtCursor, target);
+                paste ?? _configManager.Config.ClipboardHistoryAction == TextDeliveryAction.PasteAtCursor, target);
         }
         catch (Exception ex)
         {

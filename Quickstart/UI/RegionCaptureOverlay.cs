@@ -7,6 +7,9 @@ using Quickstart.Utils;
 /// </summary>
 internal sealed class RegionCaptureOverlay : Form
 {
+    private readonly Rectangle _screenBounds;
+    private readonly Bitmap _snapshot;
+    private bool _ready;
     private Point _start;
     private Point _current;
     private bool _dragging;
@@ -15,14 +18,17 @@ internal sealed class RegionCaptureOverlay : Form
 
     private RegionCaptureOverlay(Rectangle bounds)
     {
-        AutoScaleMode = AutoScaleMode.Dpi;
+        _screenBounds = bounds;
+        _snapshot = CaptureScreenRect(bounds);
+        // Desktop bounds, mouse coordinates and bitmap pixels use the same units.
+        // This surface must never be resized by WinForms' DPI autoscaling.
+        AutoScaleMode = AutoScaleMode.None;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         TopMost = true;
         StartPosition = FormStartPosition.Manual;
         Bounds = bounds;
         BackColor = Color.Black;
-        Opacity = 0.35;
         DoubleBuffered = true;
         Cursor = Cursors.Cross;
         KeyPreview = true;
@@ -35,11 +41,52 @@ internal sealed class RegionCaptureOverlay : Form
     public static Bitmap? CaptureRegion(Screen? screen = null)
     {
         var target = screen ?? Screen.FromPoint(Cursor.Position);
-        using var overlay = new RegionCaptureOverlay(target.Bounds);
+        // Screen instances retain their bounds. Resolve a fresh instance in case
+        // Win+P / hot-plug changed the topology since the action was requested.
+        var bounds = target.Bounds;
+        var current = Screen.FromPoint(new Point(bounds.Left + bounds.Width / 2, bounds.Top + bounds.Height / 2));
+        using var overlay = new RegionCaptureOverlay(current.Bounds);
         var result = overlay.ShowDialog();
         if (result != DialogResult.OK || overlay._result == null)
             return null;
         return overlay._result;
+    }
+
+    protected override void OnShown(EventArgs e)
+    {
+        Bounds = _screenBounds;
+        _ready = true;
+        base.OnShown(e);
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        // Even AutoScaleMode.None accepts the OS suggested rectangle by default.
+        // A captured desktop is immutable; never stretch it to a new DPI.
+        e.Cancel = true;
+        base.OnDpiChanged(e);
+        if (_ready) CancelCapture();
+    }
+
+    protected override void WndProc(ref Message m)
+    {
+        const int WmDisplayChange = 0x007E;
+        base.WndProc(ref m);
+        if (m.Msg == WmDisplayChange && _ready) CancelCapture();
+    }
+
+    private void CancelCapture()
+    {
+        _dragging = false;
+        Capture = false;
+        DialogResult = DialogResult.Cancel;
+        Close();
+    }
+
+    protected override void Dispose(bool disposing)
+    {
+        if (disposing) _snapshot.Dispose();
+        base.Dispose(disposing);
     }
 
     protected override void OnKeyDown(KeyEventArgs e)
@@ -68,8 +115,9 @@ internal sealed class RegionCaptureOverlay : Form
             return;
 
         _dragging = true;
-        _start = e.Location;
-        _current = e.Location;
+        Capture = true;
+        _start = ClampSelectionPoint(e.Location);
+        _current = _start;
         _selection = Rectangle.Empty;
         Invalidate();
         base.OnMouseDown(e);
@@ -79,7 +127,7 @@ internal sealed class RegionCaptureOverlay : Form
     {
         if (_dragging)
         {
-            _current = e.Location;
+            _current = ClampSelectionPoint(e.Location);
             _selection = NormalizeRect(_start, _current);
             Invalidate();
         }
@@ -96,7 +144,8 @@ internal sealed class RegionCaptureOverlay : Form
         }
 
         _dragging = false;
-        _selection = NormalizeRect(_start, e.Location);
+        Capture = false;
+        _selection = NormalizeRect(_start, ClampSelectionPoint(e.Location));
 
         // 过小视为误触
         var minSize = Math.Max(8, UiScaleHelper.Scale(this, 8));
@@ -109,7 +158,7 @@ internal sealed class RegionCaptureOverlay : Form
 
         try
         {
-            _result = CaptureScreenRect(RectangleToScreen(_selection));
+            _result = _snapshot.Clone(_selection, _snapshot.PixelFormat);
             DialogResult = DialogResult.OK;
         }
         catch
@@ -126,12 +175,16 @@ internal sealed class RegionCaptureOverlay : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
+        e.Graphics.DrawImageUnscaled(_snapshot, Point.Empty);
+        using (var shade = new SolidBrush(Color.FromArgb(90, Color.Black)))
+        using (var dimmed = new Region(ClientRectangle))
+        {
+            if (!_selection.IsEmpty) dimmed.Exclude(_selection);
+            e.Graphics.FillRegion(shade, dimmed);
+        }
         if (_selection.Width <= 0 || _selection.Height <= 0)
             return;
 
-        // 选区挖空感：先整屏暗罩，再在选区画更亮边框与轻微填充
-        using var fill = new SolidBrush(Color.FromArgb(40, 255, 255, 255));
-        e.Graphics.FillRectangle(fill, _selection);
         using var pen = new Pen(Color.FromArgb(55, 138, 221), Math.Max(1f, UiScaleHelper.Scale(this, 2)));
         e.Graphics.DrawRectangle(pen, _selection.X, _selection.Y, _selection.Width - 1, _selection.Height - 1);
 
@@ -158,11 +211,24 @@ internal sealed class RegionCaptureOverlay : Form
         return new Rectangle(x, y, w, h);
     }
 
+    private Point ClampSelectionPoint(Point point)
+        => new(
+            point.X >= ClientSize.Width - 1 ? ClientSize.Width : Math.Max(0, point.X),
+            point.Y >= ClientSize.Height - 1 ? ClientSize.Height : Math.Max(0, point.Y));
+
     private static Bitmap CaptureScreenRect(Rectangle screenRect)
     {
         var bmp = new Bitmap(screenRect.Width, screenRect.Height);
-        using var g = Graphics.FromImage(bmp);
-        g.CopyFromScreen(screenRect.Location, Point.Empty, screenRect.Size);
-        return bmp;
+        try
+        {
+            using var g = Graphics.FromImage(bmp);
+            g.CopyFromScreen(screenRect.Location, Point.Empty, screenRect.Size);
+            return bmp;
+        }
+        catch
+        {
+            bmp.Dispose();
+            throw;
+        }
     }
 }

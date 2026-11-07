@@ -11,6 +11,7 @@ using Quickstart.Utils;
 /// </summary>
 internal sealed class MiddleClickPopup : Form
 {
+    private const string SearchHint = "Everything · Enter 搜索 · 单击条目执行 · Esc 关闭";
     private readonly TextBox _query = new()
     {
         PlaceholderText = "搜索文件或文件夹",
@@ -26,7 +27,7 @@ internal sealed class MiddleClickPopup : Form
     {
         // The placeholder hides while focused, so the hint names the search engine too.
         // It also replaces the action panel's footer hint, which is hidden in this layout.
-        Text = "Everything · Enter 搜索 · 单击条目执行 · Esc 关闭",
+        Text = SearchHint,
         TextAlign = ContentAlignment.MiddleRight,
         ForeColor = UiTheme.TextMuted,
         Cursor = Cursors.Hand,
@@ -37,12 +38,14 @@ internal sealed class MiddleClickPopup : Form
     private AiActionPickerPopup? _actions;
     private bool _arranging;
     private bool _closing;
+    private bool _layoutPending;
     // Panel positions relative to the search bar's top-left; dragging the bar moves the group.
     private Point _launcherOffset;
     private Point _actionOffset;
     private Point _anchorOffset;
     private bool _hasLayout;
     private Point _anchor;
+    private (string Device, Rectangle Area, int Dpi)? _layoutEnvironment;
 
     internal IntPtr SourceWindow { get; private set; }
     public event Action<string, IntPtr>? SearchRequested;
@@ -84,7 +87,6 @@ internal sealed class MiddleClickPopup : Form
                 SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
             };
         LocationChanged += (_, _) => MovePanels();
-        DpiChanged += (_, _) => { if (Visible && !_arranging) BeginInvoke(HandleDisplayEnvironmentChanged); };
         _focusTimer.Tick += (_, _) => CheckFocus();
         FormClosing += (_, e) =>
         {
@@ -98,6 +100,8 @@ internal sealed class MiddleClickPopup : Form
         int S(int value) => UiScaleHelper.Scale(this, value);
         var size = _bar.ClientSize;
         _searchIcon.Bounds = new Rectangle(S(6), 0, S(34), size.Height);
+        _search.Text = TextRenderer.MeasureText(SearchHint, _search.Font).Width + S(240) > size.Width
+            ? "Enter 搜索" : SearchHint;
         var hintWidth = TextRenderer.MeasureText(_search.Text, _search.Font).Width + S(14);
         _search.Bounds = new Rectangle(size.Width - hintWidth - S(4), 0, hintWidth, size.Height);
         _query.Bounds = new Rectangle(_searchIcon.Right + S(2), (size.Height - _query.PreferredHeight) / 2,
@@ -105,6 +109,55 @@ internal sealed class MiddleClickPopup : Form
     }
 
     internal void ShowPanels(MainPopup launcher, AiActionPickerPopup actions, Point point, IntPtr sourceWindow)
+    {
+        PreparePanels(launcher, actions, point, sourceWindow);
+        _arranging = true;
+        try
+        {
+            Attach(launcher); Attach(actions);
+            // All three windows already have their final bounds. Show them without
+            // extra slide/focus cycles, then give keyboard focus to the search bar.
+            Show();
+            launcher.Show();
+            actions.Show();
+            actions.EnterInteractiveMode();
+            WindowActivator.TryForceForeground(Handle);
+            _query.Focus();
+            _focusTimer.Start();
+        }
+        catch { HidePanels(); throw; }
+        finally { _arranging = false; }
+    }
+
+    internal void Prewarm(MainPopup launcher, AiActionPickerPopup actions, Point point)
+    {
+        var foreground = GetForegroundWindow();
+        try
+        {
+            PreparePanels(launcher, actions, point, IntPtr.Zero);
+            CreateHiddenHandles(this);
+            CreateHiddenHandles(launcher);
+            CreateHiddenHandles(actions);
+        }
+        finally
+        {
+            HidePanels();
+            // Native handle creation can select a hidden top-level window. Only undo
+            // activation of our own windows; never override a user switching elsewhere.
+            var current = GetForegroundWindow();
+            if (foreground != IntPtr.Zero && current != foreground
+                && (current == Handle || current == launcher.Handle || current == actions.Handle))
+                WindowActivator.TryForceForeground(foreground);
+        }
+    }
+
+    private static void CreateHiddenHandles(Control control)
+    {
+        _ = control.Handle;
+        foreach (Control child in control.Controls) CreateHiddenHandles(child);
+    }
+
+    private void PreparePanels(MainPopup launcher, AiActionPickerPopup actions, Point point, IntPtr sourceWindow)
     {
         HidePanels();
         _arranging = true;
@@ -116,24 +169,20 @@ internal sealed class MiddleClickPopup : Form
         _query.Clear();
         try
         {
-            Attach(launcher); Attach(actions);
-            UiScaleHelper.MoveIntoWorkingArea(this, Screen.FromPoint(point));
-            launcher.MiddleClickHost = this; launcher.FitMiddleClickPanel(null);
-            launcher.ShowAtGesturePoint(point, sourceWindow);
-            launcher.EnterInteractiveMode();
-            actions.MiddleClickHost = this; actions.FitMiddleClickPanel(null);
-            actions.ShowAtGesturePoint(point);
-            actions.EnterInteractiveMode();
+            var screen = Screen.FromPoint(point);
+            UiScaleHelper.MoveIntoWorkingArea(this, screen);
+            launcher.MiddleClickHost = this;
+            actions.MiddleClickHost = this;
+            var environment = (screen.DeviceName, screen.WorkingArea, UiScaleHelper.GetDpiForScreen(screen));
+            if (_layoutEnvironment != environment)
+            {
+                launcher.FitMiddleClickPanel(null);
+                actions.FitMiddleClickPanel(null);
+                _layoutEnvironment = environment;
+            }
+            launcher.PrepareAtGesturePoint(point, sourceWindow);
+            actions.PrepareAtGesturePoint(point);
             ArrangePanels();
-            WindowActivator.ClaimForegroundRights();
-            Show();
-            MovePanels();
-            // Same motion as the gestures: actions slide in leftwards, the list rightwards.
-            PopupMotion.SlideIn(actions, direction: -1);
-            PopupMotion.SlideIn(launcher, direction: +1);
-            WindowActivator.TryForceForeground(Handle);
-            _query.Focus();
-            _focusTimer.Start();
         }
         catch { HidePanels(); throw; }
         finally { _arranging = false; }
@@ -155,7 +204,27 @@ internal sealed class MiddleClickPopup : Form
 
     private void PanelSizeChanged(object? sender, EventArgs e)
     {
-        if (Visible && !_arranging && !_closing) ArrangePanels();
+        // Child SizeChanged also fires in the middle of WinForms DPI scaling.
+        // Wait until the entire window tree is scaled before sizing the group.
+        QueueDisplayLayout();
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        UiScaleHelper.InvalidateDeviceDpiCache();
+        base.OnDpiChanged(e);
+        QueueDisplayLayout();
+    }
+
+    private void QueueDisplayLayout()
+    {
+        if (!Visible || _arranging || _closing || _layoutPending || IsDisposed) return;
+        _layoutPending = true;
+        BeginInvoke(() =>
+        {
+            _layoutPending = false;
+            if (!IsDisposed) HandleDisplayEnvironmentChanged();
+        });
     }
 
     private void ArrangePanels()
@@ -167,51 +236,16 @@ internal sealed class MiddleClickPopup : Form
         {
             var area = Screen.FromPoint(_anchor).WorkingArea;
             int S(int value) => UiScaleHelper.Scale(this, value);
-            var margin = S(8); var gap = S(12);
             var barHeight = Math.Max(S(36), _query.PreferredHeight + S(12));
-            var widthLimit = Math.Max(1, area.Width - margin * 2);
-            var bodyLimit = Math.Max(S(180), area.Height - margin * 2 - barHeight - gap);
-            var launchMin = S(300);
-            var actionMin = S(320);
-            var top = barHeight + gap;
-            int groupWidth, groupHeight, splitX;
-            Point actionAt, launcherAt;
-            if (widthLimit >= launchMin + actionMin + gap)
-            {
-                // Mirror the gestures: actions on the left of the cursor, quick launch on the right.
-                // Both columns share the taller natural height so their edges line up.
-                var height = Math.Min(bodyLimit, Math.Max(_launcher.Height, _actions.Height));
-                var launchWidth = Math.Clamp(_launcher.Width, launchMin, widthLimit - actionMin - gap);
-                var actionWidth = Math.Clamp(_actions.Width, actionMin, widthLimit - launchWidth - gap);
-                _launcher.FitMiddleClickPanel(new Size(launchWidth, height));
-                _actions.FitMiddleClickPanel(new Size(actionWidth, height));
-                actionAt = new Point(0, top);
-                launcherAt = new Point(actionWidth + gap, top);
-                groupWidth = actionWidth + gap + launchWidth;
-                groupHeight = top + height;
-                splitX = actionWidth + gap / 2;
-            }
-            else
-            {
-                // Narrow displays: stack the same complete panels at full width; their lists scroll.
-                var launchHeight = Math.Max(S(180), (bodyLimit - gap) / 2);
-                _launcher.FitMiddleClickPanel(new Size(widthLimit, launchHeight));
-                _actions.FitMiddleClickPanel(new Size(widthLimit, Math.Max(S(120), bodyLimit - gap - launchHeight)));
-                launcherAt = new Point(0, top);
-                actionAt = new Point(0, top + _launcher.Height + gap);
-                groupWidth = widthLimit;
-                groupHeight = actionAt.Y + _actions.Height;
-                splitX = groupWidth / 2;
-            }
-            // The group's split point sits under the cursor, then the whole group stays on screen.
-            var groupLeft = Math.Clamp(_anchor.X - splitX, area.Left + margin, Math.Max(area.Left + margin, area.Right - margin - groupWidth));
-            var groupTop = Math.Clamp(_anchor.Y - top - S(36), area.Top + margin, Math.Max(area.Top + margin, area.Bottom - margin - groupHeight));
-            // The bar spans both columns so the three pieces read as one grid.
-            _actionOffset = actionAt;
-            _launcherOffset = launcherAt;
-            _anchorOffset = new Point(splitX, top + S(36));
+            var layout = PopupScreenLayout.Arrange(area, _anchor, UiScaleHelper.GetDpi(this),
+                _launcher.Size, _actions.Size, barHeight);
+            _launcher.FitMiddleClickPanel(layout.Launcher.Size);
+            _actions.FitMiddleClickPanel(layout.Actions.Size);
+            _actionOffset = layout.Actions.Location - new Size(layout.Bar.Location);
+            _launcherOffset = layout.Launcher.Location - new Size(layout.Bar.Location);
+            _anchorOffset = layout.AnchorOffset;
             _hasLayout = true;
-            Bounds = new Rectangle(groupLeft, groupTop, groupWidth, barHeight);
+            Bounds = layout.Bar;
             MovePanels();
         }
         finally { _arranging = wasArranging; }
@@ -268,8 +302,8 @@ internal sealed class MiddleClickPopup : Form
                 panel.Owner = null;
                 switch (panel)
                 {
-                    case MainPopup main: main.MiddleClickHost = null; main.FitMiddleClickPanel(null); break;
-                    case AiActionPickerPopup actions: actions.MiddleClickHost = null; actions.FitMiddleClickPanel(null); break;
+                    case MainPopup main: main.MiddleClickHost = null; break;
+                    case AiActionPickerPopup actions: actions.MiddleClickHost = null; break;
                 }
             }
             _launcher = null; _actions = null;

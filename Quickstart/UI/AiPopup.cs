@@ -205,7 +205,6 @@ public sealed class AiPopup : Form
         InstallResizeHandlers(inner);
 
         ApplyScaledMetrics();
-        DpiChanged += (_, _) => ApplyScaledMetrics();
     }
 
     public void ShowAtGesturePoint(Point screenPt, IntPtr captureSourceWindow)
@@ -599,6 +598,13 @@ public sealed class AiPopup : Form
             .Replace("*", string.Empty, StringComparison.Ordinal);
     }
 
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        UiScaleHelper.InvalidateDeviceDpiCache();
+        base.OnDpiChanged(e);
+        ApplyScaledMetrics();
+    }
+
     private void ApplyScaledMetrics()
     {
         Padding = UiScaleHelper.ScalePadding(this, new Padding(1));
@@ -652,9 +658,9 @@ public sealed class AiPopup : Form
         var margin = S(8);
         var preferred = new Size(S(PopupLogicalSize.Width), S(PopupLogicalSize.Height));
         var minimum = new Size(S(MinimumPopupLogicalSize.Width), S(MinimumPopupLogicalSize.Height));
-        Size = new Size(
-            Math.Min(Math.Max(preferred.Width, minimum.Width), Math.Max(minimum.Width, screen.WorkingArea.Width - margin * 2)),
-            Math.Min(Math.Max(preferred.Height, minimum.Height), Math.Max(minimum.Height, screen.WorkingArea.Height - margin * 2)));
+        var available = new Size(screen.WorkingArea.Width - margin * 2, screen.WorkingArea.Height - margin * 2);
+        MinimumSize = PopupScreenLayout.Fit(minimum, available);
+        Size = PopupScreenLayout.Fit(preferred, available);
     }
 
     private static Label CreateInlineLabel(string text) => new()

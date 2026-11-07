@@ -60,6 +60,8 @@ public sealed class ClipboardHistoryService : IDisposable
                 // 启动加载失败不影响监听
             }
         });
+        // Also retain a screenshot/file copied before the application was launched.
+        OnClipboardChanged();
     }
 
     public IReadOnlyList<ClipboardHistoryItem> GetItems()

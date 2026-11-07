@@ -25,6 +25,15 @@ static class PreviewChecks
         }
     }
     static async Task<string> Js(WebView2 web, string script) => await web.ExecuteScriptAsync(script);
+    static async Task UntilJs(WebView2 web, string script, string message)
+    {
+        var clock = Stopwatch.StartNew();
+        while (await Js(web, script) != "true")
+        {
+            if (clock.ElapsedMilliseconds > 15000) throw new TimeoutException(message);
+            await Task.Delay(50);
+        }
+    }
 
     static void CreateFixtures(string root)
     {
@@ -153,7 +162,9 @@ static class PreviewChecks
                 Check(Field<SplitContainer>(popup, "_split").Panel2Collapsed && Field<OfficePreviewDocument?>(pane, "_document") == null, "Hidden preview retained old document");
                 toggle.Checked = true;
                 var split = Field<SplitContainer>(popup, "_split");
-                Check(Math.Abs(split.SplitterDistance - 540 * popup.DeviceDpi / 96d) < 8, "Initial splitter did not scale with DPI");
+                // The responsive layout budgets useful pane widths instead of a fixed divider position.
+                Check(!split.Panel2Collapsed && split.Panel1.Width >= 360 * popup.DeviceDpi / 96d &&
+                    split.Panel2.Width >= 300 * popup.DeviceDpi / 96d, "DPI-scaled list/preview panes are too narrow");
                 // A user selection must drive the real debounced search-to-preview route.
                 list.Focus(); list.Items[1].Selected = true;
                 await Until(() => Field<OfficePreviewDocument?>(pane, "_document")?.Kind == "xlsx" && Field<bool>(pane, "_ready"), "Search selection did not trigger preview");
@@ -246,16 +257,28 @@ static class PreviewChecks
                     Check(await Js(web, "document.querySelector('#content img').classList.contains('actual-size')") == "true", "Image zoom failed");
                     Clipboard.Clear();
                     await Js(web, "window.quickstartCopy()");
-                    await Until(() => Clipboard.ContainsImage(), "Image copy failed: " + extension);
-                    using var copied = Clipboard.GetImage();
-                    Check(copied != null && copied.Width > 0, "Image clipboard is empty");
+                    // Clipboard managers/OLE can advertise the format before its image is readable.
+                    Image? copied = null;
+                    try
+                    {
+                        await Until(() =>
+                        {
+                            if (Field<Label>(pane, "_hint").Text != "已复制内容") return false;
+                            copied?.Dispose();
+                            copied = Clipboard.GetImage();
+                            return copied != null && copied.Width > 0;
+                        }, "Image clipboard is not readable: " + extension);
+                    }
+                    finally { copied?.Dispose(); }
                 }
                 await using (var shot = File.Create(Path.Combine(root, "image-preview.png")))
                     await web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, shot);
                 using (var tall = new Bitmap(320, 2000)) tall.Save(Path.Combine(root, "长图.png"), System.Drawing.Imaging.ImageFormat.Png);
                 await pane.PreviewAsync(Path.Combine(root, "长图.png"));
                 await Until(() => Field<bool>(pane, "_ready"), "Tall image not ready");
-                Check(await Js(web, "document.querySelector('#content img').getBoundingClientRect().height <= innerHeight - 24") == "true", "Tall image did not fit viewport");
+                // Native resize is asynchronous; visualViewport retains fractional CSS pixels at high DPI.
+                Console.WriteLine("Tall image geometry: " + await Js(web, "JSON.stringify({height:document.querySelector('#content img').getBoundingClientRect().height,viewport:innerHeight,visualHeight:visualViewport.height,maxHeight:getComputedStyle(document.querySelector('#content img')).maxHeight,dpr:devicePixelRatio})"));
+                await UntilJs(web, "(()=>{const r=document.querySelector('#content img').getBoundingClientRect();const h=visualViewport.height;const epsilon=1/devicePixelRatio;return r.height<=h-24+epsilon&&r.top>=-epsilon&&r.bottom<=h+epsilon})()", "Tall image did not fit viewport");
                 Console.WriteLine("PASS Markdown render/table/code/sanitization/copy/UTF16; PNG/JPG/JPEG/GIF/BMP/WebP/ICO decode, zoom and clipboard images.");
                 await pane.PreviewAsync(Path.Combine(root, "文字 PDF.pdf"));
                 await Until(() => web.Source?.AbsolutePath.EndsWith(".pdf") == true, "PDF did not navigate");

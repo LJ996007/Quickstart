@@ -15,9 +15,34 @@ public sealed class MainPopup : Form
         TabKind.ClipboardHistory, TabKind.RecentItems
     ];
     private readonly record struct PathStatus(bool Exists, DateTime CheckedAtUtc);
+    private readonly record struct EntryView(QuickEntry Entry, string Id, string Name, string Path, EntryType Type,
+        string Group, int SortOrder, DateTime LastUsed, long Uses, string? Icon);
+    private (TabKind Tab, string Group, string Query, bool Recent, bool Frequency)? _renderedView;
+    private EntryView[] _renderedEntries = [];
+    private DateTime _listRefreshedAt;
+
+    private EntryView[] CaptureEntryView() => _configManager.Config.Entries.Select(e =>
+        new EntryView(e, e.Id, e.Name, e.Path, e.Type, e.Group, e.SortOrder, e.LastUsedAt, e.UseCount, e.CustomIconPath)).ToArray();
+
+    private (TabKind, string, string, bool, bool) CaptureView() => (_activeTab, _activeGroup, _searchBox.Text,
+        _configManager.Config.SortByRecentUsage, _configManager.Config.SortFoldersByFrequency);
+
+    private void RefreshListForOpening()
+    {
+        // Reuse native list rows only when every input is unchanged. Dynamic dates,
+        // clipboard/recent history and expired file status always take the normal path.
+        if (_activeTab is TabKind.Folders or TabKind.Files or TabKind.Urls
+            && _renderedView == CaptureView() && DateTime.UtcNow - _listRefreshedAt < TimeSpan.FromSeconds(30)
+            && _renderedEntries.SequenceEqual(CaptureEntryView()))
+        {
+            _listView.SelectedItems.Clear();
+            if (_listView.Items.Count > 0) _listView.TopItem = _listView.Items[0];
+            return;
+        }
+        RefreshList();
+    }
 
     private static readonly Size ExpandedPopupLogicalSize = new(380, 440);
-    private static readonly Size MinimumExpandedPopupLogicalSize = new(300, 340);
     private const int CollapsedPopupHeightDeltaLogical = 28;
     private const string AllGroupsLabel = "全部";
     private const string EntryReorderDataFormat = "Quickstart.EntryReorder";
@@ -51,6 +76,10 @@ public sealed class MainPopup : Form
     private readonly List<Label> _tabLabels = [];
     private readonly List<TabKind> _tabOrder = [];
     private readonly TableLayoutPanel _tabLayout;
+    private readonly Panel _tabViewport;
+    private int _tabContentWidth;
+    private int _tabContentHeight;
+    private bool _listColumnUpdatePending;
     private readonly FlowLayoutPanel _groupLayout;
     private readonly List<Label> _groupLabels = [];
     private readonly Label _toastLabel;
@@ -97,7 +126,14 @@ public sealed class MainPopup : Form
     /// <summary>null 恢复独立面板；有值时按该尺寸精确铺满（可放大），筛选框常驻头部。</summary>
     internal void FitMiddleClickPanel(Size? viewport)
     {
+        if (_middleClickViewport == viewport) return;
+        var modeChanged = (_middleClickViewport == null) != (viewport == null);
         _middleClickViewport = viewport;
+        if (!modeChanged)
+        {
+            EnsurePopupSizeForScreen(ResolveLayoutScreen());
+            return;
+        }
         if (viewport == null && _isSearchExpanded && string.IsNullOrWhiteSpace(_searchBox.Text))
             _isSearchExpanded = false;
         _listView.BackColor = viewport == null ? SystemColors.Window : UiTheme.Surface;
@@ -259,7 +295,6 @@ public sealed class MainPopup : Form
 
         _tabLayout = new TableLayoutPanel
         {
-            Dock = DockStyle.Fill,
             ColumnCount = 1,
             RowCount = _tabOrder.Count + 1,
             Margin = new Padding(0),
@@ -267,6 +302,15 @@ public sealed class MainPopup : Form
             BackColor = UiTheme.SurfaceAlt
         };
         _tabLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _tabViewport = new Panel
+        {
+            Dock = DockStyle.Fill,
+            AutoScroll = true,
+            Margin = new Padding(0),
+            BackColor = UiTheme.SurfaceAlt
+        };
+        _tabViewport.Controls.Add(_tabLayout);
+        _tabViewport.SizeChanged += (_, _) => UpdateTabScrollWidth();
         for (var i = 0; i < _tabOrder.Count; i++)
             _tabLayout.RowStyles.Add(new RowStyle(SizeType.Absolute, 60));
         _tabLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -342,7 +386,7 @@ public sealed class MainPopup : Form
         contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 1));
         contentLayout.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         contentLayout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        contentLayout.Controls.Add(_tabLayout, 0, 0);
+        contentLayout.Controls.Add(_tabViewport, 0, 0);
         contentLayout.Controls.Add(_tabSeparator, 1, 0);
         contentLayout.Controls.Add(_listHost, 2, 0);
         contentLayout.Controls.Add(_groupSeparator, 3, 0);
@@ -523,10 +567,9 @@ public sealed class MainPopup : Form
             CenterToast();
             UpdateSearchIndicatorBounds();
         };
-        _listView.Resize += (_, _) => UpdateListColumnWidth();
+        _listView.Resize += (_, _) => QueueListColumnWidthUpdate();
         _searchCollapsedPanel.Resize += (_, _) => UpdateSearchIndicatorBounds();
 
-        DpiChanged += (_, _) => ApplyScaledMetrics();
 
         Deactivate += (_, _) =>
         {
@@ -556,6 +599,15 @@ public sealed class MainPopup : Form
         button.FlatAppearance.MouseDownBackColor = UiTheme.ButtonPressedFill;
         _toolTip.SetToolTip(button, tooltip);
         return button;
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        UiScaleHelper.InvalidateDeviceDpiCache();
+        // Form raises DpiChanged before scaling its children. Reapply physical
+        // metrics afterwards, otherwise WinForms scales them a second time.
+        base.OnDpiChanged(e);
+        ApplyScaledMetrics();
     }
 
     private void ApplyScaledMetrics()
@@ -653,8 +705,9 @@ public sealed class MainPopup : Form
             _tabLayout.RowStyles[_tabLabels.Count].Height = 100;
         }
 
-        _tabLayout.MinimumSize = new Size(tabWidth, totalTabHeight);
-        _tabLayout.Width = tabWidth;
+        _tabContentWidth = tabWidth;
+        _tabContentHeight = totalTabHeight;
+        UpdateTabScrollWidth();
 
         _groupLayout.Padding = UiScaleHelper.ScalePadding(this, new Padding(0));
         _groupLayout.MinimumSize = new Size(GetGroupColumnWidth(), 0);
@@ -675,6 +728,20 @@ public sealed class MainPopup : Form
         var screen = ResolveLayoutScreen();
         EnsurePopupSizeForScreen(screen);
         ClampToWorkingArea(screen.WorkingArea);
+    }
+
+    private void UpdateTabScrollWidth()
+    {
+        if (_tabContentWidth <= 0) return;
+        var scrollbar = _tabContentHeight > _tabViewport.ClientSize.Height
+            ? Math.Max(SystemInformation.VerticalScrollBarWidth, _tabViewport.Width - _tabViewport.ClientSize.Width)
+            : 0;
+        var width = _tabContentWidth + scrollbar;
+        _tabLayout.Size = new Size(_tabContentWidth, _tabContentHeight);
+        if (_tabViewport.MinimumSize.Width != width)
+            _tabViewport.MinimumSize = new Size(width, 0);
+        if (_tabViewport.Width != width)
+            _tabViewport.Width = width;
     }
 
     /// <summary>
@@ -775,11 +842,12 @@ public sealed class MainPopup : Form
         SetSearchExpanded(false);
     }
 
-    private void UpdateImageList()
+    private void UpdateImageList(bool refresh = true)
     {
         var iconSize = UiScaleHelper.GetIconSize(this, 20);
         _iconRenderSize = iconSize;
-        var rowSize = new Size(iconSize, InMiddleClickLayout ? UiScaleHelper.Scale(this, MiddleClickRowLogicalHeight) : iconSize);
+        var rowSize = new Size(iconSize, _activeTab == TabKind.ClipboardHistory ? UiScaleHelper.Scale(this, 52)
+            : InMiddleClickLayout ? UiScaleHelper.Scale(this, MiddleClickRowLogicalHeight) : iconSize);
         if (_imageList.ImageSize == rowSize)
             return;
 
@@ -794,7 +862,7 @@ public sealed class MainPopup : Form
         foreach (var pair in _iconImages)
             _imageList.Images.Add(pair.Key, pair.Value);
 
-        if (IsHandleCreated)
+        if (refresh && IsHandleCreated)
             RefreshList();
     }
 
@@ -803,8 +871,22 @@ public sealed class MainPopup : Form
         if (_listView.Columns.Count == 0)
             return;
 
-        var width = Math.Max(UiScaleHelper.Scale(this, 120), _listView.ClientSize.Width - UiScaleHelper.Scale(this, 6));
-        _listView.Columns[0].Width = width;
+        var width = Math.Max(1, _listView.ClientSize.Width - UiScaleHelper.Scale(this, 6));
+        if (_listView.Columns[0].Width != width)
+            _listView.Columns[0].Width = width;
+    }
+
+    private void QueueListColumnWidthUpdate()
+    {
+        // Native scrollbars can change the client width after Resize is raised.
+        // Wait for that layout to finish before fitting the single column.
+        if (_listColumnUpdatePending || !IsHandleCreated || IsDisposed) return;
+        _listColumnUpdatePending = true;
+        BeginInvoke(() =>
+        {
+            _listColumnUpdatePending = false;
+            if (!IsDisposed) UpdateListColumnWidth();
+        });
     }
 
     private void CenterToast()
@@ -1341,6 +1423,15 @@ public sealed class MainPopup : Form
             };
             menu.Items.Add(copy);
 
+            var paste = new ToolStripMenuItem("粘贴到原窗口");
+            paste.Click += async (_, _) =>
+            {
+                var target = _deliveryTargetWindow;
+                Hide();
+                await DeliverHistoryItemAsync(hist, paste: true, target);
+            };
+            menu.Items.Add(paste);
+
             menu.Items.Add(new ToolStripSeparator());
 
             var del = new ToolStripMenuItem("删除本条");
@@ -1536,6 +1627,9 @@ public sealed class MainPopup : Form
     /// </summary>
     private void PrepareTargetScreen(Screen screen)
     {
+        // Keep the hidden middle-click layout warm. Restore standalone metrics only
+        // when a tray/right-swipe invocation actually needs them.
+        if (MiddleClickHost == null) FitMiddleClickPanel(null);
         _targetScreen = screen;
         UiScaleHelper.MoveIntoWorkingArea(this, screen);
 
@@ -2042,6 +2136,8 @@ public sealed class MainPopup : Form
 
     public void RefreshList()
     {
+        _renderedView = null;
+        UpdateImageList(refresh: false);
         if (_activeTab == TabKind.ClipboardHistory)
         {
             RefreshClipboardHistoryList();
@@ -2201,6 +2297,9 @@ public sealed class MainPopup : Form
             QueueCustomIconLoad(iconKey, path);
 
         QueuePathValidation(pathsToValidate);
+        _renderedView = CaptureView();
+        _renderedEntries = CaptureEntryView();
+        _listRefreshedAt = DateTime.UtcNow;
     }
 
     private static string FaviconKey(string host) => "<FAV:" + host + ">";
@@ -2614,7 +2713,7 @@ public sealed class MainPopup : Form
 
         var query = _searchBox.Text.Trim();
         var items = _clipboardHistory?.GetItems().ToList() ?? [];
-        var liveImageKeys = items.Where(i => i.Kind == ClipboardHistoryKind.Image)
+        var liveImageKeys = items.Where(i => i.ThumbnailPng.Length > 0)
             .Select(i => "<CLIP:" + i.Id + ">").ToHashSet();
         foreach (var key in _iconImages.Keys.Where(k => k.StartsWith("<CLIP:") && !liveImageKeys.Contains(k)).ToArray())
             RemoveCachedIcon(key);
@@ -2633,7 +2732,7 @@ public sealed class MainPopup : Form
         {
             var empty = new ListViewItem(
                 string.IsNullOrEmpty(query)
-                    ? "暂无历史 · 复制文本、文件或图片后自动出现"
+                    ? "暂无剪贴板记录"
                     : "无匹配历史");
             empty.ForeColor = UiTheme.TextMuted;
             empty.Tag = null;
@@ -2645,10 +2744,21 @@ public sealed class MainPopup : Form
             {
                 var item = new ListViewItem(hist.Preview());
                 item.Tag = hist;
-                if (hist.Kind == ClipboardHistoryKind.Image)
+                if (hist.ThumbnailPng.Length > 0)
                 {
                     var key = "<CLIP:" + hist.Id + ">";
                     if (!_iconImages.ContainsKey(key)) RegisterIcon(key, ClipboardHistoryContent.CreateThumbnail(hist));
+                    item.ImageKey = key;
+                }
+                else if (hist.Kind == ClipboardHistoryKind.Files)
+                {
+                    var extension = Path.GetExtension(hist.FilePaths.FirstOrDefault() ?? "");
+                    var key = "<CLIPFILE:" + extension.ToLowerInvariant() + ">";
+                    if (!_iconImages.ContainsKey(key))
+                    {
+                        var icon = IconExtractor.GetGenericTypeIcon(extension.Length == 0 ? ".file" : extension, useLargeIcon: true);
+                        RegisterIcon(key, icon?.ToBitmap());
+                    }
                     item.ImageKey = key;
                 }
                 var text = hist.SearchText;
@@ -2985,7 +3095,8 @@ public sealed class MainPopup : Form
             var key = item.ImageKey;
             if (!string.IsNullOrEmpty(key) && _iconImages.TryGetValue(key, out var img) && img != null)
             {
-                var target = _iconRenderSize > 0 ? _iconRenderSize : _imageList.ImageSize.Width;
+                var target = item.Tag is ClipboardHistoryItem { ThumbnailPng.Length: > 0 }
+                    ? UiScaleHelper.Scale(this, 44) : _iconRenderSize > 0 ? _iconRenderSize : _imageList.ImageSize.Width;
                 var rendered = GetRenderedIcon(key, img, target);
                 var dy = bounds.Y + (bounds.Height - rendered.Height) / 2;
                 g.DrawImageUnscaled(rendered, textX, dy);
@@ -3287,6 +3398,13 @@ public sealed class MainPopup : Form
 
     public void ShowAtGesturePoint(Point screenPt, IntPtr sourceWindow = default)
     {
+        PrepareAtGesturePoint(screenPt, sourceWindow);
+        if (MiddleClickHost == null) PopupMotion.SlideIn(this, direction: +1);
+        Show();
+    }
+
+    internal void PrepareAtGesturePoint(Point screenPt, IntPtr sourceWindow = default)
+    {
         CaptureDeliveryTarget(sourceWindow);
         if (_configManager.Config.RememberLastView)
             RestoreRememberedView();
@@ -3302,7 +3420,7 @@ public sealed class MainPopup : Form
 
         var screen = Screen.FromPoint(screenPt);
         PrepareTargetScreen(screen);
-        RefreshList();
+        RefreshListForOpening();
         PersistCurrentView();
 
         var workingArea = screen.WorkingArea;
@@ -3311,9 +3429,6 @@ public sealed class MainPopup : Form
         int x = Math.Max(workingArea.Left + popupMargin, Math.Min(screenPt.X - popupMargin, workingArea.Right - Width - popupMargin));
         int y = Math.Max(workingArea.Top + popupMargin, Math.Min(screenPt.Y - listAnchorOffsetY, workingArea.Bottom - Height - popupMargin));
         Location = new Point(x, y);
-        if (MiddleClickHost == null) PopupMotion.SlideIn(this, direction: +1);
-
-        Show();
     }
 
     [DllImport("user32.dll")]
@@ -3364,26 +3479,14 @@ public sealed class MainPopup : Form
 
         var margin = S(8);
         var preferred = ScaleSize(GetPreferredPopupLogicalSize());
-        var minimum = ScaleSize(GetMinimumPopupLogicalSize());
-        var maxWidth = Math.Max(minimum.Width, screen.WorkingArea.Width - margin * 2);
-        var maxHeight = Math.Max(minimum.Height, screen.WorkingArea.Height - margin * 2);
-
-        Size = _middleClickViewport ?? new Size(
-            Math.Min(preferred.Width, maxWidth),
-            Math.Min(preferred.Height, maxHeight));
+        Size = _middleClickViewport ?? PopupScreenLayout.Fit(preferred,
+            new Size(screen.WorkingArea.Width - margin * 2, screen.WorkingArea.Height - margin * 2));
     }
 
     private Size GetPreferredPopupLogicalSize()
         => _isSearchExpanded
             ? ExpandedPopupLogicalSize
             : new Size(ExpandedPopupLogicalSize.Width, ExpandedPopupLogicalSize.Height - CollapsedPopupHeightDeltaLogical);
-
-    private Size GetMinimumPopupLogicalSize()
-        => _isSearchExpanded
-            ? MinimumExpandedPopupLogicalSize
-            : new Size(
-                MinimumExpandedPopupLogicalSize.Width,
-                Math.Max(260, MinimumExpandedPopupLogicalSize.Height - CollapsedPopupHeightDeltaLogical));
 
     private void ClampToWorkingArea(Rectangle workingArea)
     {

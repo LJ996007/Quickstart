@@ -47,6 +47,7 @@ public sealed class AppConfig
     public List<QuickEntry> Entries { get; set; } = [];
     public Dictionary<string, DateTime> GroupLastUsedAt { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<WebSearchToolConfig> WebSearchTools { get; set; } = WebSearchToolConfig.CreateDefaults();
+    public bool BingSearchToolInitialized { get; set; }
     public AiConfig Ai { get; set; } = AiConfig.CreateDefault();
     public OcrConfig Ocr { get; set; } = new();
     public string TotalCommanderPath { get; set; } = string.Empty;
@@ -130,6 +131,13 @@ public sealed class WebSearchToolConfig
     public string UrlTemplate { get; set; } = string.Empty;
     public bool Enabled { get; set; } = true;
 
+    public static WebSearchToolConfig CreateBing() => new()
+    {
+        Id = "bing",
+        Name = "Bing 查询",
+        UrlTemplate = "https://www.bing.com/search?q={query}"
+    };
+
     public static List<WebSearchToolConfig> CreateDefaults() =>
     [
         new()
@@ -138,6 +146,7 @@ public sealed class WebSearchToolConfig
             Name = "Google 查询",
             UrlTemplate = "https://www.google.com/search?q={query}"
         },
+        CreateBing(),
         new()
         {
             Id = "ccgp",

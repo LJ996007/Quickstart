@@ -38,7 +38,7 @@ public sealed class ConfigManager : IDisposable
             if (!File.Exists(ConfigPath))
             {
                 Directory.CreateDirectory(AppDataDir);
-                _config = new AppConfig();
+                _config = new AppConfig { BingSearchToolInitialized = true };
                 Save();
                 return;
             }
@@ -362,6 +362,25 @@ public sealed class ConfigManager : IDisposable
         if (_config.WebSearchTools == null)
         {
             _config.WebSearchTools = WebSearchToolConfig.CreateDefaults();
+            migrated = true;
+        }
+
+        // Add once for existing installations; preserve custom Bing tools and
+        // allow the user to disable or delete the entry afterwards.
+        if (!_config.BingSearchToolInitialized)
+        {
+            var hasBing = _config.WebSearchTools.Any(tool =>
+                string.Equals(tool.Id, "bing", StringComparison.OrdinalIgnoreCase)
+                || (Uri.TryCreate(tool.UrlTemplate, UriKind.Absolute, out var uri)
+                    && (uri.Host.Equals("bing.com", StringComparison.OrdinalIgnoreCase)
+                        || uri.Host.EndsWith(".bing.com", StringComparison.OrdinalIgnoreCase))));
+            if (!hasBing)
+            {
+                var google = _config.WebSearchTools.FindIndex(tool => tool.Id == "google");
+                _config.WebSearchTools.Insert(google < 0 ? _config.WebSearchTools.Count : google + 1,
+                    WebSearchToolConfig.CreateBing());
+            }
+            _config.BingSearchToolInitialized = true;
             migrated = true;
         }
 

@@ -168,17 +168,23 @@ internal static class UiScaleHelper
     /// </summary>
     public static void MoveIntoWorkingArea(Form form, Screen screen, int logicalMargin = 8)
     {
-        if (form == null || screen == null || !form.IsHandleCreated)
+        if (form == null || screen == null || form.IsDisposed)
             return;
 
+        // A monitor handle can be reused after Win+P / hot-plug. Refresh even if
+        // the debounced display notification has not reached the UI thread yet.
+        InvalidateDeviceDpiCache();
         var area = screen.WorkingArea;
-        var margin = Scale(form, logicalMargin);
+        var margin = Scale(logicalMargin, GetDpiForScreen(screen));
         var x = Math.Max(area.Left + margin, Math.Min(form.Left, area.Right - form.Width - margin));
         var y = Math.Max(area.Top + margin, Math.Min(form.Top, area.Bottom - form.Height - margin));
 
         var target = new Point(x, y);
         if (form.Location != target)
             form.Location = target;
+        // Create first-use windows on the target monitor too. Previously this
+        // method silently did nothing until a handle already existed.
+        _ = form.Handle;
     }
 
     public static int GetInputHeight(Control control, int minLogicalHeight = 30)
