@@ -7,7 +7,7 @@ internal readonly record struct DialogQuickBarLayout(Rectangle Bounds, int Input
     {
         int S(int value) => (int)Math.Round(value * dpi / 96d);
         var width = Math.Min(work.Width, Math.Min(dialog.Width, S(640)));
-        var compactHeight = Math.Min(work.Height, S(92));
+        var compactHeight = Math.Min(work.Height, S(108));
         var x = Math.Clamp(dialog.Left + S(16), work.Left, work.Right - width);
         // Anchor using ONLY the compact bar's height. Expanding must never move the input.
         var anchor = Math.Clamp(dialog.Bottom + S(4), work.Top, work.Bottom - compactHeight);
@@ -18,8 +18,8 @@ internal readonly record struct DialogQuickBarLayout(Rectangle Bounds, int Input
         var extra = expanded ? Math.Min(desired, growUp ? above : below) : 0;
         var offset = growUp ? extra : 0;
         var bounds = new Rectangle(x, anchor - offset, width, compactHeight + extra);
-        var listTop = growUp ? S(6) : S(76);
-        var listHeight = growUp ? extra - S(12) : bounds.Height - S(102);
+        var listTop = growUp ? S(6) : S(92);
+        var listHeight = growUp ? extra - S(12) : bounds.Height - S(118);
         return new(bounds, offset, listTop, expanded ? Math.Max(0, listHeight) : 0);
     }
 }

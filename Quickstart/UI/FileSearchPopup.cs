@@ -14,7 +14,7 @@ public sealed class FileSearchPopup : Form
     private readonly TextBox _query = new() { Dock = DockStyle.Fill, PlaceholderText = "搜索本机文件、文件夹（支持 Everything 搜索语法）" };
     private readonly ComboBox _filter = new FileSearchComboBox { AccessibleName = "文件类型" };
     private readonly ComboBox _sort = new FileSearchComboBox { AccessibleName = "排序方式" };
-    private readonly ListView _results = new BufferedListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true,
+    private readonly ListView _results = new FileSearchListView { Dock = DockStyle.Fill, View = View.Details, FullRowSelect = true,
         MultiSelect = false, HideSelection = false, ShowItemToolTips = true, BorderStyle = BorderStyle.None,
         OwnerDraw = true, HeaderStyle = ColumnHeaderStyle.Nonclickable, BackColor = UiTheme.Card, ForeColor = UiTheme.TextPrimary };
     private readonly Label _status = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
@@ -34,7 +34,8 @@ public sealed class FileSearchPopup : Form
     private readonly CheckBox _previewEnabled = new() { Text = "预览", Checked = true, Appearance = Appearance.Button,
         FlatStyle = FlatStyle.Flat, TextAlign = ContentAlignment.MiddleCenter, AccessibleName = "文件预览" };
     private readonly TableLayoutPanel _layout = new() { Dock = DockStyle.Fill, RowCount = 6, ColumnCount = 1 };
-    private readonly TableLayoutPanel _header = new() { Dock = DockStyle.Fill, ColumnCount = 3 };
+    private readonly TableLayoutPanel _header = new() { Dock = DockStyle.Fill, ColumnCount = 4 };
+    private readonly FileSearchIconButton _pin = new(FileSearchGlyph.Pin, "置顶");
     private readonly TableLayoutPanel _top = new() { Dock = DockStyle.Fill, ColumnCount = 4 };
     private readonly TableLayoutPanel _footer = new() { Dock = DockStyle.Fill, ColumnCount = 4 };
     private readonly Label _title = new() { Text = "本地搜索", Dock = DockStyle.Fill, TextAlign = ContentAlignment.MiddleLeft, AutoEllipsis = true };
@@ -80,7 +81,7 @@ public sealed class FileSearchPopup : Form
         DoubleBuffered = true;
         StartPosition = FormStartPosition.Manual;
         ShowInTaskbar = false;
-        TopMost = true;
+        TopMost = false;
         KeyPreview = true;
         _filter.Items.AddRange(["全部", "文件", "文件夹"]);
         _sort.Items.AddRange(["名称排序", "最近修改", "文件最大"]);
@@ -93,9 +94,19 @@ public sealed class FileSearchPopup : Form
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
+        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 36));
         _header.Controls.Add(_title, 0, 0);
-        _header.Controls.Add(_maximize, 1, 0);
-        _header.Controls.Add(_close, 2, 0);
+        _header.Controls.Add(_pin, 1, 0);
+        _header.Controls.Add(_maximize, 2, 0);
+        _header.Controls.Add(_close, 3, 0);
+        _pin.Click += (_, _) =>
+        {
+            TopMost = !TopMost;
+            _pin.BackColor = TopMost ? UiTheme.SelectionFill : UiTheme.Surface;
+            _pin.AccessibleName = TopMost ? "取消置顶" : "置顶";
+            _toolTip.SetToolTip(_pin, _pin.AccessibleName);
+            _pin.Invalidate();
+        };
         _title.Font = UiTheme.CreateFont(12f, FontStyle.Bold);
         _header.MouseDown += BeginWindowDrag;
         _title.MouseDown += BeginWindowDrag;
@@ -103,7 +114,7 @@ public sealed class FileSearchPopup : Form
         _title.DoubleClick += (_, _) => ToggleMaximize();
         _maximize.Click += (_, _) => ToggleMaximize();
         _close.Click += (_, _) => Hide();
-        foreach (var control in new Control[] { _title, _maximize, _close }) { control.Margin = Padding.Empty; control.Dock = DockStyle.Fill; }
+        foreach (var control in new Control[] { _title, _pin, _maximize, _close }) { control.Margin = Padding.Empty; control.Dock = DockStyle.Fill; }
         _top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var i = 0; i < 3; i++) _top.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _top.Controls.Add(new FileSearchField(_query, true), 0, 0);
@@ -154,7 +165,8 @@ public sealed class FileSearchPopup : Form
         _results.SmallImageList = _icons;
         _results.Resize += (_, _) => ResizeColumns();
         _results.DrawColumnHeader += DrawResultHeader;
-        _results.DrawSubItem += DrawResultCell;
+        _results.DrawItem += DrawResultRow;
+        _results.DrawSubItem += DrawResultSubItem;
         _results.ColumnWidthChanging += (_, e) => { e.Cancel = true; e.NewWidth = _results.Columns[e.ColumnIndex].Width; };
         _query.TextChanged += (_, _) => ScheduleSearch();
         _filter.SelectedIndexChanged += (_, _) => ScheduleSearch();
@@ -214,6 +226,7 @@ public sealed class FileSearchPopup : Form
         _toolTip.SetToolTip(_up, "上一级（Alt+上箭头）");
         _toolTip.SetToolTip(_returnToSearch, "返回原搜索结果");
         _toolTip.SetToolTip(_maximize, "最大化 / 还原");
+        _toolTip.SetToolTip(_pin, "置顶");
         _toolTip.SetToolTip(_close, "关闭（Esc）");
         _status.TextChanged += (_, _) => _toolTip.SetToolTip(_status, _status.Text);
         _menu.Renderer = new ToolStripProfessionalRenderer(new SearchMenuColors());
@@ -254,7 +267,7 @@ public sealed class FileSearchPopup : Form
         _split.SplitterWidth = S(12);
         _split.BackColor = UiTheme.Surface;
         _split.Panel2.Padding = new Padding(S(12), 0, 0, 0);
-        _header.ColumnStyles[1].Width = _header.ColumnStyles[2].Width = S(36);
+        _header.ColumnStyles[1].Width = _header.ColumnStyles[2].Width = _header.ColumnStyles[3].Width = S(36);
         foreach (var combo in new[] { _filter, _sort })
         {
             combo.Margin = new Padding(S(8), 0, 0, 0);
@@ -305,24 +318,45 @@ public sealed class FileSearchPopup : Form
             TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix);
     }
 
-    private void DrawResultCell(object? sender, DrawListViewSubItemEventArgs e)
+    private void DrawResultRow(object? sender, DrawListViewItemEventArgs e)
     {
-        if (e.SubItem == null || e.Item == null || e.Bounds.Width <= 0) return;
-        using var background = new SolidBrush(e.Item.Selected ? UiTheme.SelectionFill : UiTheme.Card);
-        e.Graphics.FillRectangle(background, e.Bounds);
-        var bounds = Rectangle.Inflate(e.Bounds, -S(10), 0);
-        if (e.ColumnIndex == 0)
+        // Native hover redraws can request only DrawItem, without DrawSubItem.
+        // Paint the complete row here so the selection never flashes back to native colors.
+        var left = e.Bounds.Left;
+        for (var column = 0; column < _results.Columns.Count; column++)
         {
-            if (_icons.Images.ContainsKey(e.Item.ImageKey))
-                e.Graphics.DrawImage(_icons.Images[e.Item.ImageKey]!, bounds.Left, bounds.Top + (bounds.Height - S(20)) / 2, S(20), S(20));
+            var width = _results.Columns[column].Width;
+            if (width > 0 && column < e.Item.SubItems.Count)
+                DrawResultCell(e.Graphics, e.Item, column, new Rectangle(left, e.Bounds.Top, width, e.Bounds.Height));
+            left += width;
+        }
+    }
+
+    private void DrawResultSubItem(object? sender, DrawListViewSubItemEventArgs e)
+    {
+        // Scroll/column resizing can repaint only cells. The row callback alone
+        // cannot supply their contents once the native control clears that area.
+        if (e.Item != null && e.Bounds.Width > 0)
+            DrawResultCell(e.Graphics, e.Item, e.ColumnIndex, e.Bounds);
+    }
+
+    private void DrawResultCell(Graphics graphics, ListViewItem item, int column, Rectangle cell)
+    {
+        using var background = new SolidBrush(item.Selected ? UiTheme.SelectionFill : UiTheme.Card);
+        graphics.FillRectangle(background, cell);
+        var bounds = Rectangle.Inflate(cell, -S(10), 0);
+        if (column == 0)
+        {
+            if (_icons.Images.ContainsKey(item.ImageKey))
+                graphics.DrawImage(_icons.Images[item.ImageKey]!, bounds.Left, bounds.Top + (bounds.Height - S(20)) / 2, S(20), S(20));
             bounds.X += S(30);
             bounds.Width = Math.Max(0, bounds.Width - S(30));
         }
-        TextRenderer.DrawText(e.Graphics, e.SubItem.Text, Font, bounds,
-            e.Item.Selected ? UiTheme.AccentText : e.ColumnIndex == 0 ? UiTheme.TextPrimary : UiTheme.TextSecondary,
+        TextRenderer.DrawText(graphics, item.SubItems[column].Text, Font, bounds,
+            item.Selected ? UiTheme.AccentText : column == 0 ? UiTheme.TextPrimary : UiTheme.TextSecondary,
             TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis | TextFormatFlags.NoPrefix | TextFormatFlags.SingleLine);
-        if (e.ColumnIndex == 0 && e.Item.Focused && _results.Focused && ShowFocusCues)
-            ControlPaint.DrawFocusRectangle(e.Graphics, Rectangle.Inflate(e.Bounds, -1, -1));
+        if (column == 0 && item.Focused && _results.Focused && ShowFocusCues)
+            ControlPaint.DrawFocusRectangle(graphics, Rectangle.Inflate(cell, -1, -1));
     }
 
     private void BeginWindowDrag(object? sender, MouseEventArgs e)
@@ -465,13 +499,23 @@ public sealed class FileSearchPopup : Form
         {
             // ImageSize recreates the native image list and drops its images on a DPI change.
             _icons.ImageSize = new Size(iconSize, iconSize);
+            _icons.Images.Clear();
             foreach (ListViewItem item in _results.Items)
                 if (item.Tag is FileSearchResult result) item.ImageKey = EnsureResultIcon(result);
             _results.Invalidate();
         }
     }
 
-    public void ShowSearch(string query = "", IntPtr sourceWindow = default)
+    public Task ShowFolderAsync(string folder)
+    {
+        ShowSearchCore("", IntPtr.Zero, detectDialog: false, folder);
+        return SearchAsync();
+    }
+
+    public void ShowSearch(string query = "", IntPtr sourceWindow = default, bool detectDialog = true)
+        => ShowSearchCore(query, sourceWindow, detectDialog, initialFolder: null);
+
+    private void ShowSearchCore(string query, IntPtr sourceWindow, bool detectDialog, string? initialFolder)
     {
         if (sourceWindow == IntPtr.Zero) sourceWindow = FileDialogNavigator.CaptureForegroundWindow();
         var session = ++_showSession;
@@ -483,7 +527,7 @@ public sealed class FileSearchPopup : Form
         _dialogMode.Checked = false;
         _dialogDetectionFailed = false;
         _dialogDetectionError = null;
-        _detectingDialog = _config.Config.FileDialogNavigationEnabled;
+        _detectingDialog = detectDialog && _config.Config.FileDialogNavigationEnabled;
         Text = "Quickstart · 本地搜索";
         _changing = true;
         _folder = null;
@@ -494,6 +538,15 @@ public sealed class FileSearchPopup : Form
         _filter.SelectedIndex = 0;
         _offset = 0;
         _changing = false;
+        if (initialFolder != null)
+        {
+            // Establish folder mode before the first visible frame. Showing the
+            // search layout and then inserting navigation caused a visible jump.
+            var search = CaptureView();
+            _searchView = search;
+            _history.Push(search);
+            _folder = initialFolder;
+        }
         UpdateNavigation();
         var area = Screen.FromPoint(Cursor.Position).WorkingArea;
         MinimumSize = new Size(Math.Min(S(720), area.Width), Math.Min(S(420), area.Height));
@@ -502,7 +555,7 @@ public sealed class FileSearchPopup : Form
         Location = new Point(area.Left + (area.Width - Width) / 2, area.Top + Math.Max(0, (area.Height - Height) / 3));
         WindowActivator.ClaimForegroundRights();
         Show(); Activate(); _query.Focus(); _query.SelectAll();
-        ScheduleSearch();
+        if (initialFolder == null) ScheduleSearch();
         if (_detectingDialog) _ = DetectDialogAsync(sourceWindow, session, _dialogProbe.Token);
         else UpdatePreviewLayout();
     }
@@ -689,7 +742,6 @@ public sealed class FileSearchPopup : Form
         try
         {
             _results.Items.Clear();
-            _icons.Images.Clear();
             foreach (var result in page.Items)
             {
                 var key = EnsureResultIcon(result);
@@ -765,7 +817,6 @@ public sealed class FileSearchPopup : Form
                 throw new FileNotFoundException("文件已移动或删除，请重新搜索。");
             var entry = _config.Config.Entries.FirstOrDefault(e => string.Equals(e.Path, result.FullPath, StringComparison.OrdinalIgnoreCase)) ?? ToEntry(result);
             _launcher.Open(entry);
-            Hide();
         }
         catch (Exception ex) { if (!IsDisposed) _status.Text = ex.Message; }
     }

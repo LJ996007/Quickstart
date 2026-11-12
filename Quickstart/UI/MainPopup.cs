@@ -161,6 +161,7 @@ public sealed class MainPopup : Form
         _tabOrder.AddRange(CreateTabOrder(_configManager.Config.MainPopupTabOrder));
 
         AutoScaleMode = AutoScaleMode.Dpi;
+        DoubleBuffered = true;
 
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;

@@ -2,6 +2,7 @@ namespace Quickstart.UI;
 
 using System.Runtime.InteropServices;
 using Quickstart.Utils;
+using Quickstart.Core;
 
 /// <summary>
 /// Middle-click group: a standalone floating search bar above two equal-height columns,
@@ -33,6 +34,9 @@ internal sealed class MiddleClickPopup : Form
         Cursor = Cursors.Hand,
     };
     private readonly Panel _bar = new() { BackColor = UiTheme.Card, Dock = DockStyle.Fill };
+    private readonly Button _recent = new() { Text = "最近目录", AccessibleName = "Windows 最近目录" };
+    private readonly ContextMenuStrip _recentMenu = new() { ShowImageMargin = false };
+    private int _recentRevision;
     private readonly System.Windows.Forms.Timer _focusTimer = new() { Interval = 150 };
     private MainPopup? _launcher;
     private AiActionPickerPopup? _actions;
@@ -49,6 +53,7 @@ internal sealed class MiddleClickPopup : Form
 
     internal IntPtr SourceWindow { get; private set; }
     public event Action<string, IntPtr>? SearchRequested;
+    public event Action<string, IntPtr>? FolderRequested;
 
     public MiddleClickPopup()
     {
@@ -68,7 +73,10 @@ internal sealed class MiddleClickPopup : Form
         _search.Font = UiTheme.CreateFont(8.5f);
         _query.BackColor = UiTheme.Card;
         _query.ForeColor = UiTheme.TextPrimary;
-        _bar.Controls.AddRange([_searchIcon, _query, _search]);
+        _bar.Controls.AddRange([_searchIcon, _query, _search, _recent]);
+        UiTheme.StyleFlatButton(_recent, UiTheme.Card);
+        _recent.ForeColor = UiTheme.TextSecondary;
+        _recent.Click += async (_, _) => await ShowRecentFoldersAsync();
         _bar.Layout += (_, _) => LayoutBar();
         Controls.Add(_bar);
         _search.Click += (_, _) => SubmitSearch();
@@ -100,12 +108,58 @@ internal sealed class MiddleClickPopup : Form
         int S(int value) => UiScaleHelper.Scale(this, value);
         var size = _bar.ClientSize;
         _searchIcon.Bounds = new Rectangle(S(6), 0, S(34), size.Height);
-        _search.Text = TextRenderer.MeasureText(SearchHint, _search.Font).Width + S(240) > size.Width
-            ? "Enter 搜索" : SearchHint;
+        _search.Text = "Enter 搜索";
         var hintWidth = TextRenderer.MeasureText(_search.Text, _search.Font).Width + S(14);
         _search.Bounds = new Rectangle(size.Width - hintWidth - S(4), 0, hintWidth, size.Height);
+        _recent.Bounds = new Rectangle(_search.Left - S(100), 0, S(96), size.Height);
         _query.Bounds = new Rectangle(_searchIcon.Right + S(2), (size.Height - _query.PreferredHeight) / 2,
-            Math.Max(S(40), _search.Left - _searchIcon.Right - S(8)), _query.PreferredHeight);
+            Math.Max(S(40), _recent.Left - _searchIcon.Right - S(8)), _query.PreferredHeight);
+    }
+
+    private async Task ShowRecentFoldersAsync()
+    {
+        var revision = ++_recentRevision;
+        _recentMenu.Items.Clear();
+        _recentMenu.Items.Add(new ToolStripMenuItem("正在读取…") { Enabled = false });
+        _recentMenu.Show(_recent, new Point(0, _recent.Height));
+        try
+        {
+            var folders = await WindowsRecentFolders.ReadAsync();
+            if (IsDisposed || revision != _recentRevision || !_recentMenu.Visible || !Visible) return;
+            PopulateRecentFolders(folders);
+        }
+        catch (Exception)
+        {
+            if (IsDisposed || revision != _recentRevision || !_recentMenu.Visible) return;
+            _recentMenu.Items.Clear();
+            _recentMenu.Items.Add(new ToolStripMenuItem("无法读取 Windows 最近目录") { Enabled = false });
+        }
+    }
+
+    private void PopulateRecentFolders(IReadOnlyList<FolderDirectory> folders)
+    {
+        _recentMenu.Items.Clear();
+        var dpi = UiScaleHelper.GetDpi(this);
+        int S(int value) => UiScaleHelper.Scale(value, dpi);
+        var width = Math.Max(1, Math.Min(S(640), Screen.FromControl(this).WorkingArea.Width - S(16)) - S(40));
+        foreach (var folder in folders)
+        {
+            var text = FolderPathLabel.Format(folder.Name, folder.Path, _recentMenu.Font, width);
+            var item = new ToolStripMenuItem(text.Replace("&", "&&"))
+            {
+                ToolTipText = folder.Path,
+                AccessibleName = folder.Name + " · " + FolderPathLabel.ParentName(folder.Path),
+                AccessibleDescription = folder.Path,
+            };
+            item.Click += (_, _) =>
+            {
+                var source = SourceWindow;
+                HidePanels();
+                FolderRequested?.Invoke(folder.Path, source);
+            };
+            _recentMenu.Items.Add(item);
+        }
+        if (folders.Count == 0) _recentMenu.Items.Add(new ToolStripMenuItem("Windows 暂无最近目录") { Enabled = false });
     }
 
     internal void ShowPanels(MainPopup launcher, AiActionPickerPopup actions, Point point, IntPtr sourceWindow)
@@ -131,30 +185,17 @@ internal sealed class MiddleClickPopup : Form
 
     internal void Prewarm(MainPopup launcher, AiActionPickerPopup actions, Point point)
     {
-        var foreground = GetForegroundWindow();
-        try
+        PopupWarmup.Run(() =>
         {
-            PreparePanels(launcher, actions, point, IntPtr.Zero);
-            CreateHiddenHandles(this);
-            CreateHiddenHandles(launcher);
-            CreateHiddenHandles(actions);
-        }
-        finally
-        {
-            HidePanels();
-            // Native handle creation can select a hidden top-level window. Only undo
-            // activation of our own windows; never override a user switching elsewhere.
-            var current = GetForegroundWindow();
-            if (foreground != IntPtr.Zero && current != foreground
-                && (current == Handle || current == launcher.Handle || current == actions.Handle))
-                WindowActivator.TryForceForeground(foreground);
-        }
-    }
-
-    private static void CreateHiddenHandles(Control control)
-    {
-        _ = control.Handle;
-        foreach (Control child in control.Controls) CreateHiddenHandles(child);
+            try
+            {
+                PreparePanels(launcher, actions, point, IntPtr.Zero);
+                PopupWarmup.CreateHiddenHandles(this);
+                PopupWarmup.CreateHiddenHandles(launcher);
+                PopupWarmup.CreateHiddenHandles(actions);
+            }
+            finally { HidePanels(); }
+        });
     }
 
     private void PreparePanels(MainPopup launcher, AiActionPickerPopup actions, Point point, IntPtr sourceWindow)
@@ -268,6 +309,7 @@ internal sealed class MiddleClickPopup : Form
     private void CheckFocus()
     {
         if (!Visible || _arranging || _closing) return;
+        if (_recentMenu.Visible) return;
         if (_launcher is MainPopup { IsContextInteraction: true }) return;
         var window = GetForegroundWindow();
         if (window == IntPtr.Zero) return;
@@ -293,6 +335,8 @@ internal sealed class MiddleClickPopup : Form
         try
         {
             _focusTimer.Stop();
+            _recentMenu.Close();
+            _recentRevision++;
             foreach (var panel in new Form?[] { _launcher, _actions })
             {
                 if (panel == null || panel.IsDisposed) continue;
@@ -321,7 +365,7 @@ internal sealed class MiddleClickPopup : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing && !IsDisposed) { HidePanels(); _focusTimer.Dispose(); }
+        if (disposing && !IsDisposed) { HidePanels(); _focusTimer.Dispose(); _recentMenu.Dispose(); }
         base.Dispose(disposing);
     }
 

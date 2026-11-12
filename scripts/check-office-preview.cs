@@ -13,6 +13,24 @@ static class PreviewChecks
     const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
     static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, Private)!.GetValue(owner)!;
     static void Check(bool value, string message) { if (!value) throw new Exception(message); }
+    static void CheckCompactHeader(OfficePreviewPane pane)
+    {
+        pane.PerformLayout();
+        var title = Field<Label>(pane, "_title");
+        var toolbar = Field<TableLayoutPanel>(pane, "_toolbar");
+        var body = Field<Panel>(pane, "_body");
+        var rowHeight = (int)Math.Round(36 * pane.DeviceDpi / 96d);
+        Check(title.Parent == toolbar, "Filename is not in the action row");
+        Check(Math.Abs(toolbar.Height - rowHeight) <= 1 && body.Top <= rowHeight + 8 * pane.DeviceDpi / 96d,
+            $"Preview header wastes vertical space: toolbar={toolbar.Bounds}, body={body.Bounds}");
+        var controls = toolbar.Controls.Cast<Control>().Where(c => c.Visible).OrderBy(c => c.Left).ToArray();
+        foreach (var control in controls)
+            Check(control.Top == title.Top && control.Height == title.Height && toolbar.ClientRectangle.Contains(control.Bounds),
+                $"Preview action is not aligned: {control.Text}: {control.Bounds}");
+        for (var i = 1; i < controls.Length; i++)
+            Check(controls[i - 1].Right <= controls[i].Left, "Preview header controls overlap");
+        Check(title.Width > 0, "Filename has no space in the header");
+    }
     static async Task Until(Func<bool> condition, string message, int ms = 15000)
     {
         var watch = Stopwatch.StartNew();
@@ -116,6 +134,7 @@ static class PreviewChecks
                 await pane.PreviewAsync(docx);
                 await Until(() => Field<bool>(pane, "_ready"), "DOCX did not render: " + Field<Label>(pane, "_message").Text);
                 var web = Field<WebView2>(pane, "_web");
+                CheckCompactHeader(pane);
                 Console.WriteLine($"PASS DOCX preview (browser prewarmed): {stopwatch.ElapsedMilliseconds} ms");
                 Check((await Js(web, "document.body.innerText")).Contains("合同条款"), "Chinese DOCX body missing");
                 await Js(web, "window.quickstartCopy(true)");
@@ -284,6 +303,21 @@ static class PreviewChecks
                 await Until(() => web.Source?.AbsolutePath.EndsWith(".pdf") == true, "PDF did not navigate");
                 await Task.Delay(1000);
                 Check(!Field<Label>(pane, "_message").Visible, "PDF failed to load");
+                CheckCompactHeader(pane);
+                var originalSplit = split.SplitterDistance;
+                foreach (var logicalWidth in new[] { 340, 480 })
+                {
+                    var desired = (int)Math.Round(logicalWidth * popup.DeviceDpi / 96d);
+                    split.SplitterDistance = Math.Clamp(split.Width - split.SplitterWidth - desired, split.Panel1MinSize,
+                        split.Width - split.SplitterWidth - split.Panel2MinSize);
+                    CheckCompactHeader(pane);
+                }
+                split.SplitterDistance = originalSplit;
+                using (var chrome = new Bitmap(pane.Width, Math.Min(pane.Height, (int)Math.Round(44 * pane.DeviceDpi / 96d))))
+                {
+                    pane.DrawToBitmap(chrome, new Rectangle(0, 0, chrome.Width, chrome.Height));
+                    chrome.Save(Path.Combine(root, "compact-preview-header.png"));
+                }
                 await using (var image = File.Create(Path.Combine(root, "pdf-preview.png")))
                     await web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, image);
                 Console.WriteLine("PASS PDF navigation; inspect pdf-preview.png and perform native Ctrl+C in interactive mode.");

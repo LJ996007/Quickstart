@@ -25,6 +25,9 @@ public sealed class DialogQuickBar : Form
     private FileDialogTarget? _target;
     private int _revision;
     private bool _expanded, _navigating, _binding;
+    private DialogQuickBarLayout? _appliedLayout;
+    private int _layoutDpi;
+    private (Size Size, int Dpi, Font Font)? _shortcutLayout;
     public event Action? Dismissed;
     public FileDialogTarget? Target => _target;
     public bool IsNavigating => _navigating;
@@ -44,7 +47,8 @@ public sealed class DialogQuickBar : Form
         BackColor = UiTheme.Surface;
         FormStyler.ApplyRounded(this);
         Controls.AddRange([_query, _recent, _favorites, _manage, _close, _shortcuts, _results, _status]);
-        _results.Columns.Add("目录"); _results.Columns.Add("路径");
+        _results.Columns.Add("目录"); _results.Columns.Add("上一级");
+        _shortcuts.SizeChanged += (_, _) => LayoutShortcutLabels();
         foreach (var button in new[] { _recent, _favorites, _manage, _close }) { UiTheme.StyleFlatButton(button, BackColor); button.ForeColor = UiTheme.TextSecondary; }
         _tips.SetToolTip(_recent, "展开最近使用的目录");
         _tips.SetToolTip(_manage, "设置收藏来源 / 管理 Quickstart 收藏");
@@ -88,12 +92,14 @@ public sealed class DialogQuickBar : Form
 
     private void RefreshShortcuts()
     {
+        _shortcutLayout = null;
         foreach (Control child in _shortcuts.Controls.Cast<Control>().ToArray()) child.Dispose();
         foreach (var entry in FolderDirectoryService.GetRecent(_config.Config).Take(4))
         {
-            var button = new Button { Text = "▸ " + entry.Name, AutoSize = true, AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            var button = new Button { AutoSize = false, UseMnemonic = false,
                 FlatStyle = FlatStyle.Flat, Margin = new Padding(0, 0, 6, 0), Padding = new Padding(5, 0, 5, 0),
-                AccessibleName = "最近目录：" + entry.Name, Tag = entry.Path, AutoEllipsis = true };
+                AccessibleName = "最近目录：" + entry.Name + " · " + FolderPathLabel.ParentName(entry.Path),
+                AccessibleDescription = entry.Path, Tag = entry.Path, AutoEllipsis = true };
             button.FlatAppearance.BorderColor = UiTheme.BorderSubtle;
             button.FlatAppearance.MouseOverBackColor = UiTheme.SelectionFill;
             button.BackColor = UiTheme.Card; button.ForeColor = UiTheme.TextPrimary;
@@ -103,6 +109,40 @@ public sealed class DialogQuickBar : Form
         }
         if (_shortcuts.Controls.Count == 0)
             _shortcuts.Controls.Add(new Label { Text = "暂无最近目录；点击 ☆ 收藏选择目录", AutoSize = true, ForeColor = UiTheme.TextMuted });
+        LayoutShortcutLabels();
+    }
+
+    private void LayoutShortcutLabels()
+    {
+        var key = (_shortcuts.ClientSize, DeviceDpi, Font);
+        if (_shortcutLayout == key) return;
+        var buttons = _shortcuts.Controls.OfType<Button>().ToArray();
+        if (buttons.Length == 0 || _shortcuts.Width <= 0) return;
+        int S(int value) => UiScaleHelper.Scale(value, DeviceDpi);
+        var gap = S(6);
+        var width = Math.Max(1, (_shortcuts.Width - gap * (buttons.Length - 1)) / buttons.Length);
+        for (var i = 0; i < buttons.Length; i++)
+        {
+            var button = buttons[i];
+            var path = (string)button.Tag!;
+            button.Margin = new Padding(0, 0, i == buttons.Length - 1 ? 0 : gap, 0);
+            button.Padding = new Padding(S(5), 0, S(5), 0);
+            button.Size = new Size(width, S(44));
+            var textWidth = Math.Max(1, width - button.Padding.Horizontal);
+            var folderName = FolderDirectoryService.FromPath(path).Name;
+            var parent = FolderPathLabel.ParentName(path);
+            while (true)
+            {
+                var name = FolderPathLabel.Compact(folderName, button.Font, textWidth);
+                button.Text = parent.Length == 0 ? name : name + "\n" + FolderPathLabel.Compact(parent, button.Font, textWidth, preferPrefix: true);
+                // Native Button adds its own text/border insets. Budget those too
+                // so a directory line cannot wrap and push its parent out of view.
+                var overflow = button.GetPreferredSize(Size.Empty).Width - width;
+                if (overflow <= 0 || textWidth <= 1) break;
+                textWidth = Math.Max(1, textWidth - overflow);
+            }
+        }
+        _shortcutLayout = key;
     }
 
     public void ShowAttached(bool focus = false, string? query = null)
@@ -130,6 +170,9 @@ public sealed class DialogQuickBar : Form
         var scale = DeviceDpi / 96d;
         int S(int value) => (int)Math.Round(value * scale);
         var layout = DialogQuickBarLayout.Calculate(dialog, work, DeviceDpi, _expanded);
+        // The companion follows its dialog every 150ms. Unchanged placement must
+        // not rewrite labels/columns or trigger native layout and repaint work.
+        if (_appliedLayout == layout && _layoutDpi == DeviceDpi) return;
         var width = layout.Bounds.Width;
         var height = layout.Bounds.Height;
         var inputOffset = layout.InputOffset;
@@ -140,15 +183,18 @@ public sealed class DialogQuickBar : Form
         _favorites.SetBounds(width - S(142), inputOffset + S(6), S(76), S(32));
         _manage.SetBounds(width - S(65), inputOffset + S(6), S(30), S(32));
         _close.SetBounds(width - S(33), inputOffset + S(6), S(27), S(32));
-        _shortcuts.SetBounds(S(12), inputOffset + S(42), width - S(24), S(28));
-        foreach (Control shortcut in _shortcuts.Controls)
-            if (shortcut is Button) shortcut.MaximumSize = new Size(Math.Max(S(40), (_shortcuts.Width - S(24)) / 4), S(28));
+        _shortcuts.SetBounds(S(12), inputOffset + S(42), width - S(24), S(44));
+        LayoutShortcutLabels();
         _results.Visible = _expanded && layout.ResultsHeight > 0;
         if (_expanded && layout.ResultsHeight > 0) _results.SetBounds(S(12), layout.ResultsTop, width - S(24), layout.ResultsHeight);
         _status.SetBounds(S(12), height - S(22), width - S(24), S(19));
-        _results.Columns[0].Width = Math.Max(S(100), (width - S(30)) / 3);
-        _results.Columns[1].Width = Math.Max(S(60), width - S(52) - _results.Columns[0].Width);
+        var nameWidth = Math.Max(S(100), (width - S(30)) / 3);
+        var parentWidth = Math.Max(S(60), width - S(52) - nameWidth);
+        if (_results.Columns[0].Width != nameWidth) _results.Columns[0].Width = nameWidth;
+        if (_results.Columns[1].Width != parentWidth) _results.Columns[1].Width = parentWidth;
         ResumeLayout(false);
+        _appliedLayout = layout;
+        _layoutDpi = DeviceDpi;
     }
 
     private sealed class DialogOwner(IntPtr handle) : IWin32Window
@@ -182,7 +228,7 @@ public sealed class DialogQuickBar : Form
     private void AddRow(string name, string path)
     {
         var row = new ListViewItem(name) { Tag = path, ToolTipText = path };
-        row.SubItems.Add(path); _results.Items.Add(row);
+        row.SubItems.Add(FolderPathLabel.ParentName(path)); _results.Items.Add(row);
     }
     private void SelectFirst() { if (_results.Items.Count > 0) _results.Items[0].Selected = true; }
     private void CancelSearch() { _revision++; _debounce.Stop(); _queryCts?.Cancel(); }

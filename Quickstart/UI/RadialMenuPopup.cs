@@ -104,6 +104,8 @@ internal sealed class RadialMenuPopup : Form
     private const float FanTotalSweepDeg = 180f;
     private const float ListGapFromFanLogical = 14f;
     private const float ListRowWidthLogical = 260f;
+    private const float ListRowMinWidthLogical = 160f;
+    private const float ListScrollGutterLogical = 8f;
     private const float ListRowHeightLogical = 44f;
     private const float ListRowGapLogical = 5f;
     private const float ListPanelPadLogical = 8f;
@@ -130,13 +132,14 @@ internal sealed class RadialMenuPopup : Form
     private readonly List<ItemSlot> _items = [];
     private readonly Dictionary<string, Image> _iconCache = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> _faviconInflight = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Font _segmentTitleFont;
-    private readonly Font _segmentCountFont;
-    private readonly Font _groupFont;
-    private readonly Font _itemFont;
-    private readonly Font _itemSubFont;
-    private readonly Font _hubTitleFont;
-    private readonly Font _hubCountFont;
+    private Font _segmentTitleFont = null!;
+    private Font _segmentCountFont = null!;
+    private Font _groupFont = null!;
+    private Font _itemFont = null!;
+    private Font _itemSubFont = null!;
+    private Font _hubTitleFont = null!;
+    private Font _hubCountFont = null!;
+    private float _fontScale;
 
     private Image? _webPlaceholder;
     private TabKind? _activeTab;
@@ -157,8 +160,9 @@ internal sealed class RadialMenuPopup : Form
     private float _contentOuterR;
     private RectangleF _listPanelBounds;
     private RectangleF _listClipBounds;
-    /// <summary>列表首个可见项下标；仅当 _items.Count &gt; MaxVisibleItems 时可滚动。</summary>
+    /// <summary>列表首个可见项下标；超出当前工作区容量时可滚动。</summary>
     private int _scrollIndex;
+    private int _visibleItemCapacity = MaxVisibleItems;
     private bool _renderPending;
     private Bitmap? _layerBmp;
     private Graphics? _layerGfx;
@@ -186,7 +190,8 @@ internal sealed class RadialMenuPopup : Form
         _clipboardHistory = clipboardHistory;
         if (_clipboardHistory != null) _clipboardHistory.Changed += OnClipboardHistoryChanged;
 
-        AutoScaleMode = AutoScaleMode.Dpi;
+        // This layered surface owns every physical pixel, including its fonts.
+        AutoScaleMode = AutoScaleMode.None;
         FormBorderStyle = FormBorderStyle.None;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.Manual;
@@ -194,14 +199,6 @@ internal sealed class RadialMenuPopup : Form
         KeyPreview = true;
         BackColor = Color.Black;
         SetStyle(ControlStyles.UserPaint | ControlStyles.AllPaintingInWmPaint | ControlStyles.OptimizedDoubleBuffer, true);
-
-        _segmentTitleFont = new Font(UiTheme.FontFamily, 8.25f, FontStyle.Regular);
-        _segmentCountFont = new Font(UiTheme.FontFamily, 7f, FontStyle.Regular);
-        _groupFont = new Font(UiTheme.FontFamily, 7f, FontStyle.Regular);
-        _itemFont = new Font(UiTheme.FontFamily, 9f, FontStyle.Regular);
-        _itemSubFont = new Font(UiTheme.FontFamily, 7.5f, FontStyle.Regular);
-        _hubTitleFont = new Font(UiTheme.FontFamily, 11f, FontStyle.Bold);
-        _hubCountFont = new Font(UiTheme.FontFamily, 8f, FontStyle.Regular);
 
         _animTimer = new System.Windows.Forms.Timer { Interval = AnimFrameMs };
         _animTimer.Tick += (_, _) => OnAnimTick();
@@ -243,8 +240,7 @@ internal sealed class RadialMenuPopup : Form
         var screen = Screen.FromPoint(screenPt);
         UiScaleHelper.MoveIntoWorkingArea(this, screen);
 
-        UpdateDpiScale();
-        ApplyContentSize();
+        ApplyContentSizeForArea(screen.WorkingArea.Size, UiScaleHelper.GetDpiForScreen(screen));
         _center = ComputeWheelCenter();
 
         EnterGestureMode();
@@ -388,14 +384,14 @@ internal sealed class RadialMenuPopup : Form
         {
             if (e.KeyCode is Keys.Up or Keys.PageUp)
             {
-                TryScrollList(e.KeyCode == Keys.PageUp ? -MaxVisibleItems : -1);
+                TryScrollList(e.KeyCode == Keys.PageUp ? -_visibleItemCapacity : -1);
                 e.Handled = true;
                 return;
             }
 
             if (e.KeyCode is Keys.Down or Keys.PageDown)
             {
-                TryScrollList(e.KeyCode == Keys.PageDown ? MaxVisibleItems : 1);
+                TryScrollList(e.KeyCode == Keys.PageDown ? _visibleItemCapacity : 1);
                 e.Handled = true;
                 return;
             }
@@ -603,15 +599,33 @@ internal sealed class RadialMenuPopup : Form
     protected override void OnDpiChanged(DpiChangedEventArgs e)
     {
         UiScaleHelper.InvalidateDeviceDpiCache();
+        e.Cancel = true;
         base.OnDpiChanged(e);
         RefreshForDisplayEnvironment();
     }
 
-    private void UpdateDpiScale()
+    private void UpdateFonts()
     {
-        _dpiScale = UiScaleHelper.GetDpi(this) / 96f;
-        if (_dpiScale <= 0)
-            _dpiScale = 1f;
+        if (_fontScale == _dpiScale)
+            return;
+        // Point fonts inherit Bitmap's default (startup/system) DPI. After a
+        // display change that can differ from the monitor used by the geometry.
+        Font Create(float points, FontStyle style = FontStyle.Regular)
+            => new(UiTheme.FontFamily, S(points * 96f / 72f), style, GraphicsUnit.Pixel);
+        void Replace(ref Font font, float points, FontStyle style = FontStyle.Regular)
+        {
+            font?.Dispose();
+            font = Create(points, style);
+        }
+        Replace(ref _segmentTitleFont, 8.25f);
+        Replace(ref _segmentCountFont, 7f);
+        Replace(ref _groupFont, 7f);
+        Replace(ref _itemFont, 9f);
+        Replace(ref _itemSubFont, 7.5f);
+        Replace(ref _hubTitleFont, 11f, FontStyle.Bold);
+        Replace(ref _hubCountFont, 8f);
+        _fontScale = _dpiScale;
+        InvalidateStaticLayer();
     }
 
     /// <summary>
@@ -624,7 +638,6 @@ internal sealed class RadialMenuPopup : Form
             return;
 
         ResetDpiDependentIcons();
-        UpdateDpiScale();
         DisposeLayerResources();
         ApplyContentSize();
         _center = ComputeWheelCenter();
@@ -665,17 +678,32 @@ internal sealed class RadialMenuPopup : Form
 
     private void ApplyContentSize()
     {
-        UpdateDpiScale();
+        var screen = IsHandleCreated ? Screen.FromHandle(Handle) : Screen.PrimaryScreen!;
+        ApplyContentSizeForArea(screen.WorkingArea.Size, UiScaleHelper.GetDpiForScreen(screen));
+    }
+
+    private void ApplyContentSizeForArea(Size available, int dpi)
+    {
+        var groupRingLogical = HasAnyConfiguredGroups() ? FanGroupRingWidthLogical : 0f;
+        var outerLogical = FanOuterRadiusLogical + groupRingLogical;
+        // Keep normal DPI and readable row heights first: narrow the list and
+        // show fewer rows. Only shrink the whole wheel if its minimum footprint
+        // cannot fit the work area at all.
+        var minWidth = FormPadLogical * 2 + HubRadiusLogical + outerLogical
+            + ListGapFromFanLogical + ListRowMinWidthLogical + ListPanelPadLogical * 2 + ListScrollGutterLogical;
+        var minHeight = (outerLogical + FormPadLogical) * 2;
+        _dpiScale = Math.Min(Math.Max(1, dpi) / 96f,
+            Math.Min(Math.Max(1, available.Width) / minWidth, Math.Max(1, available.Height) / minHeight));
+        UpdateFonts();
         _hubR = S(HubRadiusLogical);
         _fanInnerR = S(FanInnerRadiusLogical);
         _fanOuterR = S(FanOuterRadiusLogical);
 
         // 有配置分组时预留外环宽度，保证右半环完整落在窗体内；无分组则不占位
-        var groupRingLogical = HasAnyConfiguredGroups() ? FanGroupRingWidthLogical : 0f;
         _fanGroupOuterR = S(FanOuterRadiusLogical + groupRingLogical);
         _contentOuterR = _fanGroupOuterR;
 
-        var listW = S(ListRowWidthLogical + ListPanelPadLogical * 2);
+        var listW = S(ListRowWidthLogical + ListPanelPadLogical * 2 + ListScrollGutterLogical);
         var gap = S(ListGapFromFanLogical);
         var pad = S(FormPadLogical);
         var maxListH = MaxVisibleItems * S(ListRowHeightLogical)
@@ -688,7 +716,7 @@ internal sealed class RadialMenuPopup : Form
         var centerX = pad + _hubR;
         var width = (int)Math.Ceiling(centerX + _contentOuterR + gap + listW + pad);
         var height = (int)Math.Ceiling(Math.Max(_contentOuterR * 2f + pad * 2, maxListH + pad * 2));
-        Size = new Size(Math.Max(width, 480), Math.Max(height, 320));
+        Size = PopupScreenLayout.Fit(new Size(width, height), available);
     }
 
     /// <summary>是否存在任意可显示的配置分组（剪贴板/最近无分组）。</summary>
@@ -728,6 +756,8 @@ internal sealed class RadialMenuPopup : Form
             _layerGfx.Dispose();
             _layerGfx = null;
         }
+        _layerBmp?.Dispose();
+        _layerBmp = null;
 
         if (_layerReady)
         {
@@ -752,8 +782,6 @@ internal sealed class RadialMenuPopup : Form
             _layerReady = false;
         }
 
-        _layerBmp?.Dispose();
-        _layerBmp = null;
     }
 
     private void EnsureLayerResources()
@@ -765,30 +793,33 @@ internal sealed class RadialMenuPopup : Form
         if (Width <= 0 || Height <= 0)
             return;
 
-        _layerBmp = new Bitmap(Width, Height, PixelFormat.Format32bppArgb);
-        _layerGfx = Graphics.FromImage(_layerBmp);
-        _layerGfx.CompositingMode = CompositingMode.SourceOver;
-
         _screenDc = GetDC(IntPtr.Zero);
         _memDc = CreateCompatibleDC(_screenDc);
-        _hLayerBmp = _layerBmp.GetHbitmap(Color.FromArgb(0));
-        _oldMemBmp = SelectObject(_memDc, _hLayerBmp);
+        var info = new BitmapInfo
+        {
+            Size = (uint)Marshal.SizeOf<BitmapInfo>(), Width = Width, Height = -Height,
+            Planes = 1, BitCount = 32,
+        };
+        _hLayerBmp = CreateDIBSection(_screenDc, ref info, 0, out var pixels, IntPtr.Zero, 0);
+        // All native resources are owned from here, including a partial failure.
         _layerReady = true;
+        if (_hLayerBmp == IntPtr.Zero || pixels == IntPtr.Zero)
+        {
+            var error = Marshal.GetLastWin32Error();
+            DisposeLayerResources();
+            throw new System.ComponentModel.Win32Exception(error);
+        }
+        _oldMemBmp = SelectObject(_memDc, _hLayerBmp);
+        // GDI+ writes directly into the premultiplied-alpha bitmap selected into
+        // the native DC. No full bitmap copy or HBITMAP allocation per frame.
+        _layerBmp = new Bitmap(Width, Height, Width * 4, PixelFormat.Format32bppPArgb, pixels);
+        _layerGfx = Graphics.FromImage(_layerBmp);
+        _layerGfx.CompositingMode = CompositingMode.SourceOver;
     }
 
     private void SyncLayerBitmapToHbitmap()
     {
-        // Bitmap 已画完：重建 HBITMAP（GDI+ 与 HBITMAP 不同步时必须重建）
-        if (!_layerReady || _layerBmp == null)
-            return;
-
-        if (_memDc != IntPtr.Zero && _oldMemBmp != IntPtr.Zero)
-            SelectObject(_memDc, _oldMemBmp);
-        if (_hLayerBmp != IntPtr.Zero)
-            DeleteObject(_hLayerBmp);
-
-        _hLayerBmp = _layerBmp.GetHbitmap(Color.FromArgb(0));
-        _oldMemBmp = SelectObject(_memDc, _hLayerBmp);
+        _layerGfx?.Flush(FlushIntention.Sync);
     }
 
     private void PushLayeredBitmap()
@@ -1119,33 +1150,27 @@ internal sealed class RadialMenuPopup : Form
             return;
         }
 
-        var rowW = S(ListRowWidthLogical);
         var rowH = S(ListRowHeightLogical);
         var gap = S(ListRowGapLogical);
         var pad = S(ListPanelPadLogical);
         var n = _items.Count;
-        var visible = Math.Min(n, MaxVisibleItems);
+        var margin = S(FormPadLogical);
+        _visibleItemCapacity = Math.Clamp((int)MathF.Floor(
+            (Height - margin * 2 - pad * 2 + gap) / (rowH + gap)), 1, MaxVisibleItems);
+        var visible = Math.Min(n, _visibleItemCapacity);
         _scrollIndex = ClampScrollIndex(_scrollIndex, n, visible);
 
         var totalH = visible * rowH + Math.Max(0, visible - 1) * gap;
         // 可滚动时右侧预留细滚动条
-        var scrollGutter = n > MaxVisibleItems ? S(8) : 0f;
-        var panelW = rowW + pad * 2 + scrollGutter;
+        var scrollGutter = CanScrollList ? S(ListScrollGutterLogical) : 0f;
         var panelH = totalH + pad * 2;
 
-        var margin = S(8);
         // 内容最右点 = center.X + contentOuterR（含分组外环）；列表必须完全在其右侧
         var fanRight = _center.X + _contentOuterR;
         var listLeft = fanRight + S(ListGapFromFanLogical);
 
-        // 若窗体宽度不够，优先保证不重叠：压缩不再左移盖住扇区
-        if (listLeft + panelW > Width - margin)
-        {
-            // 宽度不足时仍保持 listLeft 不小于 fanRight+gap，必要时裁切行宽由窗体尺寸保证
-            listLeft = Math.Min(listLeft, Width - panelW - margin);
-            if (listLeft < fanRight + S(ListGapFromFanLogical))
-                listLeft = fanRight + S(ListGapFromFanLogical);
-        }
+        var panelW = Math.Min(S(ListRowWidthLogical) + pad * 2 + scrollGutter, Width - margin - listLeft);
+        var rowW = Math.Max(1f, panelW - pad * 2 - scrollGutter);
 
         // 垂直居中于窗体（比跟随扇区中点更稳，减少上下跳动）
         var listTop = (Height - panelH) / 2f;
@@ -1183,16 +1208,16 @@ internal sealed class RadialMenuPopup : Form
         return Math.Clamp(scroll, 0, itemCount - visibleCount);
     }
 
-    private bool CanScrollList => _items.Count > MaxVisibleItems;
+    private bool CanScrollList => _items.Count > _visibleItemCapacity;
 
-    private int MaxScrollIndex => Math.Max(0, _items.Count - MaxVisibleItems);
+    private int MaxScrollIndex => Math.Max(0, _items.Count - _visibleItemCapacity);
 
     private bool TryScrollList(int deltaRows, Point? screenPtForHover = null)
     {
         if (!CanScrollList || deltaRows == 0)
             return false;
 
-        var next = ClampScrollIndex(_scrollIndex + deltaRows, _items.Count, MaxVisibleItems);
+        var next = ClampScrollIndex(_scrollIndex + deltaRows, _items.Count, _visibleItemCapacity);
         if (next == _scrollIndex)
             return false;
 
@@ -1203,7 +1228,7 @@ internal sealed class RadialMenuPopup : Form
         if (screenPtForHover.HasValue)
             ApplyPointerAtClientPoint(PointToClient(screenPtForHover.Value));
         else if (_hoverItemIndex >= 0
-                 && (_hoverItemIndex < _scrollIndex || _hoverItemIndex >= _scrollIndex + MaxVisibleItems))
+                 && (_hoverItemIndex < _scrollIndex || _hoverItemIndex >= _scrollIndex + _visibleItemCapacity))
         {
             _hoverItemIndex = -1;
         }
@@ -1369,7 +1394,7 @@ internal sealed class RadialMenuPopup : Form
         if (!IsHandleCreated)
             return;
 
-        var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
+        var end = Math.Min(_items.Count, _scrollIndex + _visibleItemCapacity);
         for (var i = _scrollIndex; i < end; i++)
         {
             var slot = _items[i];
@@ -1599,7 +1624,7 @@ internal sealed class RadialMenuPopup : Form
 
         var elapsed = Environment.TickCount64 - _animStartTick;
         var allDone = true;
-        var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
+        var end = Math.Min(_items.Count, _scrollIndex + _visibleItemCapacity);
 
         for (var i = _scrollIndex; i < end; i++)
         {
@@ -1715,7 +1740,7 @@ internal sealed class RadialMenuPopup : Form
     /// <summary>仅实际可见行可以点击；边距、滚动条和行间空白不吸附到条目。</summary>
     private int FindVisibleItem(Point client)
     {
-        var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
+        var end = Math.Min(_items.Count, _scrollIndex + _visibleItemCapacity);
         for (var i = _scrollIndex; i < end; i++)
         {
             if (_items[i].AnimT >= 0.4f && GetAnimatedItemBounds(_items[i]).Contains(client))
@@ -2058,7 +2083,7 @@ internal sealed class RadialMenuPopup : Form
             return;
 
         var maxT = 0f;
-        var end = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
+        var end = Math.Min(_items.Count, _scrollIndex + _visibleItemCapacity);
         for (var i = _scrollIndex; i < end; i++)
             if (_items[i].AnimT > maxT) maxT = _items[i].AnimT;
         if (maxT < 0.04f)
@@ -2078,7 +2103,7 @@ internal sealed class RadialMenuPopup : Form
 
     private void DrawListScrollbar(Graphics g, int alpha)
     {
-        if (_listClipBounds.IsEmpty || _items.Count <= MaxVisibleItems)
+        if (_listClipBounds.IsEmpty || !CanScrollList)
             return;
 
         var trackW = S(3.5f);
@@ -2092,7 +2117,7 @@ internal sealed class RadialMenuPopup : Form
         using (var path = CreateRoundRect(track, trackW / 2f))
             g.FillPath(brush, path);
 
-        var visibleRatio = MaxVisibleItems / (float)_items.Count;
+        var visibleRatio = _visibleItemCapacity / (float)_items.Count;
         var thumbH = Math.Max(S(18f), trackH * visibleRatio);
         var maxScroll = MaxScrollIndex;
         var thumbT = maxScroll <= 0 ? 0f : _scrollIndex / (float)maxScroll;
@@ -2122,7 +2147,7 @@ internal sealed class RadialMenuPopup : Form
         var corner = S(10f);
         var accentBarW = S(3f);
         var visStart = _scrollIndex;
-        var visEnd = Math.Min(_items.Count, _scrollIndex + MaxVisibleItems);
+        var visEnd = Math.Min(_items.Count, _scrollIndex + _visibleItemCapacity);
 
         // 单遍绘制；高亮项最后画
         var hotIndex = _hoverItemIndex;
@@ -2498,6 +2523,17 @@ internal sealed class RadialMenuPopup : Form
         public byte AlphaFormat;
     }
 
+    [StructLayout(LayoutKind.Sequential)]
+    private struct BitmapInfo
+    {
+        public uint Size;
+        public int Width, Height;
+        public ushort Planes, BitCount;
+        public uint Compression, ImageSize;
+        public int XPelsPerMeter, YPelsPerMeter;
+        public uint ColorsUsed, ColorsImportant;
+    }
+
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
 
@@ -2527,6 +2563,10 @@ internal sealed class RadialMenuPopup : Form
 
     [DllImport("gdi32.dll", SetLastError = true)]
     private static extern IntPtr CreateCompatibleDC(IntPtr hDC);
+
+    [DllImport("gdi32.dll", SetLastError = true)]
+    private static extern IntPtr CreateDIBSection(IntPtr hdc, ref BitmapInfo info, uint usage,
+        out IntPtr pixels, IntPtr section, uint offset);
 
     [DllImport("gdi32.dll", SetLastError = true)]
     private static extern bool DeleteDC(IntPtr hdc);

@@ -68,6 +68,11 @@ static class MiddleClickChecks
                 }
                 void AssertLayout(Form panel)
                 {
+                    var recent = Field<Button>(host, "_recent");
+                    var query = Field<TextBox>(host, "_query");
+                    var hint = Field<Label>(host, "_search");
+                    Check(recent.Parent!.ClientRectangle.Contains(recent.Bounds) && query.Right <= recent.Left && recent.Right <= hint.Left,
+                        "Recent folders button overlaps search input or hint");
                     Check(host.Visible && panel.Visible && actions.Visible, $"All three areas must be visible (bar={host.Visible}, list={panel.Visible}, actions={actions.Visible})");
                     var area = Screen.FromControl(host).WorkingArea;
                     foreach (var bounds in new[] { host.Bounds, panel.Bounds, actions.Bounds })

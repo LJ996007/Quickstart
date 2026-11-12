@@ -33,6 +33,27 @@ static class FileSearchNavigationChecks
         }
     }
     static string? Folder(FileSearchPopup popup) => Field<string?>(popup, "_folder");
+    static void CheckRowOnlyRedraw(FileSearchPopup popup)
+    {
+        var list = Field<ListView>(popup, "_results");
+        var selected = list.SelectedItems[0];
+        var rowHeight = selected.Bounds.Height;
+        using var bitmap = new Bitmap(list.ClientSize.Width, rowHeight);
+        using var graphics = Graphics.FromImage(bitmap);
+        graphics.Clear(Color.Magenta);
+        var args = new DrawListViewItemEventArgs(graphics, selected,
+            new Rectangle(0, 0, bitmap.Width, rowHeight), selected.Index, ListViewItemStates.Selected);
+        // A native hover repaint may raise only this event, without any DrawSubItem calls.
+        typeof(ListView).GetMethod("OnDrawItem", Private)!.Invoke(list, [args]);
+        var left = 0;
+        foreach (ColumnHeader column in list.Columns)
+        {
+            if (column.Width > 4 && left + column.Width <= bitmap.Width)
+                Check(bitmap.GetPixel(left + column.Width / 2, rowHeight - 3).ToArgb() == Color.FromArgb(236, 244, 255).ToArgb(),
+                    "Row-only redraw did not preserve selection across every column");
+            left += column.Width;
+        }
+    }
     static FileSearchResult[] Items(FileSearchPopup popup) => Field<ListView>(popup, "_results").Items
         .Cast<ListViewItem>().Select(item => (FileSearchResult)item.Tag!).ToArray();
     static string? Selected(FileSearchPopup popup) => Field<ListView>(popup, "_results").SelectedItems
@@ -72,6 +93,7 @@ static class FileSearchNavigationChecks
             [new FileSearchResult(empty, true, null, DateTime.Today), new FileSearchResult(root, true, null, DateTime.Today)]);
         Call(popup, "ShowPage", page, root);
         Check(Selected(popup) == root, "Fixture selection was not set");
+        CheckRowOnlyRedraw(popup);
     }
     static void CheckRestoredSearch(FileSearchPopup popup, string root)
     {
@@ -229,6 +251,11 @@ static class FileSearchNavigationChecks
         }
         popup.ClientSize = new Size(4000, 2500);
         popup.ShowSearch("");
+        Check(!popup.TopMost, "Search should not be pinned by default");
+        Field<Button>(popup, "_pin").PerformClick();
+        Check(popup.TopMost, "Pin button did not enable topmost");
+        Field<Button>(popup, "_pin").PerformClick();
+        Check(!popup.TopMost, "Pin button did not disable topmost");
         var area = Screen.FromPoint(Cursor.Position).WorkingArea;
         Check(area.Contains(popup.Bounds), $"ShowSearch extends outside the work area: popup={popup.Bounds}, area={area}");
         Check(popup.MinimumSize.Width <= area.Width && popup.MinimumSize.Height <= area.Height, "Minimum size exceeds the current work area");
@@ -236,11 +263,64 @@ static class FileSearchNavigationChecks
     }
     static async Task Checks(FileSearchPopup popup, string root, string child, string empty, string textFile, string pagingRoot)
     {
+        var settings = Field<ConfigManager>(popup, "_config");
+        settings.Config.FileDialogNavigationEnabled = true;
+        var firstFrameIsFolder = false;
+        EventHandler firstFrame = (_, _) =>
+        {
+            if (popup.Visible) firstFrameIsFolder = Folder(popup) == root && Field<TableLayoutPanel>(popup, "_navigation").Visible;
+        };
+        popup.VisibleChanged += firstFrame;
+        await popup.ShowFolderAsync(root);
+        popup.VisibleChanged -= firstFrame;
+        Check(firstFrameIsFolder, "Recent folder first appeared as search mode before switching layouts");
+        Check(popup.Visible && Folder(popup) == root && Items(popup).Length == 4,
+            "Recent folder entry did not open inside the local browser");
+        Check(!Field<bool>(popup, "_detectingDialog") && !Field<CheckBox>(popup, "_dialogMode").Visible,
+            "Recent folder entry incorrectly activated external file-dialog navigation");
+        settings.Config.FileDialogNavigationEnabled = false;
+        Console.WriteLine("PASS recent-folder entry: internal browsing with file-dialog navigation bypassed.");
         popup.ShowSearch("");
         SeedSearch(popup, root, empty);
         Call(popup, "OpenSelected");
         await Until(() => Folder(popup) == root && Items(popup).Length == 4, "Folder activation did not show its direct children");
         Check(popup.Visible, "Folder activation hid the plugin");
+        var recentReader = typeof(FileSearchPopup).Assembly.GetType("Quickstart.Core.WindowsRecentFolders")!;
+        var recent = await ((Task<IReadOnlyList<FolderDirectory>>)recentReader.GetMethod("ReadAsync")!.Invoke(null, null)!).WaitAsync(TimeSpan.FromSeconds(20));
+        Check(recent.Count <= 20 && recent.Select(f => f.Path).Distinct(StringComparer.OrdinalIgnoreCase).Count() == recent.Count &&
+            recent.All(f => Path.IsPathFullyQualified(f.Path)), "Windows recent folders are invalid or duplicated");
+        Console.WriteLine($"PASS Windows recent folders: read {recent.Count} unique directory entries.");
+        var hoverList = Field<ListView>(popup, "_results");
+        hoverList.Refresh();
+        await Task.Delay(50);
+        var hoverDraws = 0;
+        DrawListViewItemEventHandler observer = (_, _) => hoverDraws++;
+        hoverList.DrawItem += observer;
+        var beforeHover = Selected(popup);
+        foreach (ListViewItem row in hoverList.Items)
+        {
+            var point = new Point(30, row.Bounds.Top + row.Bounds.Height / 2);
+            object?[] move = [Message.Create(hoverList.Handle, 0x200, IntPtr.Zero, (IntPtr)(point.X | point.Y << 16))];
+            hoverList.GetType().GetMethod("WndProc", Private)!.Invoke(hoverList, move);
+        }
+        await Task.Delay(100);
+        hoverList.DrawItem -= observer;
+        Check(hoverDraws == 0 && Selected(popup) == beforeHover, "Passive hover repainted labels or changed selection");
+        Console.WriteLine("PASS passive hover: no native label repaint and selection retained.");
+        // Use the launcher's existing no-op Text entry to exercise a successful return
+        // from Open without opening an external document application during the test.
+        var config = Field<ConfigManager>(popup, "_config");
+        var noOpEntry = new Quickstart.Models.QuickEntry { Name = "Open lifetime fixture", Path = textFile,
+            Type = Quickstart.Models.EntryType.Text };
+        config.Config.Entries.Add(noOpEntry);
+        try
+        {
+            Select(popup, textFile);
+            Call(popup, "OpenSelected");
+            Check(popup.Visible && Folder(popup) == root && Selected(popup) == textFile,
+                "Opening a file hid the search window or lost its current location");
+        }
+        finally { config.Config.Entries.Remove(noOpEntry); }
         Check(Items(popup).All(item => Path.GetDirectoryName(item.FullPath) == root), "Folder browser returned recursive descendants");
         Check(Items(popup).Count(item => item.IsFolder) == 2 && Items(popup).Count(item => !item.IsFolder) == 2,
             "Search folder-only filter leaked into the folder listing");

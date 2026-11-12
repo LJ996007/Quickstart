@@ -39,6 +39,9 @@ public static class FormStyler
 
     private static void UpdateRoundedRegionIfNeeded(Form form, int logicalCornerRadius)
     {
+        // Constructor-time layout must not create the entire native window tree
+        // merely to update a corner. HandleCreated applies the final appearance.
+        if (!form.IsHandleCreated) return;
         if (TryApplySystemRoundedCorners(form.Handle))
             return;
 

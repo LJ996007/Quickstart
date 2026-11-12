@@ -11,7 +11,7 @@ public sealed class OfficePreviewPane : UserControl
 {
     private const string Origin = "https://quickstart-preview.invalid";
     private readonly Label _title = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
-        MinimumSize = new Size(0, 32), Margin = Padding.Empty, Visible = false };
+        Margin = Padding.Empty, Visible = false };
     private readonly Label _message = new() { Dock = DockStyle.Fill, Padding = new Padding(24), Text = "选择文件预览",
         TextAlign = ContentAlignment.MiddleCenter, BackColor = UiTheme.SurfaceAlt, ForeColor = UiTheme.TextSecondary };
     private readonly Label _hint = new() { Dock = DockStyle.Fill, AutoSize = true, MinimumSize = new Size(0, 28),
@@ -19,8 +19,10 @@ public sealed class OfficePreviewPane : UserControl
     private readonly Button _copy = new() { Text = "复制选中", AutoSize = true, Enabled = false, Visible = false };
     private readonly Button _copyAll = new() { Text = "复制全文", AutoSize = true, Enabled = false, Visible = false };
     private readonly Button _open = new() { Text = "打开", AccessibleName = "用默认程序打开", AutoSize = true, Enabled = false };
-    private readonly TableLayoutPanel _toolbar = new() { Dock = DockStyle.Fill, AutoSize = true, ColumnCount = 4,
+    private readonly TableLayoutPanel _toolbar = new() { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1,
         Margin = Padding.Empty, Visible = false };
+    private readonly TableLayoutPanel _layout = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
+    private bool _sizingHeader;
     private readonly Panel _body = new() { Dock = DockStyle.Fill, Margin = Padding.Empty, BackColor = UiTheme.SurfaceAlt };
     private readonly ToolTip _toolTips = new();
     private WebView2? _web;
@@ -50,31 +52,59 @@ public sealed class OfficePreviewPane : UserControl
         {
             UiTheme.StyleFlatButton(button, UiTheme.Card);
             button.Dock = DockStyle.Fill;
-            button.MinimumSize = new Size(0, 36);
-            button.Padding = new Padding(10, 0, 10, 0);
-            button.Margin = button == _open ? Padding.Empty : new Padding(0, 0, 8, 0);
+            button.AutoSize = false;
+            button.TextChanged += (_, _) => ApplyHeaderMetrics();
         }
-        _toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
-        _toolbar.Controls.Add(_copy, 0, 0);
-        _toolbar.Controls.Add(_copyAll, 1, 0);
+        for (var i = 0; i < 3; i++) _toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _toolbar.Controls.Add(_title, 0, 0);
+        _toolbar.Controls.Add(_copy, 1, 0);
+        _toolbar.Controls.Add(_copyAll, 2, 0);
         _toolbar.Controls.Add(_open, 3, 0);
-        var layout = new TableLayoutPanel { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 4, Margin = Padding.Empty };
-        layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
-        layout.Controls.Add(_title, 0, 0); layout.Controls.Add(_toolbar, 0, 1);
-        layout.Controls.Add(_body, 0, 2); layout.Controls.Add(_hint, 0, 3);
-        _body.Controls.Add(_message); Controls.Add(layout);
+        _layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
+        _layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
+        _layout.Controls.Add(_toolbar, 0, 0);
+        _layout.Controls.Add(_body, 0, 1); _layout.Controls.Add(_hint, 0, 2);
+        _body.Controls.Add(_message); Controls.Add(_layout);
         _toolTips.SetToolTip(_open, "用默认程序打开文件");
         _hint.TextChanged += (_, _) => _hint.Visible = _hint.Text.Length > 0;
         _open.Click += (_, _) => OpenRequested?.Invoke(this, EventArgs.Empty);
         _copy.Click += async (_, _) => await CopyAsync(false);
         _copyAll.Click += async (_, _) => await CopyAsync(true);
+    }
+
+    private void ApplyHeaderMetrics()
+    {
+        if (_sizingHeader || _layout.RowStyles.Count == 0) return;
+        _sizingHeader = true;
+        try
+        {
+            int S(int value) => (int)Math.Round(value * DeviceDpi / 96d);
+            _layout.RowStyles[0].Height = _path == null ? 0 : S(40);
+            _toolbar.Margin = new Padding(0, 0, 0, S(4));
+            foreach (var button in new[] { _copy, _copyAll, _open })
+            {
+                button.MinimumSize = Size.Empty;
+                button.Size = new Size(TextRenderer.MeasureText(button.Text, button.Font).Width + S(20), S(36));
+                button.Margin = new Padding(S(8), 0, 0, 0);
+            }
+        }
+        finally { _sizingHeader = false; }
+    }
+
+    protected override void OnLayout(LayoutEventArgs e)
+    {
+        ApplyHeaderMetrics();
+        base.OnLayout(e);
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs e)
+    {
+        base.OnDpiChangedAfterParent(e);
+        ApplyHeaderMetrics();
     }
 
     public async Task WarmUpAsync()
@@ -158,6 +188,7 @@ public sealed class OfficePreviewPane : UserControl
         _copy.Enabled = _copyAll.Enabled = _open.Enabled = false;
         _title.Text = "";
         _title.Visible = _toolbar.Visible = _copy.Visible = _copyAll.Visible = false;
+        ApplyHeaderMetrics();
         _body.Margin = Padding.Empty;
         _toolTips.SetToolTip(_title, "");
         _hint.Text = "";
@@ -173,7 +204,8 @@ public sealed class OfficePreviewPane : UserControl
         _open.Enabled = true;
         _title.Text = Path.GetFileName(path);
         _title.Visible = _toolbar.Visible = true;
-        _body.Margin = new Padding(0, (int)Math.Round(8 * DeviceDpi / 96d), 0, 0);
+        _body.Margin = Padding.Empty;
+        ApplyHeaderMetrics();
         _toolTips.SetToolTip(_title, path);
         if (!OfficePreviewDocument.IsSupported(path)) { ShowMessage("此类型暂不支持预览，请双击结果或用默认程序打开。"); return; }
         var revision = _revision;

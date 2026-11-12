@@ -80,7 +80,7 @@ internal sealed class FileSearchComboBox : ComboBox
     }
 }
 
-internal enum FileSearchGlyph { Back, Up, Maximize, Restore, Close }
+internal enum FileSearchGlyph { Back, Up, Maximize, Restore, Close, Pin }
 
 /// <summary>Small vector buttons retain native Button keyboard and accessibility behavior.</summary>
 internal sealed class FileSearchIconButton : Button
@@ -118,6 +118,11 @@ internal sealed class FileSearchIconButton : Button
         using var pen = new Pen(Enabled ? UiTheme.TextSecondary : UiTheme.TextDisabled, 1.5f * scale);
         switch (Glyph)
         {
+            case FileSearchGlyph.Pin:
+                e.Graphics.DrawLine(pen, x - d, y - d, x + d, y - d);
+                e.Graphics.DrawLines(pen, new PointF[] { new(x - d / 2, y - d), new(x - d / 2, y), new(x - d, y + d / 2), new(x + d, y + d / 2), new(x + d / 2, y), new(x + d / 2, y - d) });
+                e.Graphics.DrawLine(pen, x, y + d / 2, x, y + d * 1.5f);
+                break;
             case FileSearchGlyph.Back:
                 e.Graphics.DrawLines(pen, new PointF[] { new(x, y - d), new(x - d, y), new(x, y + d) });
                 e.Graphics.DrawLine(pen, x - d, y, x + d, y);

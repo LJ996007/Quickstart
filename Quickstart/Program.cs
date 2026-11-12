@@ -52,8 +52,7 @@ static class Program
             // Already running — send request via pipe
             if (externalRequest != null)
                 SingleInstance.SendToRunningInstance(externalRequest);
-            else
-                SingleInstance.SendToRunningInstance("__SHOW__");
+            // Plain launches stay silent when the tray instance is already running.
             return;
         }
 
@@ -261,6 +260,8 @@ static class Program
         var initialUiPrewarmed = false;
         var deferredStartupDone = false;
         var aiPopupPrewarmTimer = new System.Windows.Forms.Timer { Interval = 3000 };
+        var popupPrewarmTimer = new System.Windows.Forms.Timer { Interval = 600 };
+        var popupPrewarmPhase = 0;
 
         void PostToUi(Action action)
         {
@@ -383,6 +384,17 @@ static class Program
             {
                 middleClickPopup = new MiddleClickPopup();
                 middleClickPopup.SearchRequested += (query, source) => ShowFileSearch(query, source);
+                middleClickPopup.FolderRequested += async (folder, _) =>
+                {
+                    HideInputPanels();
+                    try
+                    {
+                        if (fileSearchPopup == null || fileSearchPopup.IsDisposed)
+                            fileSearchPopup = new FileSearchPopup(configManager, launcher);
+                        await fileSearchPopup.ShowFolderAsync(folder);
+                    }
+                    catch (Exception ex) { trayIcon.ShowBalloon("最近目录", ex.Message, ToolTipIcon.Warning); }
+                };
             }
             return middleClickPopup;
         }
@@ -505,6 +517,8 @@ static class Program
             gestureMoveTimer.Dispose();
             aiPopupPrewarmTimer.Stop();
             aiPopupPrewarmTimer.Dispose();
+            popupPrewarmTimer.Stop();
+            popupPrewarmTimer.Dispose();
             mouseHook.Dispose();
             middleClickPopup?.Dispose();
             fileSearchPopup?.Dispose();
@@ -519,6 +533,33 @@ static class Program
             aiPopupPrewarmTimer.Stop();
             if (ShouldPrewarmAiPopup(configManager.Config))
                 _ = EnsureAiPopup();
+        };
+        popupPrewarmTimer.Tick += (_, _) =>
+        {
+            if (settingsDialogOpen || Application.OpenForms.Cast<Form>().Any(form => form.Visible)) return;
+            try
+            {
+                PopupWarmup.Run(() =>
+                {
+                    switch (popupPrewarmPhase++)
+                    {
+                        case 0:
+                            _ = EnsureMainPopup();
+                            break;
+                        case 1:
+                            if (configManager.Config.MiddleClickEnabled)
+                                EnsureMiddleClickPopup().Prewarm(EnsureMainPopup(), EnsureAiActionPicker(), Cursor.Position);
+                            break;
+                        default:
+                            fileSearchPopup ??= new FileSearchPopup(configManager, launcher);
+                            PopupWarmup.CreateHiddenHandles(fileSearchPopup);
+                            popupPrewarmTimer.Stop();
+                            Perf($"popup-prewarm-done; visible={Application.OpenForms.Cast<Form>().Count(form => form.Visible)}");
+                            break;
+                    }
+                });
+            }
+            catch { popupPrewarmTimer.Stop(); } // Optional warmup must never block normal opening.
         };
         Application.Idle += PrewarmInitialUi;
         Application.Idle += RunDeferredStartupOnce;
@@ -611,22 +652,9 @@ static class Program
 
             initialUiPrewarmed = true;
             Application.Idle -= PrewarmInitialUi;
-            // 主弹窗和动作选择器体积较小，先创建句柄并以隐藏状态跑一次 RefreshList，
-            // 把图标提取/布局测量挪到空闲期，首次手势与后续手势耗时基本一致。
-            var popup = EnsureMainPopup();
-            try
-            {
-                if (configManager.Config.MiddleClickEnabled)
-                    EnsureMiddleClickPopup().Prewarm(popup, EnsureAiActionPicker(), Cursor.Position);
-                else
-                    popup.RefreshList();
-            }
-            catch
-            {
-                // 预热失败不影响后续正常显示
-            }
-
-            _ = EnsureAiActionPicker();
+            // Spread hidden native-handle creation over idle ticks. Never Show a
+            // popup as a warmup: tray startup must remain silent and keep focus.
+            popupPrewarmTimer.Start();
             // AI 编辑窗口较重；仅在用户配置了 API 类动作时预热
             if (ShouldPrewarmAiPopup(configManager.Config))
                 aiPopupPrewarmTimer.Start();
