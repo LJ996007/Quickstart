@@ -3402,6 +3402,7 @@ public sealed class MainPopup : Form
         PrepareAtGesturePoint(screenPt, sourceWindow);
         if (MiddleClickHost == null) PopupMotion.SlideIn(this, direction: +1);
         Show();
+        Refresh();
     }
 
     internal void PrepareAtGesturePoint(Point screenPt, IntPtr sourceWindow = default)

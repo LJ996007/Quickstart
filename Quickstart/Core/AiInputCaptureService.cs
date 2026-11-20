@@ -32,9 +32,11 @@ public sealed class AiInputCaptureService
     private const ushort VkC = 0x43;
 
     // 激活来源窗口并捕获其选中内容（供左滑等场景复用，无需弹出 AI 面板）。在 UI 线程调用。
-    public async Task<AiCapturedInput> CaptureFromSourceAsync(IntPtr sourceWindow, CancellationToken token, bool restoreClipboard = true)
+    public async Task<AiCapturedInput> CaptureFromSourceAsync(IntPtr sourceWindow, CancellationToken token,
+        bool restoreClipboard = true, bool waitForRightButtonRelease = true)
     {
-        await WaitForRightButtonReleaseAsync(token);
+        if (waitForRightButtonRelease)
+            await WaitForRightButtonReleaseAsync(token);
         token.ThrowIfCancellationRequested();
         await ActivateWindowAsync(sourceWindow, token);
         token.ThrowIfCancellationRequested();

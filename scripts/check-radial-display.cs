@@ -48,6 +48,12 @@ static class RadialDisplayCheck
         using var popup = (Form)Activator.CreateInstance(PopupType, config, new ProcessLauncher(config), null)!;
         var screen = Screen.PrimaryScreen!;
         PopupType.GetMethod("ShowAtGesturePoint")!.Invoke(popup, [new Point(screen.WorkingArea.Left + 5, screen.WorkingArea.Top + 5), IntPtr.Zero]);
+        Check(popup.Visible && (bool)Get(popup, "_gestureMode"), "Popup must already be visible before gesture release");
+        var firstFrame = (Bitmap)Get(popup, "_layerBmp");
+        var firstCenter = Point.Round((PointF)Get(popup, "_center"));
+        Check(firstFrame.GetPixel(firstCenter.X, firstCenter.Y).A > 0, "First gesture frame must be painted before returning to the message loop");
+        Check(Items(popup).Length > 0 && Items(popup).All(item => Property<float>(item, "AnimT") == 1f),
+            "Entries must be visible on the first gesture frame");
         Application.DoEvents();
         Call(popup, "RenderLayered", false);
         var bitmap = (Bitmap)Get(popup, "_layerBmp");

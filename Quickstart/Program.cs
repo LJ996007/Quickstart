@@ -87,6 +87,7 @@ static class Program
         MiddleClickPopup? middleClickPopup = null;
         IntPtr leftGestureSourceWindow = IntPtr.Zero;
         CancellationTokenSource? everythingSearchCts = null;
+        CancellationTokenSource? everythingGestureSearchCts = null;
         var settingsDialogOpen = false;
         var trayIcon = new TrayIcon();
         launcher.NavigationFailed += message => trayIcon.ShowBalloon("目录跳转", message, ToolTipIcon.Warning);
@@ -428,6 +429,7 @@ static class Program
                     if (configManager.Config.LeftDragAction == LeftDragAction.EverythingSearch)
                     {
                         if (aiActionPicker is { Visible: true }) aiActionPicker.Hide();
+                        _ = SearchSelectedTextInEverythingAsync(sourceWindow, duringGesture: true);
                     }
                     else
                     {
@@ -480,11 +482,6 @@ static class Program
                     radialMenuPopup.EnterInteractiveMode();
                 else if (direction == RightDragDirection.Right && mainPopup is { Visible: true })
                     mainPopup.EnterInteractiveMode();
-                else if (direction == RightDragDirection.Left
-                    && configManager.Config.LeftDragAction == LeftDragAction.EverythingSearch)
-                {
-                    _ = SearchSelectedTextInEverythingAsync(leftGestureSourceWindow);
-                }
                 else if (direction == RightDragDirection.Left && aiActionPicker is { Visible: true })
                 {
                     var selection = aiActionPicker.TryReleaseAtScreenPoint(pt);
@@ -495,6 +492,8 @@ static class Program
                         aiActionPicker.EnterInteractiveMode();
                 }
 
+                if (direction == RightDragDirection.Left)
+                    everythingGestureSearchCts = null;
                 Interlocked.Exchange(ref gestureMove.Pending, 0);
                 gestureMoveTimer.Stop();
             });
@@ -503,6 +502,8 @@ static class Program
         {
             PostGestureAction(() =>
             {
+                everythingGestureSearchCts?.Cancel();
+                everythingGestureSearchCts = null;
                 Interlocked.Exchange(ref gestureMove.Pending, 0);
                 gestureMoveTimer.Stop();
                 if (mainPopup is { Visible: true }) mainPopup.Hide();
@@ -766,13 +767,14 @@ static class Program
             }
         }
 
-        async Task SearchSelectedTextInEverythingAsync(IntPtr sourceWindow)
+        async Task SearchSelectedTextInEverythingAsync(IntPtr sourceWindow, bool duringGesture = false)
         {
             everythingSearchCts?.Cancel();
-            everythingSearchCts?.Dispose();
             // 捕获选区 + 启动/前置 Everything 需要更长时间（微信切前台 + 单实例 IPC）
             var cts = new CancellationTokenSource(TimeSpan.FromSeconds(12));
             everythingSearchCts = cts;
+            if (duringGesture)
+                everythingGestureSearchCts = cts;
 
             // 捕获期间抑制剪贴板历史：避免 Clear/Ctrl+C/Restore 触发监听与捕获抢同一把剪贴板锁
             clipboardHistory.BeginCaptureSuppress();
@@ -781,7 +783,7 @@ static class Program
                 var captured = await aiInputCapture.CaptureFromSourceAsync(
                     sourceWindow,
                     cts.Token,
-                    restoreClipboard: true);
+                    waitForRightButtonRelease: !duringGesture);
 
                 cts.Token.ThrowIfCancellationRequested();
                 if (captured.Kind != AiCapturedInputKind.Text || string.IsNullOrWhiteSpace(captured.Text))
@@ -803,6 +805,8 @@ static class Program
                 clipboardHistory.EndCaptureSuppress();
                 if (ReferenceEquals(everythingSearchCts, cts))
                     everythingSearchCts = null;
+                if (ReferenceEquals(everythingGestureSearchCts, cts))
+                    everythingGestureSearchCts = null;
                 cts.Dispose();
             }
         }

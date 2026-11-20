@@ -305,6 +305,7 @@ internal sealed class AiActionPickerPopup : Form
         if (MiddleClickHost == null) PopupMotion.SlideIn(this, direction: -1);
         if (!Visible) Show();
         HighlightAtScreenPoint(screenPt);
+        Refresh();
     }
 
     internal void PrepareAtGesturePoint(Point screenPt)

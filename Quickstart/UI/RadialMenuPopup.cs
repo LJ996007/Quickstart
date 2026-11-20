@@ -255,7 +255,9 @@ internal sealed class RadialMenuPopup : Form
         RebuildGroupSlots();
         if (_activeTab.HasValue)
             PersistLastView(_activeTab.Value, _activeGroup);
-        LoadItemsForActiveTab(restartAnim: true);
+        _animating = false;
+        _animTimer.Stop();
+        LoadItemsForActiveTab(restartAnim: false);
 
         var wa = screen.WorkingArea;
         // 手势点对齐到中心圆，松手后即可点选分类与列表
@@ -265,8 +267,10 @@ internal sealed class RadialMenuPopup : Form
         y = Math.Max(wa.Top, Math.Min(y, wa.Bottom - Height));
         Location = new Point(x, y);
 
+        // 首帧在显示前就提交给分层窗口，避免排队绘制时先收到松键事件。
+        _ = Handle;
+        RenderLayered(fast: false);
         Show();
-        RequestRender();
     }
 
     private void CaptureDeliveryTarget(IntPtr preferred = default)

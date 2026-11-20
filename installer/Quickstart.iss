@@ -1,6 +1,6 @@
 #define MyAppName "Quickstart"
 #ifndef MyAppVersion
-  #define MyAppVersion "1.0.26"
+  #define MyAppVersion "1.0.27"
 #endif
 #ifndef MyPublishDir
   #define MyPublishDir "..\\artifacts\\release\\v{#MyAppVersion}\\win-x64\\publish"
