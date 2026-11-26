@@ -68,7 +68,11 @@ static class RadialFolderBrowserChecks
         config.Config.RememberLastView = false;
         config.Config.Entries.Clear();
         for (var i = 0; i < 25; i++)
-            config.Config.Entries.Add(new QuickEntry { Name = $"目录 {i:00}", Path = root, Type = EntryType.Folder });
+            config.Config.Entries.Add(new QuickEntry
+            {
+                Name = i == 5 ? "轮盘长标题显示测试文件夹名称继续显示" : $"目录 {i:00}",
+                Path = root, Type = EntryType.Folder
+            });
         var wheelType = typeof(ProcessLauncher).Assembly.GetType("Quickstart.UI.RadialMenuPopup")!;
         using var wheel = (Form)Activator.CreateInstance(wheelType, config, new ProcessLauncher(config), null)!;
         var screen = Screen.PrimaryScreen!;
@@ -86,6 +90,16 @@ static class RadialFolderBrowserChecks
             "The right-hand folder action must use about a third of the row without taking over the name");
         var point = new Point((int)Math.Ceiling(arrow.Left) + 4, (int)(arrow.Top + arrow.Height / 2));
         Check(row.Right - point.X > 30f * wheel.DeviceDpi / 96f, "The test click must lie outside the old arrow region");
+        Call(wheel, "RenderLayered", false);
+        var wheelFrame = Field<Bitmap>(wheel, "_layerBmp");
+        var textStart = point.X;
+        var textEnd = (int)(row.Right - 36f * wheel.DeviceDpi / 96f);
+        Check(Enumerable.Range(textStart, textEnd - textStart).Any(x =>
+            Enumerable.Range((int)row.Top + 5, (int)(row.Height * .43f)).Any(y =>
+            {
+                var pixel = wheelFrame.GetPixel(x, y);
+                return pixel.A > 240 && pixel.R < 150 && pixel.G < 150 && pixel.B < 150;
+            })), "The widened hit area must still render the folder name");
         Call(wheel, "OnInteractiveMouseDown", null, new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0));
 
         var browser = Field<Form>(wheel, "_folderBrowser");

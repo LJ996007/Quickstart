@@ -2322,13 +2322,11 @@ internal sealed class RadialMenuPopup : Form
                 var textRight = bounds.Right - S(10);
                 if (FolderForItem(item) != null)
                 {
-                    var arrow = FolderArrowBounds(bounds);
-                    textRight = arrow.Left;
-                    var x = arrow.Right - S(15);
-                    var y = arrow.Top + arrow.Height / 2f;
+                    // The larger click target overlaps the text area, so reserve only the space for the chevron.
+                    textRight = bounds.Right - S(30);
+                    var x = bounds.Right - S(15);
+                    var y = bounds.Top + bounds.Height / 2f;
                     var size = S(4);
-                    using var divider = new Pen(Color.FromArgb(Math.Min(255, alpha), UiTheme.BorderSubtle), S(1));
-                    g.DrawLine(divider, arrow.Left, arrow.Top + S(10), arrow.Left, arrow.Bottom - S(10));
                     using var arrowPen = new Pen(Color.FromArgb(alpha, hot ? UiTheme.AccentText : UiTheme.TextSecondary), S(1.5f));
                     g.DrawLines(arrowPen, new PointF[] { new(x - size / 2, y - size), new(x + size / 2, y), new(x - size / 2, y + size) });
                 }
