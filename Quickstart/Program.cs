@@ -124,7 +124,7 @@ static class Program
             // 正在显示的对话框（设置等）可能因分辨率变小落到屏幕外，夹回可见工作区。
             foreach (Form form in Application.OpenForms)
             {
-                if (form is MainPopup or RadialMenuPopup or AiPopup or AiActionPickerPopup or MiddleClickPopup or RegionCaptureOverlay)
+                if (form is MainPopup or RadialMenuPopup or RadialFolderBrowserPopup or AiPopup or AiActionPickerPopup or MiddleClickPopup or RegionCaptureOverlay)
                     continue;
                 if (form is { IsDisposed: false, Visible: true } && form.Opacity >= 1f && form.Width > 1)
                     EnsureFormVisibleOnScreen(form);
@@ -355,7 +355,7 @@ static class Program
         {
             middleClickPopup?.HidePanels();
             mainPopup?.Hide();
-            radialMenuPopup?.Hide();
+            radialMenuPopup?.HidePanels();
             aiActionPicker?.Hide();
             aiPopup?.Hide();
             fileSearchPopup?.Hide();
@@ -422,7 +422,7 @@ static class Program
                 if (direction == RightDragDirection.Left)
                 {
                     if (mainPopup is { Visible: true }) mainPopup.Hide();
-                    if (radialMenuPopup is { Visible: true }) radialMenuPopup.Hide();
+                    radialMenuPopup?.HidePanels();
                     if (aiPopup is { Visible: true }) aiPopup.Hide();
 
                     leftGestureSourceWindow = sourceWindow;
@@ -450,7 +450,7 @@ static class Program
                     }
                     else
                     {
-                        if (radialMenuPopup is { Visible: true }) radialMenuPopup.Hide();
+                        radialMenuPopup?.HidePanels();
                         EnsureMainPopup().ShowAtGesturePoint(pt, sourceWindow);
                     }
                 }
@@ -507,7 +507,7 @@ static class Program
                 Interlocked.Exchange(ref gestureMove.Pending, 0);
                 gestureMoveTimer.Stop();
                 if (mainPopup is { Visible: true }) mainPopup.Hide();
-                if (radialMenuPopup is { Visible: true }) radialMenuPopup.Hide();
+                radialMenuPopup?.HidePanels();
                 if (aiActionPicker is { Visible: true }) aiActionPicker.Hide();
             });
         };
@@ -522,6 +522,7 @@ static class Program
             popupPrewarmTimer.Dispose();
             mouseHook.Dispose();
             middleClickPopup?.Dispose();
+            radialMenuPopup?.Dispose();
             fileSearchPopup?.Dispose();
             everythingSearchCts?.Cancel();
             everythingSearchCts?.Dispose();

@@ -1,14 +1,14 @@
 namespace Quickstart.Core;
 
-/// <summary>Lists one directory from disk, including files that have not entered the search index.</summary>
+/// <summary>Reads directories from disk, including files that have not entered the search index.</summary>
 public static class LocalFolderBrowser
 {
     public static Task<FileSearchPage> ReadAsync(string folder, string filter, int kind, uint offset,
-        uint sort, CancellationToken token, string? selectedPath = null)
-        => Task.Run(() => Read(folder, filter, kind, offset, sort, token, selectedPath), token);
+        uint sort, CancellationToken token, string? selectedPath = null, bool includeSubfolders = false)
+        => Task.Run(() => Read(folder, filter, kind, offset, sort, token, selectedPath, includeSubfolders), token);
 
     private static FileSearchPage Read(string folder, string filter, int kind, uint offset,
-        uint sort, CancellationToken token, string? selectedPath = null)
+        uint sort, CancellationToken token, string? selectedPath, bool includeSubfolders)
     {
         token.ThrowIfCancellationRequested();
         var items = new List<FileSearchResult>();
@@ -21,21 +21,37 @@ public static class LocalFolderBrowser
             AttributesToSkip = 0,
             ReturnSpecialDirectories = false
         };
-        foreach (var entry in directory.EnumerateFileSystemInfos("*", options))
+        var pending = new Stack<DirectoryInfo>();
+        pending.Push(directory);
+        while (pending.TryPop(out var current))
         {
             token.ThrowIfCancellationRequested();
-            if (!entry.Name.Contains(filter, StringComparison.OrdinalIgnoreCase)) continue;
             try
             {
-                entry.Refresh();
-                if (!entry.Exists) continue;
-                var isFolder = (entry.Attributes & FileAttributes.Directory) != 0;
-                if ((kind == 1 && isFolder) || (kind == 2 && !isFolder)) continue;
-                items.Add(new FileSearchResult(entry.FullName, isFolder,
-                    isFolder ? null : (entry as FileInfo ?? new FileInfo(entry.FullName)).Length, entry.LastWriteTime));
+                foreach (var entry in current.EnumerateFileSystemInfos("*", options))
+                {
+                    token.ThrowIfCancellationRequested();
+                    var matches = entry.Name.Contains(filter, StringComparison.OrdinalIgnoreCase);
+                    if (!matches && (!includeSubfolders || entry is not DirectoryInfo)) continue;
+                    try
+                    {
+                        entry.Refresh();
+                        if (!entry.Exists) continue;
+                        var isFolder = (entry.Attributes & FileAttributes.Directory) != 0;
+                        // Search a link by its name, but don't follow it into a cycle or another tree.
+                        if (includeSubfolders && isFolder && entry is DirectoryInfo child &&
+                            ((entry.Attributes & FileAttributes.ReparsePoint) == 0 || child.LinkTarget == null))
+                            pending.Push(child);
+                        if (!matches || (kind == 1 && isFolder) || (kind == 2 && !isFolder)) continue;
+                        items.Add(new FileSearchResult(entry.FullName, isFolder,
+                            isFolder ? null : (entry as FileInfo ?? new FileInfo(entry.FullName)).Length, entry.LastWriteTime));
+                    }
+                    catch (IOException) { /* A child may disappear while being enumerated. */ }
+                    catch (UnauthorizedAccessException) { /* One unreadable entry must not hide its siblings. */ }
+                }
             }
-            catch (IOException) { /* A child may disappear while the folder is being enumerated. */ }
-            catch (UnauthorizedAccessException) { /* One unreadable entry must not hide its siblings. */ }
+            catch (IOException) when (current != directory) { /* Continue with the remaining directories. */ }
+            catch (UnauthorizedAccessException) when (current != directory) { /* Continue with accessible directories. */ }
         }
 
         token.ThrowIfCancellationRequested();

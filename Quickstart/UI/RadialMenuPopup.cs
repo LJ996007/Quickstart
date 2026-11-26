@@ -147,6 +147,7 @@ internal sealed class RadialMenuPopup : Form
 
     private Image? _webPlaceholder;
     private int _cachedGlyphSize;
+    private RadialFolderBrowserPopup? _folderBrowser;
     private TabKind? _activeTab;
     private TabKind? _hoverTab;
     private string _activeGroup = EntryQueries.AllGroupsLabel;
@@ -238,6 +239,9 @@ internal sealed class RadialMenuPopup : Form
 
     public void ShowAtGesturePoint(Point screenPt, IntPtr sourceWindow = default)
     {
+        if (_folderBrowser is { IsHandleCreated: true } && sourceWindow == _folderBrowser.Handle)
+            sourceWindow = _deliveryTargetWindow;
+        _folderBrowser?.Hide();
         CaptureDeliveryTarget(sourceWindow);
 
         // 先搬到目标显示器再算几何：窗口 DPI 由所在显示器决定，跨屏（尤其缩放不同）呼出时
@@ -442,6 +446,46 @@ internal sealed class RadialMenuPopup : Form
     public event Action? ShowFileSearch;
     public IntPtr SourceWindow => _deliveryTargetWindow;
 
+    public void HidePanels()
+    {
+        _folderBrowser?.Hide();
+        Hide();
+    }
+
+    private void BrowseFolder(string folder, string title)
+    {
+        if (_folderBrowser == null)
+        {
+            _folderBrowser = new RadialFolderBrowserPopup();
+            _folderBrowser.ReturnToWheel += () =>
+            {
+                if (IsDisposed) return;
+                RenderLayered(fast: false);
+                Show();
+                EnterInteractiveMode();
+            };
+            _folderBrowser.OpenItem += item => ExecuteEntry(new QuickEntry
+            {
+                Name = item.Name, Path = item.FullPath,
+                Type = item.IsFolder ? EntryType.Folder : EntryType.File
+            });
+        }
+
+        var anchor = RectangleToScreen(Rectangle.Round(_listPanelBounds));
+        Hide();
+        _folderBrowser.ShowFolder(folder, title, anchor);
+    }
+
+    private static string? FolderForItem(ItemSlot item) => item.Payload switch
+    {
+        QuickEntry { Type: EntryType.Folder } entry when !string.IsNullOrWhiteSpace(entry.Path) => entry.Path,
+        WindowsRecentItem { IsDirectory: true } recent => recent.LaunchPath,
+        _ => null
+    };
+
+    private RectangleF FolderArrowBounds(RectangleF row) =>
+        new(row.Right - S(30), row.Top, S(30), row.Height);
+
     private void EnterGestureMode()
     {
         _gestureMode = true;
@@ -489,7 +533,13 @@ internal sealed class RadialMenuPopup : Form
 
         if (itemIndex >= 0 && itemIndex < _items.Count)
         {
-            ExecutePayload(_items[itemIndex].Payload);
+            var item = _items[itemIndex];
+            if (FolderArrowBounds(item.TargetBounds).Contains(e.Location) && FolderForItem(item) is { } folder)
+            {
+                BrowseFolder(folder, item.Title);
+                return;
+            }
+            ExecutePayload(item.Payload);
             Hide();
             return;
         }
@@ -582,6 +632,7 @@ internal sealed class RadialMenuPopup : Form
     {
         if (disposing)
         {
+            _folderBrowser?.Dispose();
             if (_clipboardHistory != null) _clipboardHistory.Changed -= OnClipboardHistoryChanged;
             _animTimer.Stop();
             _animTimer.Dispose();
@@ -677,7 +728,11 @@ internal sealed class RadialMenuPopup : Form
     /// <summary>
     /// 分辨率变化 / 显示器热插拔 / DPI 变化后的实时适配（由显示环境监听触发，已回到 UI 线程）。
     /// </summary>
-    public void HandleDisplayEnvironmentChanged() => RefreshForDisplayEnvironment();
+    public void HandleDisplayEnvironmentChanged()
+    {
+        RefreshForDisplayEnvironment();
+        _folderBrowser?.RefreshDisplay();
+    }
 
     private float S(float logical) => logical * _dpiScale;
 
@@ -2236,7 +2291,18 @@ internal sealed class RadialMenuPopup : Form
                     contentLeft = ix + iconSize + S(8);
                 }
 
-                var textWidth = Math.Max(8f, bounds.Right - contentLeft - S(10));
+                var textRight = bounds.Right - S(10);
+                if (FolderForItem(item) != null)
+                {
+                    var arrow = FolderArrowBounds(bounds);
+                    textRight = arrow.Left;
+                    var x = arrow.Left + arrow.Width / 2f;
+                    var y = arrow.Top + arrow.Height / 2f;
+                    var size = S(4);
+                    using var arrowPen = new Pen(Color.FromArgb(alpha, hot ? UiTheme.AccentText : UiTheme.TextSecondary), S(1.5f));
+                    g.DrawLines(arrowPen, new PointF[] { new(x - size / 2, y - size), new(x + size / 2, y), new(x - size / 2, y + size) });
+                }
+                var textWidth = Math.Max(8f, textRight - contentLeft);
                 var titleRect = new RectangleF(contentLeft, bounds.Y + S(4), textWidth, bounds.Height * 0.48f);
                 using (var brush = new SolidBrush(Color.FromArgb(alpha, TitleColor)))
                 using (var sf = new StringFormat
