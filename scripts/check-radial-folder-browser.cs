@@ -82,7 +82,10 @@ static class RadialFolderBrowserChecks
         var slot = wheelItems[scroll];
         var row = (RectangleF)slot.GetType().GetProperty("TargetBounds")!.GetValue(slot)!;
         var arrow = (RectangleF)Call(wheel, "FolderArrowBounds", row)!;
-        var point = new Point((int)(arrow.Left + arrow.Width / 2), (int)(arrow.Top + arrow.Height / 2));
+        Check(arrow.Width >= row.Width / 3 && arrow.Width < row.Width / 2 && Math.Abs(row.Right - arrow.Right) < .1f,
+            "The right-hand folder action must use about a third of the row without taking over the name");
+        var point = new Point((int)Math.Ceiling(arrow.Left) + 4, (int)(arrow.Top + arrow.Height / 2));
+        Check(row.Right - point.X > 30f * wheel.DeviceDpi / 96f, "The test click must lie outside the old arrow region");
         Call(wheel, "OnInteractiveMouseDown", null, new MouseEventArgs(MouseButtons.Left, 1, point.X, point.Y, 0));
 
         var browser = Field<Form>(wheel, "_folderBrowser");
@@ -140,11 +143,13 @@ static class RadialFolderBrowserChecks
         WaitFor(() => Field<FileSearchPage?>(browser, "_page")?.Total == 1 && results.Items[0].Text == "合同.txt",
             "Grandchild contents did not load");
         Call(browser, "GoBack");
-        WaitFor(() => Field<string>(browser, "_folder") == year && results.Items.Count == 2,
+        WaitFor(() => Field<string>(browser, "_folder") == year && Field<FileSearchPage?>(browser, "_page")?.Total == 2,
             "Back lost the previous folder view");
         Call(browser, "GoBack");
-        WaitFor(() => Field<string>(browser, "_folder") == root && results.Items.Count == 7, "Back lost the root folder view");
-        Check(results.Items[0].Text == "2026", "The most recently visited directory must move above newer unvisited files");
+        WaitFor(() => Field<string>(browser, "_folder") == root && Field<FileSearchPage?>(browser, "_page")?.Total == 7,
+            "Back lost the root folder view");
+        Check(Field<FileSearchPage>(browser, "_page").Items[0].Name == "2026",
+            "The most recently visited directory must move above newer unvisited files");
 
         query.Text = "合同";
         WaitFor(() => status.Text == "未找到匹配项", "Current-layer search should not show nested files");

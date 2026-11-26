@@ -483,8 +483,11 @@ internal sealed class RadialMenuPopup : Form
         _ => null
     };
 
-    private RectangleF FolderArrowBounds(RectangleF row) =>
-        new(row.Right - S(30), row.Top, S(30), row.Height);
+    private RectangleF FolderArrowBounds(RectangleF row)
+    {
+        var width = Math.Min(S(96), row.Width * .38f);
+        return new RectangleF(row.Right - width, row.Top, width, row.Height);
+    }
 
     private void EnterGestureMode()
     {
@@ -2321,9 +2324,11 @@ internal sealed class RadialMenuPopup : Form
                 {
                     var arrow = FolderArrowBounds(bounds);
                     textRight = arrow.Left;
-                    var x = arrow.Left + arrow.Width / 2f;
+                    var x = arrow.Right - S(15);
                     var y = arrow.Top + arrow.Height / 2f;
                     var size = S(4);
+                    using var divider = new Pen(Color.FromArgb(Math.Min(255, alpha), UiTheme.BorderSubtle), S(1));
+                    g.DrawLine(divider, arrow.Left, arrow.Top + S(10), arrow.Left, arrow.Bottom - S(10));
                     using var arrowPen = new Pen(Color.FromArgb(alpha, hot ? UiTheme.AccentText : UiTheme.TextSecondary), S(1.5f));
                     g.DrawLines(arrowPen, new PointF[] { new(x - size / 2, y - size), new(x + size / 2, y), new(x - size / 2, y + size) });
                 }
