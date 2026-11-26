@@ -78,9 +78,9 @@ static class RadialDisplayCheck
         foreach (var grouped in new[] { true, false })
         {
             foreach (var entry in config.Config.Entries) entry.Group = grouped ? "工作" : "";
-            foreach (var available in new[] { new Size(2560, 1380), new Size(1920, 1040), new Size(1366, 728),
+            foreach (var available in new[] { new Size(3840, 2160), new Size(2560, 1380), new Size(1920, 1040), new Size(1366, 728),
                 new Size(1024, 728), new Size(800, 560), new Size(640, 440), new Size(543, 508) })
-            foreach (var dpi in new[] { 96, 120, 144, 168, 192, 240 })
+            foreach (var dpi in new[] { 96, 120, 144, 168, 192, 240, 288 })
             {
                 Call(popup, "ApplyContentSizeForArea", available, dpi);
                 PopupType.GetField("_center", Flags)!.SetValue(popup, Call(popup, "ComputeWheelCenter"));
@@ -96,7 +96,11 @@ static class RadialDisplayCheck
                     $"Wheel clipped: {available}/{dpi}");
                 Check(panel.Left > center.X + outer, "List overlaps wheel");
                 var capacity = (int)Get(popup, "_visibleItemCapacity");
-                Check(capacity is >= 1 and <= 8, "Invalid viewport capacity");
+                Check(capacity is >= 1 and <= 12, "Invalid viewport capacity");
+                if (available == new Size(1920, 1040) && dpi == 120)
+                    Check(capacity == 12, "A full-height work area must show 12 rows");
+                if (available == new Size(543, 508) && dpi == 120)
+                    Check(capacity == 7, "A compact work area must fit seven complete rows");
                 var entries = Items(popup);
                 Check(entries.Count(i => !Property<RectangleF>(i, "TargetBounds").IsEmpty) == Math.Min(capacity, entries.Length),
                     "Visible row count differs from scroll capacity");
@@ -139,5 +143,36 @@ static class RadialDisplayCheck
             }
         }
         Console.WriteLine($"PASS {cases} resolution/DPI/group combinations; startup bounds, bitmap DPI independence, full wheel/list, viewport scrolling and last-row hit testing.");
+
+        var activeTab = PopupType.GetField("_activeTab", Flags)!;
+        activeTab.SetValue(popup, Enum.Parse(Nullable.GetUnderlyingType(activeTab.FieldType)!, "Texts"));
+        foreach (var (area, dpi) in new[]
+        {
+            (new Size(1920, 1140), 120), (new Size(3840, 2160), 192),
+            (new Size(3840, 2040), 240), (new Size(3840, 2016), 288), (new Size(1920, 1140), 120)
+        })
+        {
+            // Reopen the same popup at a new scale without relying on a DPI notification.
+            Call(popup, "ApplyContentSizeForArea", area, dpi);
+            PopupType.GetField("_center", Flags)!.SetValue(popup, Call(popup, "ComputeWheelCenter"));
+            Call(popup, "LoadItemsForActiveTab", false);
+            popup.Location = new Point(dpi / 12, dpi / 12);
+            var row = Items(popup)[0];
+            var glyph = Property<Image>(row, "Icon");
+            Check(glyph.Width == (int)(22f * dpi / 96f), $"Reopened popup reused a stale icon at {dpi} DPI");
+            Check(Math.Abs(((Font)Get(popup, "_itemFont")).Size - 12f * dpi / 96f) < .01f,
+                $"Reopened popup reused a stale font at {dpi} DPI");
+            Check(Math.Abs(Property<RectangleF>(row, "TargetBounds").Height - 44f * dpi / 96f) < .01f,
+                $"Row height did not follow {dpi} DPI");
+            Check(popup.Height == (int)Math.Ceiling(623d * dpi / 96)
+                && (int)Get(popup, "_visibleItemCapacity") == 12,
+                $"The target work area fits 12 rows, but the popup was limited to {popup.Height}px at {dpi} DPI");
+            Call(popup, "RenderLayered", false);
+            var layer = (Bitmap)Get(popup, "_layerBmp");
+            Check(layer.Size == popup.ClientSize, "The native layer did not match the current popup size");
+            if (dpi == 288)
+                layer.Save(Path.Combine(root, "radial-4k-300.png"));
+        }
+        Console.WriteLine("PASS 125% → 4K 200% / 250% / 300% → 125% glyph, font and row sizes");
     }
 }

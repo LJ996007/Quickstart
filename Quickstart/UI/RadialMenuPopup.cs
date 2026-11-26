@@ -92,7 +92,7 @@ internal sealed class RadialMenuPopup : Form
     private static readonly Color GroupTextHot = UiTheme.AccentText;
 
     /// <summary>右侧列表可视行数（面板高度固定）；超出可用滚轮上下滑动。</summary>
-    private const int MaxVisibleItems = 8;
+    private const int MaxVisibleItems = 12;
     // 扇区缩小，为右侧列表让出空间，避免互相遮挡
     private const float HubRadiusLogical = 40f;
     private const float FanInnerRadiusLogical = 48f;
@@ -118,6 +118,10 @@ internal sealed class RadialMenuPopup : Form
     private const int WS_EX_TOOLWINDOW = 0x00000080;
     private const int WS_EX_NOACTIVATE = 0x08000000;
     private const int ULW_ALPHA = 0x00000002;
+    private const uint SWP_NOMOVE = 0x0002;
+    private const uint SWP_NOZORDER = 0x0004;
+    private const uint SWP_NOACTIVATE = 0x0010;
+    private const uint SWP_NOSENDCHANGING = 0x0400;
     private const byte AC_SRC_OVER = 0x00;
     private const byte AC_SRC_ALPHA = 0x01;
 
@@ -142,6 +146,7 @@ internal sealed class RadialMenuPopup : Form
     private float _fontScale;
 
     private Image? _webPlaceholder;
+    private int _cachedGlyphSize;
     private TabKind? _activeTab;
     private TabKind? _hoverTab;
     private string _activeGroup = EntryQueries.AllGroupsLabel;
@@ -590,10 +595,7 @@ internal sealed class RadialMenuPopup : Form
             _itemSubFont.Dispose();
             _hubTitleFont.Dispose();
             _hubCountFont.Dispose();
-            _webPlaceholder?.Dispose();
-            foreach (var img in _iconCache.Values)
-                img.Dispose();
-            _iconCache.Clear();
+            ResetDpiDependentIcons();
             DisposeLayerResources();
         }
 
@@ -641,7 +643,6 @@ internal sealed class RadialMenuPopup : Form
         if (IsDisposed || !IsHandleCreated)
             return;
 
-        ResetDpiDependentIcons();
         DisposeLayerResources();
         ApplyContentSize();
         _center = ComputeWheelCenter();
@@ -651,7 +652,7 @@ internal sealed class RadialMenuPopup : Form
         if (!Visible)
             return;
 
-        // 可见时夹回新工作区，并按新 DPI 重建列表（图标已随缓存清空而失效）。
+        // 可见时夹回新工作区，并按新 DPI 重建列表。
         var area = Screen.FromHandle(Handle).WorkingArea;
         var x = Math.Max(area.Left, Math.Min(Left, Math.Max(area.Left, area.Right - Width)));
         var y = Math.Max(area.Top, Math.Min(Top, Math.Max(area.Top, area.Bottom - Height)));
@@ -720,7 +721,19 @@ internal sealed class RadialMenuPopup : Form
         var centerX = pad + _hubR;
         var width = (int)Math.Ceiling(centerX + _contentOuterR + gap + listW + pad);
         var height = (int)Math.Ceiling(Math.Max(_contentOuterR * 2f + pad * 2, maxListH + pad * 2));
-        Size = PopupScreenLayout.Fit(new Size(width, height), available);
+        var size = PopupScreenLayout.Fit(new Size(width, height), available);
+        if (Size == size)
+            return;
+
+        // Form.Size also clamps to the system tracking limit, which can be smaller
+        // than the target monitor's work area. The borderless surface is already fitted.
+        var trackingLimit = SystemInformation.MaxWindowTrackSize;
+        if (IsHandleCreated && (size.Width > trackingLimit.Width || size.Height > trackingLimit.Height)
+            && SetWindowPos(Handle, IntPtr.Zero, 0, 0, size.Width, size.Height,
+                SWP_NOMOVE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOSENDCHANGING))
+            return;
+
+        Size = size;
     }
 
     /// <summary>是否存在任意可显示的配置分组（剪贴板/最近无分组）。</summary>
@@ -1295,6 +1308,14 @@ internal sealed class RadialMenuPopup : Form
     private void LoadItemsForActiveTab(bool restartAnim)
     {
         ClearItems(disposeOwned: true);
+        // 隐藏窗口可以直接按目标屏重排，不一定先收到 DPI 变更消息。
+        // 清掉引用旧图标的条目后，再按实际绘制尺寸更新缓存。
+        var glyphSize = GlyphSize;
+        if (_cachedGlyphSize != glyphSize)
+        {
+            ResetDpiDependentIcons();
+            _cachedGlyphSize = glyphSize;
+        }
         _hoverItemIndex = -1;
         _scrollIndex = 0;
 
@@ -1418,6 +1439,7 @@ internal sealed class RadialMenuPopup : Form
         if (string.IsNullOrWhiteSpace(path))
             return;
 
+        var useLargeIcon = S(IconLogical) >= 32f;
         _iconLoader.Enqueue(() =>
         {
             Bitmap? bitmap = null;
@@ -1426,7 +1448,7 @@ internal sealed class RadialMenuPopup : Form
                 if (IsDisposed)
                     return;
                 // Shell 图标读取在现有 STA 工作者上执行，不阻塞点击和滚动。
-                bitmap = IconExtractor.GetIcon(path, isDirectory, useLargeIcon: false)?.ToBitmap();
+                bitmap = IconExtractor.GetIcon(path, isDirectory, useLargeIcon)?.ToBitmap();
                 if (bitmap == null)
                     return;
                 if (IsDisposed || !IsHandleCreated)
@@ -1497,9 +1519,11 @@ internal sealed class RadialMenuPopup : Form
         return bmp;
     }
 
+    private int GlyphSize => Math.Max(22, (int)S(22));
+
     private Bitmap CreateGlyphBitmap(string glyph, Color color)
     {
-        var size = Math.Max(22, (int)S(22));
+        var size = GlyphSize;
         var bmp = new Bitmap(size, size, PixelFormat.Format32bppArgb);
         using var g = Graphics.FromImage(bmp);
         g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -2540,6 +2564,10 @@ internal sealed class RadialMenuPopup : Form
 
     [DllImport("user32.dll")]
     private static extern IntPtr GetForegroundWindow();
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool SetWindowPos(IntPtr hwnd, IntPtr insertAfter, int x, int y, int width, int height, uint flags);
 
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UpdateLayeredWindow(

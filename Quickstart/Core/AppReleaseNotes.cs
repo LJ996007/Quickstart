@@ -7,6 +7,13 @@ internal static class AppReleaseNotes
     private static readonly ReleaseNote[] Releases =
     [
         new(
+            "1.0.28",
+            "2026-11-26",
+            [
+                "加高轮盘右侧列表，可用空间充足时从 8 行增至 12 行，小屏幕按可用高度显示完整行并支持滚动。",
+                "修复轮盘跨屏呼出时复用旧缩放的图标，并按目标屏工作区确定列表高度。高缩放下使用较大的文件和文件夹图标源。"
+            ]),
+        new(
             "1.0.27",
             "2026-11-21",
             [
