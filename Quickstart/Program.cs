@@ -322,10 +322,7 @@ static class Program
             {
                 trayIcon.ShowBalloon("Quickstart", error, ToolTipIcon.Warning);
             }
-            // Only migrate the shipped default; never replace a user's custom binding.
-            string[] searchAlternatives = string.Equals(config.FileSearchHotKey, "Ctrl+Alt+Space", StringComparison.OrdinalIgnoreCase)
-                ? ["Ctrl+Shift+Space", "Ctrl+Alt+F"] : [];
-            if (fileSearchHotKey.TryRegisterWithFallback(config.FileSearchHotKey, searchAlternatives,
+            if (fileSearchHotKey.TryRegisterFileSearch(config.FileSearchHotKey,
                 out var effectiveSearchHotKey, out var searchError))
             {
                 if (effectiveSearchHotKey != config.FileSearchHotKey)

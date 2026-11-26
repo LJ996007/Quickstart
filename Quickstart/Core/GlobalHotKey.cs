@@ -11,6 +11,8 @@ internal sealed class GlobalHotKey : NativeWindow, IDisposable
     private const uint ModShift = 0x0004;
     private const uint ModWin = 0x0008;
     private const uint ModNoRepeat = 0x4000;
+    private const int ErrorHotKeyAlreadyRegistered = 1409;
+    private static readonly string[] FileSearchPresets = [AppConfig.DefaultFileSearchHotKey, "Ctrl+Shift+Space", "Ctrl+Alt+F"];
 
     private bool _registered;
     private bool _disposed;
@@ -50,13 +52,24 @@ internal sealed class GlobalHotKey : NativeWindow, IDisposable
         return true;
     }
 
+    public bool TryRegisterFileSearch(string? gesture, out string effectiveGesture, out string error)
+    {
+        // Older versions stored the effective preset, so any shipped preset can become the preferred key.
+        var comparer = StringComparer.OrdinalIgnoreCase;
+        var alternatives = FileSearchPresets.Contains(gesture, comparer)
+            ? FileSearchPresets.Where(candidate => !comparer.Equals(candidate, gesture))
+            : [];
+        return TryRegisterWithFallback(gesture, alternatives, out effectiveGesture, out error);
+    }
+
     public bool TryRegisterWithFallback(string? gesture, IEnumerable<string> alternatives,
         out string effectiveGesture, out string error)
     {
         effectiveGesture = gesture ?? string.Empty;
         if (TryRegister(gesture, out error)) return true;
-        if (_registrationError != 1409) return false;
+        if (_registrationError != ErrorHotKeyAlreadyRegistered) return false;
 
+        var requestedError = error;
         foreach (var alternative in alternatives)
         {
             if (TryRegister(alternative, out error))
@@ -64,8 +77,9 @@ internal sealed class GlobalHotKey : NativeWindow, IDisposable
                 effectiveGesture = alternative;
                 return true;
             }
-            if (_registrationError != 1409) return false;
+            if (_registrationError != ErrorHotKeyAlreadyRegistered) return false;
         }
+        error = requestedError;
         return false;
     }
 

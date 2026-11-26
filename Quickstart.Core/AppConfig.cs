@@ -62,7 +62,8 @@ public sealed class AppConfig
     public bool StartWithWindows { get; set; }
     public bool ShellMenuEnabled { get; set; }
     public string HotKey { get; set; } = string.Empty;
-    public string FileSearchHotKey { get; set; } = "Ctrl+Alt+Space";
+    public const string DefaultFileSearchHotKey = "Ctrl+Alt+Space";
+    public string FileSearchHotKey { get; set; } = DefaultFileSearchHotKey;
     public bool FileDialogNavigationEnabled { get; set; } = true;
     public FolderFavoriteSource FolderFavoriteSource { get; set; } = FolderFavoriteSource.Combined;
     public string OpusFavoritesFile { get; set; } = string.Empty;
