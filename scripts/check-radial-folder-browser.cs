@@ -10,6 +10,7 @@
 using System.Collections;
 using System.Diagnostics;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using Quickstart.Core;
 using Quickstart.Models;
 
@@ -48,12 +49,15 @@ static class RadialFolderBrowserChecks
         var year = Path.Combine(root, "2026");
         var contract = Path.Combine(year, "采购");
         Directory.CreateDirectory(contract);
+        CheckRecentParent(contract, configRoot);
         File.WriteAllText(Path.Combine(root, "计划.txt"), "");
         foreach (var document in new[] { "报告.docx", "清单.xlsx", "演示.pptx", "采购文件.pdf" })
             File.WriteAllText(Path.Combine(root, document), "");
         File.WriteAllText(Path.Combine(year, "合同.txt"), "");
         File.WriteAllText(Path.Combine(contract, "合同.txt"), "");
         Directory.CreateDirectory(Path.Combine(root, "空目录"));
+        Directory.SetLastWriteTimeUtc(year, DateTime.UtcNow.AddDays(-5));
+        File.SetLastWriteTimeUtc(Path.Combine(root, "报告.docx"), DateTime.UtcNow.AddHours(1));
         var single = LocalFolderBrowser.ReadAsync(root, "合同", 0, 0, 1, CancellationToken.None).GetAwaiter().GetResult();
         var deep = LocalFolderBrowser.ReadAsync(root, "合同", 0, 0, 1, CancellationToken.None,
             includeSubfolders: true).GetAwaiter().GetResult();
@@ -107,6 +111,7 @@ static class RadialFolderBrowserChecks
         Check(search.ClientRectangle.Contains(scope.Bounds) && search.ClientRectangle.Contains(query.Parent!.Bounds)
             && query.Parent.ClientRectangle.Contains(query.Bounds), "The search row clips its text field or scope toggle");
         WaitFor(() => Field<FileSearchPage?>(browser, "_page")?.Total == 7, "Root contents did not load");
+        Check(results.Items[0].Text == "报告.docx", "Unused entries must be sorted by modification date");
         var icons = Field<ImageList>(browser, "_icons");
         var visibleIconKeys = results.Items.Cast<ListViewItem>().Select(item => item.ImageKey).ToHashSet();
         Check(visibleIconKeys.SetEquals(["folder", "file.txt", "file.docx", "file.xlsx", "file.pptx", "file.pdf"])
@@ -122,7 +127,8 @@ static class RadialFolderBrowserChecks
         }
         var child = results.Items.Cast<ListViewItem>().Single(item => item.Text == "2026");
         var arrowCell = child.SubItems[2].Bounds;
-        var arrowPoint = new Point(arrowCell.Left + arrowCell.Width / 2, arrowCell.Top + arrowCell.Height / 2);
+        Check(arrowCell.Width >= 60, "The expanded folder action must span the right-hand hit area");
+        var arrowPoint = new Point(arrowCell.Left + 4, arrowCell.Top + arrowCell.Height / 2);
         var hit = results.HitTest(arrowPoint);
         Check(hit.Item == child && hit.SubItem == child.SubItems[2],
             $"The folder arrow is not reachable: cell={arrowCell}, client={results.ClientSize}, hit={hit.Item?.Text}/{hit.SubItem?.Text}");
@@ -134,10 +140,11 @@ static class RadialFolderBrowserChecks
         WaitFor(() => Field<FileSearchPage?>(browser, "_page")?.Total == 1 && results.Items[0].Text == "合同.txt",
             "Grandchild contents did not load");
         Call(browser, "GoBack");
-        Check(Field<string>(browser, "_folder") == year && results.Items.Count == 2,
-            $"Back lost the previous folder view: folder={Field<string>(browser, "_folder")}, count={results.Items.Count}, status={status.Text}");
+        WaitFor(() => Field<string>(browser, "_folder") == year && results.Items.Count == 2,
+            "Back lost the previous folder view");
         Call(browser, "GoBack");
-        Check(Field<string>(browser, "_folder") == root && results.Items.Count == 7, "Back lost the root folder view");
+        WaitFor(() => Field<string>(browser, "_folder") == root && results.Items.Count == 7, "Back lost the root folder view");
+        Check(results.Items[0].Text == "2026", "The most recently visited directory must move above newer unvisited files");
 
         query.Text = "合同";
         WaitFor(() => status.Text == "未找到匹配项", "Current-layer search should not show nested files");
@@ -159,5 +166,30 @@ static class RadialFolderBrowserChecks
         Check(wheel.Visible && !browser.Visible && Field<int>(wheel, "_scrollIndex") == scroll, "Back did not restore the wheel scroll position");
         Call(wheel, "HidePanels");
         Console.WriteLine("PASS file-type icons, drag grip, edge placement, three levels, scroll restoration, relative paths and search scope");
+    }
+
+    private static void CheckRecentParent(string target, string fixtureRoot)
+    {
+        var linkPath = Path.Combine(fixtureRoot, "最近用过.lnk");
+        object shell = Activator.CreateInstance(Type.GetTypeFromProgID("WScript.Shell")!)!;
+        object? shortcut = null;
+        try
+        {
+            shortcut = ((dynamic)shell).CreateShortcut(linkPath);
+            ((dynamic)shortcut).TargetPath = target;
+            ((dynamic)shortcut).Save();
+        }
+        finally
+        {
+            if (shortcut != null) Marshal.FinalReleaseComObject(shortcut);
+            Marshal.FinalReleaseComObject(shell);
+        }
+        var assembly = typeof(ProcessLauncher).Assembly;
+        var flags = BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic;
+        var resolver = assembly.GetType("Quickstart.Core.WindowsRecentFolders")!.GetMethod("ReadShortcutTarget", flags, [typeof(string)])!;
+        var resolved = (string)resolver.Invoke(null, [linkPath])!;
+        var parent = assembly.GetType("Quickstart.UI.FolderPathLabel")!.GetMethod("ParentName", flags)!;
+        Check(resolved == target && (string)parent.Invoke(null, [resolved])! == "2026",
+            "The recent-folder label must use the real target's parent, not the shortcut's parent");
     }
 }

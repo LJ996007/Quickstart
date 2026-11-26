@@ -273,6 +273,39 @@ public sealed class ConfigManager : IDisposable
         }
     }
 
+    public void RecordFolderBrowserUse(string path)
+    {
+        lock (_lock)
+        {
+            var recent = _config.RecentFolderBrowserPaths;
+            recent[path] = DateTime.UtcNow;
+            if (recent.Count > 200)
+                recent.Remove(recent.MinBy(entry => entry.Value).Key);
+            ScheduleSave();
+        }
+    }
+
+    public IReadOnlyDictionary<string, DateTime> GetFolderBrowserUsage()
+    {
+        lock (_lock)
+        {
+            var usage = new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase);
+            void Add(string path, DateTime usedAt)
+            {
+                if (usedAt == default || string.IsNullOrWhiteSpace(path) || !Path.IsPathFullyQualified(path)) return;
+                path = Path.TrimEndingDirectorySeparator(path);
+                usedAt = usedAt.ToUniversalTime();
+                if (usedAt > usage.GetValueOrDefault(path)) usage[path] = usedAt;
+            }
+            foreach (var entry in _config.Entries)
+                if (entry.Type is EntryType.File or EntryType.Folder)
+                    Add(entry.Path, entry.LastUsedAt);
+            foreach (var (path, usedAt) in _config.RecentFolders) Add(path, usedAt);
+            foreach (var (path, usedAt) in _config.RecentFolderBrowserPaths) Add(path, usedAt);
+            return usage;
+        }
+    }
+
     public void TouchGroup(string group)
     {
         if (string.IsNullOrWhiteSpace(group))
@@ -354,6 +387,11 @@ public sealed class ConfigManager : IDisposable
     {
         _config.Entries ??= [];
         _config.RecentFolders ??= new(StringComparer.OrdinalIgnoreCase);
+        _config.RecentFolderBrowserPaths = (_config.RecentFolderBrowserPaths ?? [])
+            .OrderByDescending(entry => entry.Value)
+            .DistinctBy(entry => entry.Key, StringComparer.OrdinalIgnoreCase)
+            .Take(200)
+            .ToDictionary(entry => entry.Key, entry => entry.Value, StringComparer.OrdinalIgnoreCase);
         _config.GroupLastUsedAt = _config.GroupLastUsedAt == null
             ? new Dictionary<string, DateTime>(StringComparer.OrdinalIgnoreCase)
             : new Dictionary<string, DateTime>(_config.GroupLastUsedAt, StringComparer.OrdinalIgnoreCase);

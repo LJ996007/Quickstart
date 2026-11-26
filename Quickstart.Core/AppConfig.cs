@@ -69,6 +69,7 @@ public sealed class AppConfig
     public string OpusFavoritesFile { get; set; } = string.Empty;
     public bool TrackOpusRecentFolders { get; set; } = true;
     public Dictionary<string, DateTime> RecentFolders { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public Dictionary<string, DateTime> RecentFolderBrowserPaths { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public bool RightDragEnabled { get; set; } = true;
     /// <summary>中键单击展开快捷启动、动作面板与文件搜索框；关闭后保留中键原有行为。</summary>
     public bool MiddleClickEnabled { get; set; } = true;

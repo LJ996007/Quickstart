@@ -44,8 +44,8 @@ internal sealed class RadialMenuPopup : Form
     private sealed class ItemSlot
     {
         public required string Title { get; init; }
-        public string? Subtitle { get; init; }
-        public object? Payload { get; init; }
+        public string? Subtitle { get; set; }
+        public object? Payload { get; set; }
         public Image? Icon { get; set; }
         public bool OwnsIcon { get; set; }
         public bool IconRequested { get; set; }
@@ -456,7 +456,7 @@ internal sealed class RadialMenuPopup : Form
     {
         if (_folderBrowser == null)
         {
-            _folderBrowser = new RadialFolderBrowserPopup();
+            _folderBrowser = new RadialFolderBrowserPopup(_configManager);
             _folderBrowser.ReturnToWheel += () =>
             {
                 if (IsDisposed) return;
@@ -479,7 +479,7 @@ internal sealed class RadialMenuPopup : Form
     private static string? FolderForItem(ItemSlot item) => item.Payload switch
     {
         QuickEntry { Type: EntryType.Folder } entry when !string.IsNullOrWhiteSpace(entry.Path) => entry.Path,
-        WindowsRecentItem { IsDirectory: true } recent => recent.LaunchPath,
+        WindowsRecentItem { IsDirectory: true } recent => recent.DisplayPath,
         _ => null
     };
 
@@ -1409,7 +1409,7 @@ internal sealed class RadialMenuPopup : Form
                     _items.Add(new ItemSlot
                     {
                         Title = Truncate(recent.Name, 32),
-                        Subtitle = Truncate(recent.DisplayPath, 48),
+                        Subtitle = "",
                         Payload = recent,
                         OwnsIcon = false
                     });
@@ -1484,8 +1484,33 @@ internal sealed class RadialMenuPopup : Form
             if (slot.Payload is QuickEntry entry)
                 AssignEntryIcon(slot, entry);
             else if (slot.Payload is WindowsRecentItem recent)
+            {
                 QueuePathIcon(slot, recent.LaunchPath, recent.IsDirectory);
+                QueueRecentParent(slot, recent);
+            }
         }
+    }
+
+    private void QueueRecentParent(ItemSlot slot, WindowsRecentItem recent)
+    {
+        _iconLoader.Enqueue(() =>
+        {
+            var target = WindowsRecentFolders.ReadShortcutTarget(recent.LaunchPath);
+            if (target.Length == 0 || IsDisposed || !IsHandleCreated) return;
+            var parent = FolderPathLabel.ParentName(target);
+            var isDirectory = Directory.Exists(target);
+            try
+            {
+                BeginInvoke(() =>
+                {
+                    if (IsDisposed || !_items.Contains(slot)) return;
+                    slot.Subtitle = parent;
+                    slot.Payload = recent with { DisplayPath = target, IsDirectory = isDirectory };
+                    RequestRender();
+                });
+            }
+            catch (InvalidOperationException) { }
+        });
     }
 
     private void QueuePathIcon(ItemSlot slot, string path, bool isDirectory)

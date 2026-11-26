@@ -4,11 +4,12 @@ namespace Quickstart.Core;
 public static class LocalFolderBrowser
 {
     public static Task<FileSearchPage> ReadAsync(string folder, string filter, int kind, uint offset,
-        uint sort, CancellationToken token, string? selectedPath = null, bool includeSubfolders = false)
-        => Task.Run(() => Read(folder, filter, kind, offset, sort, token, selectedPath, includeSubfolders), token);
+        uint sort, CancellationToken token, string? selectedPath = null, bool includeSubfolders = false,
+        IReadOnlyDictionary<string, DateTime>? lastUsed = null)
+        => Task.Run(() => Read(folder, filter, kind, offset, sort, token, selectedPath, includeSubfolders, lastUsed), token);
 
     private static FileSearchPage Read(string folder, string filter, int kind, uint offset,
-        uint sort, CancellationToken token, string? selectedPath, bool includeSubfolders)
+        uint sort, CancellationToken token, string? selectedPath, bool includeSubfolders, IReadOnlyDictionary<string, DateTime>? lastUsed)
     {
         token.ThrowIfCancellationRequested();
         var items = new List<FileSearchResult>();
@@ -55,12 +56,14 @@ public static class LocalFolderBrowser
         }
 
         token.ThrowIfCancellationRequested();
-        var ordered = items.OrderByDescending(item => item.IsFolder);
-        ordered = sort switch
+        var byKind = items.OrderByDescending(item => item.IsFolder);
+        var ordered = lastUsed != null
+            ? items.OrderByDescending(item => lastUsed.GetValueOrDefault(item.FullPath)).ThenByDescending(item => item.ModifiedAt)
+            : sort switch
         {
-            14 => ordered.ThenByDescending(item => item.ModifiedAt),
-            6 => ordered.ThenByDescending(item => item.Size),
-            _ => ordered
+            14 => byKind.ThenByDescending(item => item.ModifiedAt),
+            6 => byKind.ThenByDescending(item => item.Size),
+            _ => byKind
         };
         var sorted = ordered.ThenBy(item => item.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(item => item.FullPath, StringComparer.Ordinal).ToArray();

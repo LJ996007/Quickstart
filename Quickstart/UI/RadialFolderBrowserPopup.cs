@@ -6,7 +6,7 @@ using Quickstart.Utils;
 internal sealed class RadialFolderBrowserPopup : Form
 {
     private sealed record FolderView(string Folder, string Query, bool IncludeSubfolders, FileSearchPage? Page,
-        int TopIndex, int Selection);
+        int TopIndex, string? Selection);
 
     private readonly FileSearchIconButton _back = new(FileSearchGlyph.Back, "返回（Alt+左箭头）");
     private readonly Button _breadcrumb = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, UseMnemonic = false };
@@ -39,12 +39,14 @@ internal sealed class RadialFolderBrowserPopup : Form
     private Font? _displayFont;
     private int _displayDpi;
     private Point? _dragOffset;
+    private readonly ConfigManager _config;
 
     public event Action? ReturnToWheel;
     public event Action<FileSearchResult>? OpenItem;
 
-    public RadialFolderBrowserPopup()
+    public RadialFolderBrowserPopup(ConfigManager config)
     {
+        _config = config;
         Text = "目录浏览";
         AutoScaleMode = AutoScaleMode.None;
         FormBorderStyle = FormBorderStyle.None;
@@ -67,7 +69,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         _results.ForeColor = UiTheme.TextPrimary;
         _results.Columns.Add("名称");
         _results.Columns.Add("相对位置");
-        _results.Columns.Add("展开");
+        _results.Columns.Add("展开", 0, HorizontalAlignment.Center);
         _results.SmallImageList = _icons;
 
         ConfigureRow(_navigation, _back, _breadcrumb, _dragGrip);
@@ -158,7 +160,11 @@ internal sealed class RadialFolderBrowserPopup : Form
             _query.Focus();
         }
         finally { _opening = false; }
-        if (pathError == null) _ = LoadAsync();
+        if (pathError == null)
+        {
+            _config.RecordFolderBrowserUse(_folder);
+            _ = LoadAsync();
+        }
         else ClearResults($"无法读取目录：{pathError}");
     }
 
@@ -260,7 +266,7 @@ internal sealed class RadialFolderBrowserPopup : Form
     {
         var width = _results.ClientSize.Width;
         if (width <= 0) return;
-        var arrow = UiScaleHelper.Scale(_results, 26);
+        var arrow = Math.Min(width / 3, UiScaleHelper.Scale(_results, 68));
         var relative = IncludeSubfolders ? (int)(width * .32) : 0;
         _results.Columns[0].Width = Math.Max(0, width - arrow - relative);
         _results.Columns[1].Width = relative;
@@ -286,7 +292,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         pending?.Cancel();
     }
 
-    private async Task LoadAsync(uint offset = 0)
+    private async Task LoadAsync(uint offset = 0, FolderView? restore = null)
     {
         CancelRead();
         ClearResults("正在读取…");
@@ -295,9 +301,18 @@ internal sealed class RadialFolderBrowserPopup : Form
         try
         {
             var page = await LocalFolderBrowser.ReadAsync(_folder, _query.Text.Trim(), 0, offset, 1, request.Token,
-                includeSubfolders: IncludeSubfolders);
+                selectedPath: restore?.Selection, includeSubfolders: IncludeSubfolders, lastUsed: _config.GetFolderBrowserUsage());
             if (ReferenceEquals(_read, request) && Visible)
+            {
                 ShowPage(page);
+                if (restore != null && _results.Items.Count > 0)
+                {
+                    _results.TopItem = _results.Items[Math.Min(restore.TopIndex, _results.Items.Count - 1)];
+                    var selected = _results.Items.Cast<ListViewItem>().FirstOrDefault(row =>
+                        string.Equals(((FileSearchResult)row.Tag!).FullPath, restore.Selection, StringComparison.OrdinalIgnoreCase));
+                    if (selected != null) selected.Selected = true;
+                }
+            }
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -414,7 +429,9 @@ internal sealed class RadialFolderBrowserPopup : Form
     private void EnterFolder(string path)
     {
         _history.Add(new FolderView(_folder, _query.Text, IncludeSubfolders, _page,
-            _results.TopItem?.Index ?? 0, _results.SelectedIndices.Count > 0 ? _results.SelectedIndices[0] : -1));
+            _results.TopItem?.Index ?? 0, _results.SelectedItems.Count > 0
+                ? ((FileSearchResult)_results.SelectedItems[0].Tag!).FullPath : null));
+        _config.RecordFolderBrowserUse(path);
         SetFolder(path);
         _ = LoadAsync();
     }
@@ -424,16 +441,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         var view = _history[index];
         _history.RemoveRange(index, _history.Count - index);
         SetFolder(view.Folder, view.Query, view.IncludeSubfolders);
-        if (view.Page == null)
-        {
-            _ = LoadAsync();
-            return;
-        }
-        ShowPage(view.Page);
-        if (view.Selection >= 0 && view.Selection < _results.Items.Count)
-            _results.Items[view.Selection].Selected = true;
-        if (view.TopIndex < _results.Items.Count)
-            _results.TopItem = _results.Items[view.TopIndex];
+        _ = LoadAsync(view.Page?.Offset ?? 0, view);
     }
 
     private void GoBack()
@@ -455,6 +463,7 @@ internal sealed class RadialFolderBrowserPopup : Form
 
     private void Open(FileSearchResult result)
     {
+        _config.RecordFolderBrowserUse(result.FullPath);
         Hide();
         OpenItem?.Invoke(result);
     }
