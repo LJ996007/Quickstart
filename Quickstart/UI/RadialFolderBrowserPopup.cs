@@ -10,6 +10,7 @@ internal sealed class RadialFolderBrowserPopup : Form
 
     private readonly FileSearchIconButton _back = new(FileSearchGlyph.Back, "返回（Alt+左箭头）");
     private readonly Button _breadcrumb = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, UseMnemonic = false };
+    private readonly Panel _dragGrip = new() { Cursor = Cursors.SizeAll, AccessibleName = "拖动窗口" };
     private readonly TextBox _query = new() { PlaceholderText = "查找文件或文件夹", AccessibleName = "查找文件或文件夹" };
     private readonly CheckBox _includeSubfolders = new() { Appearance = Appearance.Button, Text = "含子目录", TextAlign = ContentAlignment.MiddleCenter };
     private readonly ListView _results = new()
@@ -37,6 +38,7 @@ internal sealed class RadialFolderBrowserPopup : Form
     private bool _opening;
     private Font? _displayFont;
     private int _displayDpi;
+    private Point? _dragOffset;
 
     public event Action? ReturnToWheel;
     public event Action<FileSearchResult>? OpenItem;
@@ -68,7 +70,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         _results.Columns.Add("展开");
         _results.SmallImageList = _icons;
 
-        ConfigureRow(_navigation, _back, _breadcrumb);
+        ConfigureRow(_navigation, _back, _breadcrumb, _dragGrip);
         _navigation.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute);
         _navigation.ColumnStyles[1] = new ColumnStyle(SizeType.Percent, 100);
         ConfigureRow(_search, new FileSearchField(_query, search: true), _includeSubfolders);
@@ -91,6 +93,11 @@ internal sealed class RadialFolderBrowserPopup : Form
 
         _back.Click += (_, _) => GoBack();
         _breadcrumb.Click += (_, _) => ShowAncestors();
+        _dragGrip.Paint += PaintDragGrip;
+        _dragGrip.MouseDown += BeginDrag;
+        _dragGrip.MouseMove += MoveDrag;
+        _dragGrip.MouseUp += EndDrag;
+        _dragGrip.MouseCaptureChanged += (_, _) => { if (!_dragGrip.Capture) _dragOffset = null; };
         _query.TextChanged += (_, _) => ScheduleSearch();
         _includeSubfolders.CheckedChanged += (_, _) => ScheduleSearch();
         _debounce.Tick += (_, _) => { _debounce.Stop(); _ = LoadAsync(); };
@@ -98,11 +105,16 @@ internal sealed class RadialFolderBrowserPopup : Form
         _next.Click += (_, _) => _ = LoadAsync(_page!.Offset + EverythingIpcProtocol.PageSize);
         _results.ClientSizeChanged += (_, _) => ResizeColumns();
         _results.MouseUp += OnResultClick;
-        Deactivate += (_, _) => { if (!_opening && !_ancestors.Visible) Hide(); };
+        Deactivate += OnBrowserDeactivate;
         FormClosing += (_, e) =>
         {
             if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); }
         };
+    }
+
+    private void OnBrowserDeactivate(object? sender, EventArgs e)
+    {
+        if (!_opening && !_ancestors.Visible) Hide();
     }
 
     private static void ConfigureRow(TableLayoutPanel row, params Control[] controls)
@@ -183,28 +195,65 @@ internal sealed class RadialFolderBrowserPopup : Form
         _layout.RowStyles[1].Height = S(40);
         _layout.RowStyles[3].Height = S(30);
         _navigation.ColumnStyles[0].Width = S(34);
+        _navigation.ColumnStyles[2].Width = S(34);
         _search.ColumnStyles[1].Width = S(82);
         _includeSubfolders.Margin = new Padding(S(6), 0, 0, S(5));
         _search.Controls[0].Margin = new Padding(0, 0, 0, S(5));
         _footer.ColumnStyles[1].Width = S(60);
         _footer.ColumnStyles[2].Width = S(60);
         var iconSize = Math.Clamp(S(22), 16, 96);
-        if (_icons.Images.Count == 0 || _icons.ImageSize.Width != iconSize)
+        if (_icons.ImageSize.Width != iconSize)
         {
             _icons.ImageSize = new Size(iconSize, iconSize);
             _icons.Images.Clear();
-            if (IconExtractor.GetIcon("folder", isDirectory: true, useLargeIcon: iconSize > 24) is { } folderIcon)
-                _icons.Images.Add("folder", folderIcon);
-            if (IconExtractor.GetGenericTypeIcon("", useLargeIcon: iconSize > 24) is { } fileIcon)
-                _icons.Images.Add("file", fileIcon);
             foreach (ListViewItem row in _results.Items)
-                row.ImageKey = ((FileSearchResult)row.Tag!).IsFolder ? "folder" : "file";
+                row.ImageKey = EnsureResultIcon((FileSearchResult)row.Tag!);
         }
-        Bounds = new Rectangle(
+        var location = _dragOffset.HasValue ? Location : new Point(
             Math.Clamp(anchor.X, area.Left, Math.Max(area.Left, area.Right - size.Width)),
-            Math.Clamp(anchor.Y, area.Top, Math.Max(area.Top, area.Bottom - size.Height)), size.Width, size.Height);
+            Math.Clamp(anchor.Y, area.Top, Math.Max(area.Top, area.Bottom - size.Height)));
+        Bounds = new Rectangle(location, size);
         _layout.ResumeLayout(performLayout: true);
         ResizeColumns();
+    }
+
+    private void PaintDragGrip(object? sender, PaintEventArgs e)
+    {
+        var dpi = _displayDpi == 0 ? DeviceDpi : _displayDpi;
+        var step = UiScaleHelper.Scale(4, dpi);
+        var dot = UiScaleHelper.Scale(2, dpi);
+        var x = (_dragGrip.Width - dot - step) / 2;
+        var y = (_dragGrip.Height - dot - step * 2) / 2;
+        using var brush = new SolidBrush(UiTheme.TextSecondary);
+        for (var row = 0; row < 3; row++)
+        {
+            e.Graphics.FillEllipse(brush, x, y, dot, dot);
+            e.Graphics.FillEllipse(brush, x + step, y, dot, dot);
+            y += step;
+        }
+    }
+
+    private void BeginDrag(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        var origin = _dragGrip.PointToScreen(e.Location);
+        _dragOffset = new Point(origin.X - Left, origin.Y - Top);
+        _dragGrip.Capture = true;
+    }
+
+    private void MoveDrag(object? sender, MouseEventArgs e)
+    {
+        if (_dragOffset is not { } offset) return;
+        var cursor = _dragGrip.PointToScreen(e.Location);
+        Location = new Point(cursor.X - offset.X, cursor.Y - offset.Y);
+    }
+
+    private void EndDrag(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left || !_dragOffset.HasValue) return;
+        _dragOffset = null;
+        _dragGrip.Capture = false;
+        RefreshDisplay();
     }
 
     private void ResizeColumns()
@@ -282,7 +331,7 @@ internal sealed class RadialFolderBrowserPopup : Form
                 var parent = Path.GetDirectoryName(item.FullPath);
                 var relative = IncludeSubfolders && parent != null ? Path.GetRelativePath(_folder, parent) : "";
                 var row = new ListViewItem([item.Name, relative == "." ? "" : relative, item.IsFolder ? "›" : ""],
-                    item.IsFolder ? "folder" : "file")
+                    EnsureResultIcon(item))
                 {
                     Tag = item, ToolTipText = item.FullPath, UseItemStyleForSubItems = false
                 };
@@ -300,6 +349,21 @@ internal sealed class RadialFolderBrowserPopup : Form
             ? (string.IsNullOrWhiteSpace(_query.Text) ? "此文件夹为空" : "未找到匹配项")
             : (_next.Visible ? $"{page.Offset + 1}–{page.Offset + page.Items.Count} / {page.Total}" : "");
         ResizeColumns();
+    }
+
+    private string EnsureResultIcon(FileSearchResult item)
+    {
+        var extension = Path.GetExtension(item.FullPath).ToLowerInvariant();
+        var key = item.IsFolder ? "folder" : "file" + extension;
+        if (!_icons.Images.ContainsKey(key))
+        {
+            var useLargeIcon = _icons.ImageSize.Width > 24;
+            var icon = item.IsFolder
+                ? IconExtractor.GetIcon("folder", isDirectory: true, useLargeIcon)
+                : IconExtractor.GetGenericTypeIcon(extension, useLargeIcon);
+            _icons.Images.Add(key, icon ?? SystemIcons.Application);
+        }
+        return key;
     }
 
     private void SetFolder(string path, string query = "", bool includeSubfolders = false)

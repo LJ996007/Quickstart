@@ -49,6 +49,8 @@ static class RadialFolderBrowserChecks
         var contract = Path.Combine(year, "采购");
         Directory.CreateDirectory(contract);
         File.WriteAllText(Path.Combine(root, "计划.txt"), "");
+        foreach (var document in new[] { "报告.docx", "清单.xlsx", "演示.pptx", "采购文件.pdf" })
+            File.WriteAllText(Path.Combine(root, document), "");
         File.WriteAllText(Path.Combine(year, "合同.txt"), "");
         File.WriteAllText(Path.Combine(contract, "合同.txt"), "");
         Directory.CreateDirectory(Path.Combine(root, "空目录"));
@@ -82,14 +84,42 @@ static class RadialFolderBrowserChecks
         var browser = Field<Form>(wheel, "_folderBrowser");
         Check(!wheel.Visible && browser.Visible && screen.WorkingArea.Contains(browser.Bounds),
             $"Arrow must replace the wheel at the bottom-right edge: wheel={wheel.Visible}, browser={browser.Visible}, bounds={browser.Bounds}, work={screen.WorkingArea}");
+        // Keep the fixture open if another app takes foreground while these synthetic inputs run.
+        var dismiss = browser.GetType().GetMethod("OnBrowserDeactivate", Flags)!;
+        browser.Deactivate -= (EventHandler)dismiss.CreateDelegate(typeof(EventHandler), browser);
         var results = Field<ListView>(browser, "_results");
         var query = Field<TextBox>(browser, "_query");
         var scope = Field<CheckBox>(browser, "_includeSubfolders");
         var status = Field<Label>(browser, "_status");
         var search = Field<TableLayoutPanel>(browser, "_search");
+        var grip = Field<Control>(browser, "_dragGrip");
+        var navigation = Field<TableLayoutPanel>(browser, "_navigation");
+        var breadcrumb = Field<Button>(browser, "_breadcrumb");
+        Check(grip.Width > 0 && navigation.ClientRectangle.Contains(grip.Bounds) &&
+            grip.Left >= breadcrumb.Right && grip.Cursor == Cursors.SizeAll, "The drag grip overlaps the clickable path");
+        var originalLocation = browser.Location;
+        Call(browser, "BeginDrag", grip, new MouseEventArgs(MouseButtons.Left, 1, 15, 15, 0));
+        Check(grip.Capture, "Drag grip did not capture the pointer");
+        Call(browser, "MoveDrag", grip, new MouseEventArgs(MouseButtons.Left, 0, -45, -25, 0));
+        Call(browser, "EndDrag", grip, new MouseEventArgs(MouseButtons.Left, 1, 15, 15, 0));
+        Check(browser.Location == new Point(originalLocation.X - 60, originalLocation.Y - 40) && !grip.Capture,
+            "Dragging did not move the browser or release pointer capture");
         Check(search.ClientRectangle.Contains(scope.Bounds) && search.ClientRectangle.Contains(query.Parent!.Bounds)
             && query.Parent.ClientRectangle.Contains(query.Bounds), "The search row clips its text field or scope toggle");
-        WaitFor(() => Field<FileSearchPage?>(browser, "_page")?.Total == 3, "Root contents did not load");
+        WaitFor(() => Field<FileSearchPage?>(browser, "_page")?.Total == 7, "Root contents did not load");
+        var icons = Field<ImageList>(browser, "_icons");
+        var visibleIconKeys = results.Items.Cast<ListViewItem>().Select(item => item.ImageKey).ToHashSet();
+        Check(visibleIconKeys.SetEquals(["folder", "file.txt", "file.docx", "file.xlsx", "file.pptx", "file.pdf"])
+            && visibleIconKeys.All(icons.Images.ContainsKey), "Files must display icons keyed by extension");
+        icons.ImageSize = new Size(16, 16);
+        Call(browser, "RefreshDisplay");
+        Check(results.Items.Cast<ListViewItem>().All(item => icons.Images.ContainsKey(item.ImageKey)),
+            "Existing rows lost their icons after rebuilding the image list");
+        using (var bitmap = new Bitmap(browser.Width, browser.Height))
+        {
+            browser.DrawToBitmap(bitmap, browser.ClientRectangle);
+            bitmap.Save(Path.Combine(scratch, "directory-file-icons.png"));
+        }
         var child = results.Items.Cast<ListViewItem>().Single(item => item.Text == "2026");
         var arrowCell = child.SubItems[2].Bounds;
         var arrowPoint = new Point(arrowCell.Left + arrowCell.Width / 2, arrowCell.Top + arrowCell.Height / 2);
@@ -107,7 +137,7 @@ static class RadialFolderBrowserChecks
         Check(Field<string>(browser, "_folder") == year && results.Items.Count == 2,
             $"Back lost the previous folder view: folder={Field<string>(browser, "_folder")}, count={results.Items.Count}, status={status.Text}");
         Call(browser, "GoBack");
-        Check(Field<string>(browser, "_folder") == root && results.Items.Count == 3, "Back lost the root folder view");
+        Check(Field<string>(browser, "_folder") == root && results.Items.Count == 7, "Back lost the root folder view");
 
         query.Text = "合同";
         WaitFor(() => status.Text == "未找到匹配项", "Current-layer search should not show nested files");
@@ -128,6 +158,6 @@ static class RadialFolderBrowserChecks
         Call(browser, "GoBack");
         Check(wheel.Visible && !browser.Visible && Field<int>(wheel, "_scrollIndex") == scroll, "Back did not restore the wheel scroll position");
         Call(wheel, "HidePanels");
-        Console.WriteLine("PASS arrow, edge placement, three levels, scroll restoration, relative paths and search scope");
+        Console.WriteLine("PASS file-type icons, drag grip, edge placement, three levels, scroll restoration, relative paths and search scope");
     }
 }
