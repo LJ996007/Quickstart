@@ -11,6 +11,12 @@ internal sealed class RadialFolderBrowserPopup : Form
     private sealed record FolderView(string Folder, string Query, bool IncludeSubfolders, FileSearchPage? Page,
         int TopIndex, string? Selection);
 
+    private const int CompactLogicalWidth = 430;
+    private const int PreviewLogicalWidth = 900;
+    private const int PopupLogicalHeight = 526;
+    private const int PreviewMinLogicalWidth = 320;
+    private const int SplitterLogicalWidth = 9;
+
     private readonly FileSearchIconButton _back = new(FileSearchGlyph.Back, "返回（Alt+左箭头）");
     private readonly Button _breadcrumb = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft, UseMnemonic = false };
     private readonly Panel _dragGrip = new() { Cursor = Cursors.SizeAll, AccessibleName = "拖动窗口" };
@@ -23,6 +29,13 @@ internal sealed class RadialFolderBrowserPopup : Form
     };
     private readonly Button _previous = new() { Text = "上一页" };
     private readonly Button _next = new() { Text = "下一页" };
+    private readonly SplitContainer _split = new()
+    {
+        Dock = DockStyle.Fill, Orientation = Orientation.Vertical, FixedPanel = FixedPanel.Panel1,
+        TabStop = false, SplitterWidth = 1, BackColor = UiTheme.Surface
+    };
+    private readonly OfficePreviewPane _preview = new() { Dock = DockStyle.Fill };
+    private readonly System.Windows.Forms.Timer _previewDelay = new() { Interval = 180 };
     private readonly Label _status = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
     private readonly TableLayoutPanel _layout = new();
     private readonly TableLayoutPanel _navigation = new();
@@ -42,6 +55,10 @@ internal sealed class RadialFolderBrowserPopup : Form
     private bool _opening;
     private Font? _displayFont;
     private int _displayDpi;
+    private FileSearchResult? _previewPending;
+    private FileSearchResult? _previewed;
+    private bool _previewShown;
+    private Point _anchor;
     private Point? _dragOffset;
     private readonly ConfigManager _config;
 
@@ -77,6 +94,12 @@ internal sealed class RadialFolderBrowserPopup : Form
         _results.Columns.Add("展开", 0, HorizontalAlignment.Center);
         _results.SmallImageList = _icons;
         ConfigureMenu();
+        _results.Dock = DockStyle.Fill;
+        _split.Panel1.BackColor = _split.Panel2.BackColor = UiTheme.Card;
+        _split.Panel1.Controls.Add(_results);
+        _split.Panel2.Controls.Add(_preview);
+        _split.Panel2.Paint += PaintPreviewDivider;
+        _split.Panel2Collapsed = true;
 
         ConfigureRow(_navigation, _back, _breadcrumb, _dragGrip);
         _navigation.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute);
@@ -92,7 +115,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         _layout.RowStyles.Add(new RowStyle(SizeType.Absolute));
         _layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _layout.RowStyles.Add(new RowStyle(SizeType.Absolute));
-        foreach (var control in new Control[] { _navigation, _search, _results, _footer })
+        foreach (var control in new Control[] { _navigation, _search, _split, _footer })
         {
             control.Dock = DockStyle.Fill;
             _layout.Controls.Add(control, 0, _layout.Controls.Count);
@@ -114,6 +137,10 @@ internal sealed class RadialFolderBrowserPopup : Form
         _results.ClientSizeChanged += (_, _) => ResizeColumns();
         _results.MouseDown += OnResultMouseDown;
         _results.MouseUp += OnResultClick;
+        _results.MouseDoubleClick += OnResultDoubleClick;
+        _previewDelay.Tick += (_, _) => FlushPreview();
+        _preview.OpenRequested += (_, _) => { if (_previewed is { } file) Open(file); };
+        _preview.EscapeRequested += (_, _) => Hide();
         Deactivate += OnBrowserDeactivate;
         FormClosing += (_, e) =>
         {
@@ -123,7 +150,10 @@ internal sealed class RadialFolderBrowserPopup : Form
 
     private void OnBrowserDeactivate(object? sender, EventArgs e)
     {
-        if (!_opening && !_ancestors.Visible && !_menu.Visible) Hide();
+        if (_opening || _ancestors.Visible || _menu.Visible) return;
+        // 光标仍在弹窗上时（如预览内嵌浏览器的右键菜单拿了激活）不关闭。
+        if (Bounds.Contains(Cursor.Position)) return;
+        Hide();
     }
 
     private void ConfigureMenu()
@@ -184,7 +214,11 @@ internal sealed class RadialFolderBrowserPopup : Form
 
     private void LocateSelected()
     {
-        if (Selected is not { } result) return;
+        if (Selected is { } result) Reveal(result);
+    }
+
+    private void Reveal(FileSearchResult result)
+    {
         // Windows 文件名不含引号，explorer 的 /select 只接受一个带引号的参数。
         using var process = Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{result.FullPath}\"") { UseShellExecute = true });
     }
@@ -241,7 +275,7 @@ internal sealed class RadialFolderBrowserPopup : Form
     public void RefreshDisplay()
     {
         if (Visible)
-            ApplyMetrics(Screen.FromHandle(Handle), Location);
+            ApplyMetrics(Screen.FromHandle(Handle), _anchor);
     }
 
     protected override void OnDpiChanged(DpiChangedEventArgs e)
@@ -256,7 +290,9 @@ internal sealed class RadialFolderBrowserPopup : Form
         var dpi = UiScaleHelper.GetDpiForScreen(screen);
         int S(int value) => UiScaleHelper.Scale(value, dpi);
         var area = screen.WorkingArea;
-        var size = PopupScreenLayout.Fit(new Size(S(430), S(526)), area.Size);
+        _anchor = anchor;
+        var size = PopupScreenLayout.Fit(
+            new Size(S(_previewShown ? PreviewLogicalWidth : CompactLogicalWidth), S(PopupLogicalHeight)), area.Size);
         _layout.SuspendLayout();
         if (_displayDpi != dpi)
         {
@@ -291,7 +327,50 @@ internal sealed class RadialFolderBrowserPopup : Form
             Math.Clamp(anchor.Y, area.Top, Math.Max(area.Top, area.Bottom - size.Height)));
         Bounds = new Rectangle(location, size);
         _layout.ResumeLayout(performLayout: true);
+        ApplySplitMetrics(S);
         ResizeColumns();
+    }
+
+    /// <summary>预览显示时把窗口加宽成左右两栏；收起时恢复紧凑目录宽度。</summary>
+    private void ApplySplitMetrics(Func<int, int> scale)
+    {
+        _split.Panel1MinSize = _split.Panel2MinSize = 0;
+        if (!_previewShown)
+        {
+            _split.Panel2Collapsed = true;
+            return;
+        }
+        _split.Panel2Collapsed = false;
+        _split.SplitterWidth = Math.Max(1, scale(SplitterLogicalWidth));
+        if (_split.Width <= 0) return;
+        var listWidth = Math.Min(scale(CompactLogicalWidth),
+            Math.Max(scale(260), _split.Width - scale(PreviewMinLogicalWidth) - _split.SplitterWidth));
+        _split.SplitterDistance = Math.Clamp(listWidth, 0, Math.Max(0, _split.Width - _split.SplitterWidth));
+    }
+
+    private void ShowPreviewPane()
+    {
+        if (_previewShown) return;
+        _previewShown = true;
+        ApplyMetrics(Screen.FromHandle(Handle), _anchor);
+        _ = _preview.WarmUpAsync();
+    }
+
+    private void HidePreviewPane()
+    {
+        _previewDelay.Stop();
+        _previewPending = null;
+        _previewed = null;
+        _preview.Clear();
+        if (!_previewShown) return;
+        _previewShown = false;
+        if (IsHandleCreated) ApplyMetrics(Screen.FromHandle(Handle), _anchor);
+    }
+
+    private void PaintPreviewDivider(object? sender, PaintEventArgs e)
+    {
+        using var pen = new Pen(UiTheme.BorderSubtle);
+        e.Graphics.DrawLine(pen, 0, 0, 0, _split.Panel2.Height);
     }
 
     private void PaintDragGrip(object? sender, PaintEventArgs e)
@@ -330,6 +409,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         if (e.Button != MouseButtons.Left || !_dragOffset.HasValue) return;
         _dragOffset = null;
         _dragGrip.Capture = false;
+        _anchor = Location;
         RefreshDisplay();
     }
 
@@ -463,6 +543,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         _changing = false;
         _breadcrumb.Text = string.Join("  ›  ", Ancestors().Select(DisplayName));
         _breadcrumb.AccessibleName = $"{_breadcrumb.Text}，选择上级目录";
+        HidePreviewPane();
         ClearResults("");
     }
 
@@ -523,13 +604,55 @@ internal sealed class RadialFolderBrowserPopup : Form
 
     private void OnResultClick(object? sender, MouseEventArgs e)
     {
-        if (e.Button != MouseButtons.Left) return;
+        if (e.Button != MouseButtons.Left || e.Clicks > 1) return;
         var hit = _results.HitTest(e.Location);
         if (hit.Item?.Tag is not FileSearchResult result) return;
-        if (result.IsFolder && hit.SubItem == hit.Item.SubItems[2])
-            EnterFolder(result.FullPath);
-        else if (hit.SubItem == hit.Item.SubItems[0])
-            Open(result);
+        var arrow = hit.SubItem == hit.Item.SubItems[2];
+        if (!arrow && hit.SubItem != hit.Item.SubItems[0]) return;
+        ActivateResult(result, arrow, reveal: Control.ModifierKeys.HasFlag(Keys.Control), open: false);
+    }
+
+    private void OnResultDoubleClick(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Left) return;
+        _previewDelay.Stop();
+        _previewPending = null;
+        if (_results.HitTest(e.Location).Item?.Tag is not FileSearchResult result) return;        ActivateResult(result, arrow: false, reveal: Control.ModifierKeys.HasFlag(Keys.Control), open: true);
+    }
+
+    private enum ResultClick { Preview, OpenFile, OpenFolder, EnterFolder, Reveal }
+
+    /// <summary>单击文件预览、双击用默认程序打开、Ctrl+单击定位所在文件夹。</summary>
+    private static ResultClick ResolveClick(bool isFolder, bool arrow, bool reveal, bool open)
+    {
+        if (reveal) return ResultClick.Reveal;
+        if (isFolder) return arrow ? ResultClick.EnterFolder : ResultClick.OpenFolder;
+        return open ? ResultClick.OpenFile : ResultClick.Preview;
+    }
+
+    private void ActivateResult(FileSearchResult result, bool arrow, bool reveal, bool open)
+    {
+        switch (ResolveClick(result.IsFolder, arrow, reveal, open))
+        {
+            case ResultClick.Reveal: Reveal(result); break;
+            case ResultClick.EnterFolder: EnterFolder(result.FullPath); break;
+            case ResultClick.OpenFolder:
+            case ResultClick.OpenFile: Open(result); break;
+            default:
+                _previewPending = result;
+                _previewDelay.Start();
+                break;
+        }
+    }
+
+    private void FlushPreview()
+    {
+        _previewDelay.Stop();
+        if (_previewPending is not { } result) return;
+        _previewPending = null;
+        _previewed = result;
+        ShowPreviewPane();
+        _ = _preview.PreviewAsync(result.FullPath);
     }
 
     private void Open(FileSearchResult result)
@@ -542,6 +665,8 @@ internal sealed class RadialFolderBrowserPopup : Form
     protected override bool ProcessCmdKey(ref Message msg, Keys keyData)
     {
         if (keyData == Keys.Escape) { Hide(); return true; }
+        // 预览获得焦点时把复制选区、翻页等按键留给内嵌预览。
+        if (_preview.HasPreviewFocus) return base.ProcessCmdKey(ref msg, keyData);
         if (keyData == (Keys.Alt | Keys.Left)) { GoBack(); return true; }
         if (keyData == (Keys.Control | Keys.F)) { _query.Focus(); _query.SelectAll(); return true; }
         if (_results.Focused && keyData == (Keys.Control | Keys.Shift | Keys.C)) { RunAction(CopySelectedPath); return true; }
@@ -569,7 +694,11 @@ internal sealed class RadialFolderBrowserPopup : Form
     protected override void OnVisibleChanged(EventArgs e)
     {
         base.OnVisibleChanged(e);
-        if (!Visible && !Disposing && !IsDisposed) CancelRead();
+        if (!Visible && !Disposing && !IsDisposed)
+        {
+            CancelRead();
+            HidePreviewPane();
+        }
     }
 
     protected override void Dispose(bool disposing)
@@ -578,6 +707,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         {
             CancelRead();
             _debounce.Dispose();
+            _previewDelay.Dispose();
             _ancestors.Dispose();
             _menu.Dispose();
             _results.SmallImageList = null;

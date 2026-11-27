@@ -180,6 +180,38 @@ static class RadialFolderBrowserChecks
             browser.DrawToBitmap(bitmap, browser.ClientRectangle);
             bitmap.Save(Path.Combine(scratch, "directory-file-icons.png"));
         }
+
+        // 单击文件 = 内置预览，双击 = 默认程序打开，Ctrl+单击 = 定位所在文件夹。
+        var resolveClick = browser.GetType().GetMethod("ResolveClick",
+            BindingFlags.Static | BindingFlags.Public | BindingFlags.NonPublic)!;
+        string Decision(bool isFolder, bool arrow, bool reveal, bool open) =>
+            resolveClick.Invoke(null, [isFolder, arrow, reveal, open])!.ToString()!;
+        Check(Decision(false, false, false, false) == "Preview", "Single click must preview a file");
+        Check(Decision(false, false, false, true) == "OpenFile", "Double click must open with the default program");
+        Check(Decision(false, false, true, false) == "Reveal" && Decision(true, true, true, false) == "Reveal",
+            "Ctrl+click must reveal the containing folder, files and folders alike");
+        Check(Decision(true, true, false, false) == "EnterFolder" && Decision(true, false, false, true) == "OpenFolder",
+            "Folder clicks must still enter or open the folder");
+        var preview = Field<Quickstart.UI.OfficePreviewPane>(browser, "_preview");
+        var split = Field<SplitContainer>(browser, "_split");
+        var compactWidth = browser.Width;
+        var nameCell = reportRow.SubItems[0].Bounds;
+        results.SelectedItems.Clear();
+        reportRow.Selected = true;
+        Call(browser, "OnResultClick", null, new MouseEventArgs(MouseButtons.Left, 1,
+            nameCell.Left + 4, nameCell.Top + nameCell.Height / 2, 0));
+        WaitFor(() => Field<bool>(browser, "_previewShown"), "Single click did not open the built-in preview");
+        Check(!split.Panel2Collapsed && browser.Width > compactWidth,
+            "The preview must widen the browser into a list and preview side by side");
+        WaitFor(() => (string?)preview.GetType().GetField("_path", Flags)!.GetValue(preview)
+                == Path.Combine(root, "报告.docx"),
+            "The built-in preview pane did not receive the clicked file");
+        Check(screen.WorkingArea.Contains(browser.Bounds), "The widened preview window left the working area");
+        using (var bitmap = new Bitmap(browser.Width, browser.Height))
+        {
+            browser.DrawToBitmap(bitmap, browser.ClientRectangle);
+            bitmap.Save(Path.Combine(scratch, "directory-preview.png"));
+        }
         var child = results.Items.Cast<ListViewItem>().Single(item => item.Text == "2026");
         var arrowCell = child.SubItems[2].Bounds;
         Check(arrowCell.Width >= 60, "The expanded folder action must span the right-hand hit area");
@@ -191,6 +223,8 @@ static class RadialFolderBrowserChecks
             arrowPoint.X, arrowPoint.Y, 0));
         WaitFor(() => Field<FileSearchPage?>(browser, "_page")?.Total == 2 && Field<string>(browser, "_folder") == year,
             "The child-folder arrow did not enter that folder");
+        Check(!Field<bool>(browser, "_previewShown") && browser.Width == compactWidth,
+            "Entering another folder must collapse the preview back to the compact browser");
         Call(browser, "EnterFolder", contract);
         WaitFor(() => Field<FileSearchPage?>(browser, "_page")?.Total == 1 && results.Items[0].Text == "合同.txt",
             "Grandchild contents did not load");
@@ -222,7 +256,7 @@ static class RadialFolderBrowserChecks
         Call(browser, "GoBack");
         Check(wheel.Visible && !browser.Visible && Field<int>(wheel, "_scrollIndex") == scroll, "Back did not restore the wheel scroll position");
         Call(wheel, "HidePanels");
-        Console.WriteLine("PASS file-type icons, drag grip, edge placement, three levels, scroll restoration, relative paths and search scope");
+        Console.WriteLine("PASS file-type icons, drag grip, edge placement, three levels, scroll restoration, relative paths, search scope, right-click copy and click-to-preview");
     }
 
     static bool HasRoundedCorners(IntPtr handle)
