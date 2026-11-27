@@ -45,6 +45,26 @@ internal static class UiTheme
     public static Font CreateFont(float size, FontStyle style = FontStyle.Regular)
         => new(FontFamily, size, style);
 
+    /// <summary>右键菜单统一配色：白底、浅蓝选中、细边框。</summary>
+    public static void StyleMenu(ContextMenuStrip menu)
+    {
+        menu.Renderer = new ToolStripProfessionalRenderer(new MenuColors());
+        menu.ShowImageMargin = false;
+        menu.BackColor = Card;
+        menu.ForeColor = TextPrimary;
+    }
+
+    private sealed class MenuColors : ProfessionalColorTable
+    {
+        public override Color ToolStripDropDownBackground => Card;
+        public override Color MenuItemSelected => SelectionFill;
+        public override Color MenuItemBorder => SelectionFill;
+        public override Color MenuBorder => BorderSubtle;
+        public override Color ImageMarginGradientBegin => Card;
+        public override Color ImageMarginGradientMiddle => Card;
+        public override Color ImageMarginGradientEnd => Card;
+    }
+
     /// <summary>无边框扁平图标按钮的统一悬停 / 按下色。</summary>
     public static void StyleFlatButton(Button button, Color backColor)
     {

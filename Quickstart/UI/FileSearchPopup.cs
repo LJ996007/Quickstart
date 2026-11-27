@@ -229,10 +229,7 @@ public sealed class FileSearchPopup : Form
         _toolTip.SetToolTip(_pin, "置顶");
         _toolTip.SetToolTip(_close, "关闭（Esc）");
         _status.TextChanged += (_, _) => _toolTip.SetToolTip(_status, _status.Text);
-        _menu.Renderer = new ToolStripProfessionalRenderer(new SearchMenuColors());
-        _menu.ShowImageMargin = false;
-        _menu.BackColor = UiTheme.Card;
-        _menu.ForeColor = UiTheme.TextPrimary;
+        UiTheme.StyleMenu(_menu);
         _menu.Font = Font;
         FormClosing += (_, e) => { if (e.CloseReason == CloseReason.UserClosing) { e.Cancel = true; Hide(); } };
         VisibleChanged += (_, _) =>
@@ -434,14 +431,6 @@ public sealed class FileSearchPopup : Form
 
     [DllImport("user32.dll")] private static extern bool ReleaseCapture();
     [DllImport("user32.dll")] private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
-
-    private sealed class SearchMenuColors : ProfessionalColorTable
-    {
-        public override Color ToolStripDropDownBackground => UiTheme.Card;
-        public override Color MenuItemSelected => UiTheme.SelectionFill;
-        public override Color MenuItemBorder => UiTheme.SelectionFill;
-        public override Color MenuBorder => UiTheme.BorderSubtle;
-    }
 
     private bool CanPreview => Visible && !_split.Panel2Collapsed && _previewEnabled.Checked && !UseDialog && !_detectingDialog && !_dialogDetectionFailed;
 

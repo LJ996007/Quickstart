@@ -1,5 +1,8 @@
 namespace Quickstart.UI;
 
+using System.Collections.Specialized;
+using System.ComponentModel;
+using System.Diagnostics;
 using Quickstart.Core;
 using Quickstart.Utils;
 
@@ -26,6 +29,7 @@ internal sealed class RadialFolderBrowserPopup : Form
     private readonly TableLayoutPanel _search = new();
     private readonly TableLayoutPanel _footer = new();
     private readonly ContextMenuStrip _ancestors = new();
+    private readonly ContextMenuStrip _menu = new();
     private readonly System.Windows.Forms.Timer _debounce = new() { Interval = 180 };
     private readonly ImageList _icons = new() { ColorDepth = ColorDepth.Depth32Bit };
     private readonly List<FolderView> _history = [];
@@ -56,6 +60,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         BackColor = UiTheme.Border;
         Padding = new Padding(1);
         ForeColor = UiTheme.TextPrimary;
+        FormStyler.ApplyRounded(this);
 
         foreach (var button in new[] { _breadcrumb, _previous, _next })
             UiTheme.StyleFlatButton(button, UiTheme.Surface);
@@ -71,6 +76,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         _results.Columns.Add("相对位置");
         _results.Columns.Add("展开", 0, HorizontalAlignment.Center);
         _results.SmallImageList = _icons;
+        ConfigureMenu();
 
         ConfigureRow(_navigation, _back, _breadcrumb, _dragGrip);
         _navigation.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute);
@@ -106,6 +112,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         _previous.Click += (_, _) => _ = LoadAsync(_page!.Offset - EverythingIpcProtocol.PageSize);
         _next.Click += (_, _) => _ = LoadAsync(_page!.Offset + EverythingIpcProtocol.PageSize);
         _results.ClientSizeChanged += (_, _) => ResizeColumns();
+        _results.MouseDown += OnResultMouseDown;
         _results.MouseUp += OnResultClick;
         Deactivate += OnBrowserDeactivate;
         FormClosing += (_, e) =>
@@ -116,7 +123,70 @@ internal sealed class RadialFolderBrowserPopup : Form
 
     private void OnBrowserDeactivate(object? sender, EventArgs e)
     {
-        if (!_opening && !_ancestors.Visible) Hide();
+        if (!_opening && !_ancestors.Visible && !_menu.Visible) Hide();
+    }
+
+    private void ConfigureMenu()
+    {
+        UiTheme.StyleMenu(_menu);
+        AddMenu("打开（Enter）", () => { if (Selected is { } result) Open(result); });
+        AddMenu("打开所在位置（Ctrl+Enter）", LocateSelected);
+        AddMenu("复制文件（Ctrl+C）", CopySelectedFile);
+        AddMenu("复制完整路径（Ctrl+Shift+C）", CopySelectedPath);
+        _menu.Opening += (_, e) => OnMenuOpening(e);
+        _results.ContextMenuStrip = _menu;
+    }
+
+    private void OnMenuOpening(CancelEventArgs e)
+    {
+        e.Cancel = Selected == null;
+        if (e.Cancel) return;
+        var folder = Selected!.IsFolder;
+        _menu.Items[0].Text = folder ? "进入文件夹（Enter）" : "打开（Enter）";
+        _menu.Items[2].Text = folder ? "复制文件夹（Ctrl+C）" : "复制文件（Ctrl+C）";
+    }
+
+    private void AddMenu(string title, Action action) =>
+        _menu.Items.Add(title, null, (_, _) => RunAction(action));
+
+    private void RunAction(Action action)
+    {
+        try { action(); }
+        catch (Exception ex) { _status.Text = ex.Message; }
+    }
+
+    private FileSearchResult? Selected => _results.SelectedItems.Count > 0
+        ? _results.SelectedItems[0].Tag as FileSearchResult
+        : null;
+
+    private void OnResultMouseDown(object? sender, MouseEventArgs e)
+    {
+        if (e.Button != MouseButtons.Right) return;
+        // 右键先选中光标下的条目，避免误操作上一次选中的文件。
+        _results.SelectedItems.Clear();
+        if (_results.GetItemAt(e.X, e.Y) is { } item) item.Selected = true;
+    }
+
+    private void CopySelectedFile()
+    {
+        if (Selected is not { } result) return;
+        var files = new StringCollection { result.FullPath };
+        Clipboard.SetFileDropList(files);
+        _status.Text = result.IsFolder ? "已复制文件夹，可粘贴到资源管理器" : "已复制文件，可粘贴到资源管理器";
+    }
+
+    private void CopySelectedPath()
+    {
+        if (Selected is not { } result) return;
+        Clipboard.SetText(result.FullPath);
+        _status.Text = "已复制完整路径";
+    }
+
+    private void LocateSelected()
+    {
+        if (Selected is not { } result) return;
+        // Windows 文件名不含引号，explorer 的 /select 只接受一个带引号的参数。
+        using var process = Process.Start(new ProcessStartInfo("explorer.exe", $"/select,\"{result.FullPath}\"") { UseShellExecute = true });
     }
 
     private static void ConfigureRow(TableLayoutPanel row, params Control[] controls)
@@ -193,6 +263,7 @@ internal sealed class RadialFolderBrowserPopup : Form
             var previousFont = _displayFont;
             _displayFont = new Font(UiTheme.FontFamily, 12f * dpi / 96f, GraphicsUnit.Pixel);
             Font = _displayFont;
+            _menu.Font = _displayFont;
             previousFont?.Dispose();
             _displayDpi = dpi;
         }
@@ -473,6 +544,8 @@ internal sealed class RadialFolderBrowserPopup : Form
         if (keyData == Keys.Escape) { Hide(); return true; }
         if (keyData == (Keys.Alt | Keys.Left)) { GoBack(); return true; }
         if (keyData == (Keys.Control | Keys.F)) { _query.Focus(); _query.SelectAll(); return true; }
+        if (_results.Focused && keyData == (Keys.Control | Keys.Shift | Keys.C)) { RunAction(CopySelectedPath); return true; }
+        if (_results.Focused && keyData == (Keys.Control | Keys.C)) { RunAction(CopySelectedFile); return true; }
         if (_query.Focused && keyData == Keys.Down && _results.Items.Count > 0)
         {
             _results.Items[0].Selected = true;
@@ -506,6 +579,7 @@ internal sealed class RadialFolderBrowserPopup : Form
             CancelRead();
             _debounce.Dispose();
             _ancestors.Dispose();
+            _menu.Dispose();
             _results.SmallImageList = null;
             _icons.Dispose();
         }

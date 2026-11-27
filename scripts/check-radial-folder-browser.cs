@@ -17,6 +17,8 @@ using Quickstart.Models;
 static class RadialFolderBrowserChecks
 {
     const BindingFlags Flags = BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic;
+    [DllImport("dwmapi.dll")]
+    static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
     static object? Call(object owner, string name, params object?[] args) =>
         owner.GetType().GetMethod(name, Flags)!.Invoke(owner, args);
     static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, Flags)!.GetValue(owner)!;
@@ -105,6 +107,7 @@ static class RadialFolderBrowserChecks
         var browser = Field<Form>(wheel, "_folderBrowser");
         Check(!wheel.Visible && browser.Visible && screen.WorkingArea.Contains(browser.Bounds),
             $"Arrow must replace the wheel at the bottom-right edge: wheel={wheel.Visible}, browser={browser.Visible}, bounds={browser.Bounds}, work={screen.WorkingArea}");
+        Check(HasRoundedCorners(browser.Handle), "The folder browser must use rounded window corners");
         // Keep the fixture open if another app takes foreground while these synthetic inputs run.
         var dismiss = browser.GetType().GetMethod("OnBrowserDeactivate", Flags)!;
         browser.Deactivate -= (EventHandler)dismiss.CreateDelegate(typeof(EventHandler), browser);
@@ -137,6 +140,41 @@ static class RadialFolderBrowserChecks
         Call(browser, "RefreshDisplay");
         Check(results.Items.Cast<ListViewItem>().All(item => icons.Images.ContainsKey(item.ImageKey)),
             "Existing rows lost their icons after rebuilding the image list");
+        var menu = Field<ContextMenuStrip>(browser, "_menu");
+        Check(results.ContextMenuStrip == menu && menu.Items.Count == 4,
+            "The results list must expose the copy menu for the selected entry");
+        var reportRow = results.Items.Cast<ListViewItem>().Single(item => item.Text == "报告.docx");
+        results.SelectedItems.Clear();
+        Call(browser, "OnResultMouseDown", null, new MouseEventArgs(MouseButtons.Right, 1,
+            reportRow.SubItems[0].Bounds.Left + 4, reportRow.Bounds.Top + reportRow.Bounds.Height / 2, 0));
+        Check(results.SelectedItems.Count == 1 && results.SelectedItems[0] == reportRow,
+            "Right-clicking a row must select it before the menu opens");
+        Call(browser, "OnMenuOpening", new System.ComponentModel.CancelEventArgs());
+        Check(menu.Items[2].Text == "复制文件（Ctrl+C）", "The copy command must name the selected file");
+        // 工作站锁屏等情况下系统剪贴板不可用，只校验菜单与选择状态。
+        if (ClipboardAvailable())
+        {
+            Call(browser, "CopySelectedFile");
+            var copied = Clipboard.GetFileDropList().Cast<string>().ToArray();
+            Check(copied.Length == 1 && copied[0] == Path.Combine(root, "报告.docx"),
+                "Copying must put the real file on the clipboard so Explorer can paste it");
+            Check(status.Text.StartsWith("已复制文件", StringComparison.Ordinal), "Copying a file must confirm in the status bar");
+            Call(browser, "CopySelectedPath");
+            Check(Clipboard.GetText() == Path.Combine(root, "报告.docx"), "Copy path did not put the full path on the clipboard");
+            var folderRowInClipboard = results.Items.Cast<ListViewItem>().Single(item => item.Text == "2026");
+            results.SelectedItems.Clear();
+            folderRowInClipboard.Selected = true;
+            Call(browser, "CopySelectedFile");
+            Check(Clipboard.GetFileDropList().Cast<string>().Single() == Path.Combine(root, "2026"),
+                "Copying a folder must place the directory itself on the clipboard");
+        }
+        else Console.WriteLine("SKIP clipboard checks: the system clipboard is unavailable in this session");
+        var folderRowTest = results.Items.Cast<ListViewItem>().Single(item => item.Text == "2026");
+        results.SelectedItems.Clear();
+        folderRowTest.Selected = true;
+        Call(browser, "OnMenuOpening", new System.ComponentModel.CancelEventArgs());
+        Check(menu.Items[0].Text == "进入文件夹（Enter）" && menu.Items[2].Text == "复制文件夹（Ctrl+C）",
+            "The menu must switch to folder wording for a directory row");
         using (var bitmap = new Bitmap(browser.Width, browser.Height))
         {
             browser.DrawToBitmap(bitmap, browser.ClientRectangle);
@@ -185,6 +223,24 @@ static class RadialFolderBrowserChecks
         Check(wheel.Visible && !browser.Visible && Field<int>(wheel, "_scrollIndex") == scroll, "Back did not restore the wheel scroll position");
         Call(wheel, "HidePanels");
         Console.WriteLine("PASS file-type icons, drag grip, edge placement, three levels, scroll restoration, relative paths and search scope");
+    }
+
+    static bool HasRoundedCorners(IntPtr handle)
+    {
+        // Win11 由 DWM 圆角，旧系统回退到 FormStyler 设置的圆角 Region。
+        if (DwmGetWindowAttribute(handle, 33, out var preference, sizeof(int)) == 0 && preference == 2)
+            return true;
+        return false;
+    }
+
+    static bool ClipboardAvailable()
+    {
+        for (var attempt = 0; attempt < 3; attempt++)
+        {
+            try { Clipboard.SetText("quickstart clipboard probe"); return true; }
+            catch (Exception) { Thread.Sleep(200); }
+        }
+        return false;
     }
 
     private static void CheckRecentParent(string target, string fixtureRoot)
