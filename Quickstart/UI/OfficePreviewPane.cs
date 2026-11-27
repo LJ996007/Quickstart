@@ -19,7 +19,9 @@ public sealed class OfficePreviewPane : UserControl
     private readonly Button _copy = new() { Text = "复制选中", AutoSize = true, Enabled = false, Visible = false };
     private readonly Button _copyAll = new() { Text = "复制全文", AutoSize = true, Enabled = false, Visible = false };
     private readonly Button _open = new() { Text = "打开", AccessibleName = "用默认程序打开", AutoSize = true, Enabled = false };
-    private readonly TableLayoutPanel _toolbar = new() { Dock = DockStyle.Fill, ColumnCount = 4, RowCount = 1,
+    private readonly FileSearchIconButton _pin = new(FileSearchGlyph.Pin, "钉在最前面") { Visible = false };
+    private readonly FileSearchIconButton _close = new(FileSearchGlyph.Close, "关闭预览") { Visible = false };
+    private readonly TableLayoutPanel _toolbar = new() { Dock = DockStyle.Fill, ColumnCount = 6, RowCount = 1,
         Margin = Padding.Empty, Visible = false };
     private readonly TableLayoutPanel _layout = new() { Dock = DockStyle.Fill, ColumnCount = 1, RowCount = 3, Margin = Padding.Empty };
     private bool _sizingHeader;
@@ -35,12 +37,20 @@ public sealed class OfficePreviewPane : UserControl
     private int _revision;
     private int _copyRevision;
     private bool _ready;
+    private bool _pinEnabled;
+    private bool _pinned;
     private readonly SemaphoreSlim _imageGate = new(1, 1);
     private long _imageBytes;
 
     public event EventHandler? OpenRequested;
     public event EventHandler? EscapeRequested;
+    /// <summary>只有独立预览窗启用钉住按钮；本地搜索的内嵌预览保持原样。</summary>
+    public event EventHandler? PinToggled;
+    /// <summary>独立预览窗右上角的关闭按钮（本地搜索的内嵌预览不显示）。</summary>
+    public event EventHandler? CloseRequested;
     public bool HasPreviewFocus => _web?.ContainsFocus == true;
+    /// <summary>是否一直显示在最前面（不随失焦自动关闭）。</summary>
+    public bool Pinned => _pinned;
 
     public OfficePreviewPane()
     {
@@ -56,12 +66,20 @@ public sealed class OfficePreviewPane : UserControl
             button.TextChanged += (_, _) => ApplyHeaderMetrics();
         }
         _toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        for (var i = 0; i < 3; i++) _toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        for (var i = 0; i < 5; i++) _toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
         _toolbar.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _toolbar.Controls.Add(_title, 0, 0);
         _toolbar.Controls.Add(_copy, 1, 0);
         _toolbar.Controls.Add(_copyAll, 2, 0);
         _toolbar.Controls.Add(_open, 3, 0);
+        _toolbar.Controls.Add(_pin, 4, 0);
+        _toolbar.Controls.Add(_close, 5, 0);
+        _pin.BackColor = _close.BackColor = UiTheme.Card;
+        _pin.Dock = _close.Dock = DockStyle.Fill;
+        _pin.Click += (_, _) => TogglePin();
+        _close.Click += (_, _) => CloseRequested?.Invoke(this, EventArgs.Empty);
+        _toolTips.SetToolTip(_pin, _pin.AccessibleName);
+        _toolTips.SetToolTip(_close, _close.AccessibleName);
         _layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         _layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
@@ -84,15 +102,44 @@ public sealed class OfficePreviewPane : UserControl
         {
             int S(int value) => (int)Math.Round(value * DeviceDpi / 96d);
             _layout.RowStyles[0].Height = _path == null ? 0 : S(40);
-            _toolbar.Margin = new Padding(0, 0, 0, S(4));
+            var inset = _pinEnabled ? S(8) : 0;
+            _toolbar.Margin = new Padding(inset, 0, inset, S(4));
             foreach (var button in new[] { _copy, _copyAll, _open })
             {
                 button.MinimumSize = Size.Empty;
                 button.Size = new Size(TextRenderer.MeasureText(button.Text, button.Font).Width + S(20), S(36));
                 button.Margin = new Padding(S(8), 0, 0, 0);
             }
+            _pin.MinimumSize = _close.MinimumSize = Size.Empty;
+            _pin.Size = _close.Size = new Size(S(34), S(36));
+            _pin.Margin = new Padding(S(6), 0, 0, 0);
+            _close.Margin = new Padding(S(2), 0, 0, 0);
         }
         finally { _sizingHeader = false; }
+    }
+
+    /// <summary>启用 / 停用窗口右侧的钉住按钮。</summary>
+    public void SetPinEnabled(bool enabled)
+    {
+        _pinEnabled = enabled;
+        _pin.Visible = _close.Visible = enabled;
+        ApplyHeaderMetrics();
+    }
+
+    private void TogglePin()
+    {
+        if (!_pinEnabled) return;
+        _pinned = !_pinned;
+        ApplyPinState();
+        PinToggled?.Invoke(this, EventArgs.Empty);
+    }
+
+    private void ApplyPinState()
+    {
+        _pin.BackColor = _pinned ? UiTheme.SelectionFill : UiTheme.Card;
+        _pin.AccessibleName = _pinned ? "取消钉住" : "钉在最前面";
+        _toolTips.SetToolTip(_pin, _pin.AccessibleName);
+        _pin.Invalidate();
     }
 
     protected override void OnLayout(LayoutEventArgs e)

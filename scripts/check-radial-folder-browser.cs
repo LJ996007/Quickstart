@@ -155,17 +155,17 @@ static class RadialFolderBrowserChecks
         if (ClipboardAvailable())
         {
             Call(browser, "CopySelectedFile");
-            var copied = Clipboard.GetFileDropList().Cast<string>().ToArray();
+            var copied = ReadFileDrop();
             Check(copied.Length == 1 && copied[0] == Path.Combine(root, "报告.docx"),
                 "Copying must put the real file on the clipboard so Explorer can paste it");
             Check(status.Text.StartsWith("已复制文件", StringComparison.Ordinal), "Copying a file must confirm in the status bar");
             Call(browser, "CopySelectedPath");
-            Check(Clipboard.GetText() == Path.Combine(root, "报告.docx"), "Copy path did not put the full path on the clipboard");
+            Check(ReadClipboardText() == Path.Combine(root, "报告.docx"), $"Copy path did not put the full path on the clipboard: {ReadClipboardText()}");
             var folderRowInClipboard = results.Items.Cast<ListViewItem>().Single(item => item.Text == "2026");
             results.SelectedItems.Clear();
             folderRowInClipboard.Selected = true;
             Call(browser, "CopySelectedFile");
-            Check(Clipboard.GetFileDropList().Cast<string>().Single() == Path.Combine(root, "2026"),
+            Check(ReadFileDrop().Single() == Path.Combine(root, "2026"),
                 "Copying a folder must place the directory itself on the clipboard");
         }
         else Console.WriteLine("SKIP clipboard checks: the system clipboard is unavailable in this session");
@@ -192,26 +192,54 @@ static class RadialFolderBrowserChecks
             "Ctrl+click must reveal the containing folder, files and folders alike");
         Check(Decision(true, true, false, false) == "EnterFolder" && Decision(true, false, false, true) == "OpenFolder",
             "Folder clicks must still enter or open the folder");
-        var preview = Field<Quickstart.UI.OfficePreviewPane>(browser, "_preview");
-        var split = Field<SplitContainer>(browser, "_split");
         var compactWidth = browser.Width;
         var nameCell = reportRow.SubItems[0].Bounds;
         results.SelectedItems.Clear();
         reportRow.Selected = true;
         Call(browser, "OnResultClick", null, new MouseEventArgs(MouseButtons.Left, 1,
             nameCell.Left + 4, nameCell.Top + nameCell.Height / 2, 0));
-        WaitFor(() => Field<bool>(browser, "_previewShown"), "Single click did not open the built-in preview");
-        Check(!split.Panel2Collapsed && browser.Width > compactWidth,
-            "The preview must widen the browser into a list and preview side by side");
-        WaitFor(() => (string?)preview.GetType().GetField("_path", Flags)!.GetValue(preview)
+        WaitFor(() => Field<Form?>(browser, "_previewPopup") is { Visible: true },
+            "Single click did not pop up the separate preview window");
+        var previewPopup = Field<Form>(browser, "_previewPopup");
+        var pane = Field<Quickstart.UI.OfficePreviewPane>(previewPopup, "_pane");
+        Check(browser.Width == compactWidth, "The folder list must stay compact when the preview pops out");
+        Check(!previewPopup.Bounds.IntersectsWith(browser.Bounds), "The preview window must sit beside the folder list");
+        Check(screen.WorkingArea.Contains(previewPopup.Bounds), "The preview window left the working area");
+        var previewMinWidth = (int)(760 * previewPopup.DeviceDpi / 96d);
+        Check(previewPopup.Width >= Math.Min(previewMinWidth, screen.WorkingArea.Width - 16)
+            && previewPopup.Height >= (int)(600 * previewPopup.DeviceDpi / 96d),
+            $"The preview window is too small to read: {previewPopup.Size}");
+        WaitFor(() => (string?)pane.GetType().GetField("_path", Flags)!.GetValue(pane)
                 == Path.Combine(root, "报告.docx"),
-            "The built-in preview pane did not receive the clicked file");
-        Check(screen.WorkingArea.Contains(browser.Bounds), "The widened preview window left the working area");
-        using (var bitmap = new Bitmap(browser.Width, browser.Height))
+            "The preview window did not receive the clicked file");
+        using (var bitmap = new Bitmap(previewPopup.Width, previewPopup.Height))
         {
-            browser.DrawToBitmap(bitmap, browser.ClientRectangle);
+            previewPopup.DrawToBitmap(bitmap, previewPopup.ClientRectangle);
             bitmap.Save(Path.Combine(scratch, "directory-preview.png"));
         }
+
+        // 钉在最前面：目录窗关闭后预览仍在；取消钉住后跟着一起收起。
+        var pin = Field<Button>(pane, "_pin");
+        Check(pin.Visible, "The preview window must offer a pin-to-front button");
+        pin.PerformClick();
+        Check(pane.Pinned, "The pin button must pin the preview to the front");
+        Call(browser, "HidePreview");
+        Check(previewPopup.Visible, "A pinned preview must survive closing the folder list");
+        pin.PerformClick();
+        Check(!pane.Pinned, "The pin button must toggle off");
+        Call(browser, "HidePreview");
+        Check(!previewPopup.Visible, "An unpinned preview must close with the folder list");
+
+        // 不支持预览的类型不弹窗，只在底部状态栏说明。
+        var txtRow = results.Items.Cast<ListViewItem>().Single(item => item.Text == "计划.txt");
+        var txtCell = txtRow.SubItems[0].Bounds;
+        results.SelectedItems.Clear();
+        txtRow.Selected = true;
+        Call(browser, "OnResultClick", null, new MouseEventArgs(MouseButtons.Left, 1,
+            txtCell.Left + 4, txtCell.Top + txtCell.Height / 2, 0));
+        WaitFor(() => status.Text.Contains("暂不支持预览"), "An unsupported file must explain itself instead of previewing");
+        Check(!previewPopup.Visible, "An unsupported file must not pop up the preview window");
+        Check(browser.Visible, "The folder list must stay open while a preview sits beside it");
         var child = results.Items.Cast<ListViewItem>().Single(item => item.Text == "2026");
         var arrowCell = child.SubItems[2].Bounds;
         Check(arrowCell.Width >= 60, "The expanded folder action must span the right-hand hit area");
@@ -223,8 +251,8 @@ static class RadialFolderBrowserChecks
             arrowPoint.X, arrowPoint.Y, 0));
         WaitFor(() => Field<FileSearchPage?>(browser, "_page")?.Total == 2 && Field<string>(browser, "_folder") == year,
             "The child-folder arrow did not enter that folder");
-        Check(!Field<bool>(browser, "_previewShown") && browser.Width == compactWidth,
-            "Entering another folder must collapse the preview back to the compact browser");
+        Check(!Field<Form?>(browser, "_previewPopup")!.Visible,
+            "Entering another folder must close the unpinned preview");
         Call(browser, "EnterFolder", contract);
         WaitFor(() => Field<FileSearchPage?>(browser, "_page")?.Total == 1 && results.Items[0].Text == "合同.txt",
             "Grandchild contents did not load");
@@ -265,6 +293,26 @@ static class RadialFolderBrowserChecks
         if (DwmGetWindowAttribute(handle, 33, out var preference, sizeof(int)) == 0 && preference == 2)
             return true;
         return false;
+    }
+
+    static string[] ReadFileDrop()
+    {
+        for (var attempt = 0; attempt < 6; attempt++)
+        {
+            try { return Clipboard.GetFileDropList().Cast<string>().ToArray(); }
+            catch (Exception) { Thread.Sleep(120); }
+        }
+        return [];
+    }
+
+    static string ReadClipboardText()
+    {
+        for (var attempt = 0; attempt < 6; attempt++)
+        {
+            try { return Clipboard.GetText(); }
+            catch (Exception) { Thread.Sleep(120); }
+        }
+        return "";
     }
 
     static bool ClipboardAvailable()
