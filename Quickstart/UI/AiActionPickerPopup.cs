@@ -113,6 +113,7 @@ internal sealed class AiActionPickerPopup : Form
             true);
         DoubleBuffered = true;
         FormStyler.ApplyRounded(this);
+        FormStyler.DisablePopupTransitions(this);
 
         var border = new Panel
         {
@@ -305,7 +306,6 @@ internal sealed class AiActionPickerPopup : Form
         if (MiddleClickHost == null) PopupMotion.SlideIn(this, direction: -1);
         if (!Visible) Show();
         HighlightAtScreenPoint(screenPt);
-        Refresh();
     }
 
     internal void PrepareAtGesturePoint(Point screenPt)
@@ -325,6 +325,7 @@ internal sealed class AiActionPickerPopup : Form
             // 不先落屏，下面按 DPI 算出的尺寸与行高都会沿用原显示器。
             UiScaleHelper.MoveIntoWorkingArea(this, screen);
             EnsurePopupSizeForScreen(screen);
+            if (MiddleClickHost != null) return;
             var workingArea = screen.WorkingArea;
             var margin = UiScaleHelper.Scale(this, 8);
             var x = Math.Max(workingArea.Left + margin, Math.Min(screenPt.X - Width + margin, workingArea.Right - Width - margin));

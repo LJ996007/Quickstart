@@ -22,3 +22,27 @@ body.markdown #content { box-sizing: border-box; padding: 20px; background: whit
 body.image #content { box-sizing: border-box; padding: 12px; display: grid; place-items: center; }
 .image img { max-width: 100%; max-height: calc(100vh - 24px); object-fit: contain; cursor: zoom-in; }
 .image img.actual-size { max-width: none; max-height: none; cursor: zoom-out; justify-self: start; align-self: start; }
+
+/* Standalone preview: quiet canvas, compact page gutters, one scroll surface. */
+body.standalone { background: #eef2f7; }
+.standalone #content { scrollbar-width: thin; scrollbar-color: #a9b6c6 transparent; }
+.docx.standalone #content, .excel.standalone #content { overflow-x: hidden; }
+.docx.standalone .docx-wrapper {
+  box-sizing: border-box; padding: 12px !important; background: transparent;
+}
+.docx.standalone .docx-wrapper > section.docx {
+  flex: none; margin-bottom: 12px; border-radius: 3px;
+  box-shadow: 0 0 0 1px #dce3ec, 0 4px 16px #182b4210;
+}
+.markdown.standalone #content { padding: clamp(14px, 3vw, 40px); }
+.markdown.standalone table { width: 100%; table-layout: fixed; }
+.markdown.standalone pre { white-space: pre-wrap; }
+.standalone ::selection { background: #bed7ff; color: #112848; }
+#selection-copy {
+  position: fixed; z-index: 10000; white-space: nowrap; padding: 6px 10px;
+  background: #fff; color: #24579b; border: 1px solid #ccd9eb; border-radius: 8px;
+  font: 600 12px "Segoe UI", "Microsoft YaHei", sans-serif; cursor: pointer;
+  box-shadow: 0 4px 15px #173a632b; user-select: none;
+}
+#selection-copy:hover, #selection-copy:focus-visible { background: #edf4ff; }
+#selection-copy[hidden] { display: none; }

@@ -12,7 +12,6 @@ using Quickstart.Core;
 /// </summary>
 internal sealed class MiddleClickPopup : Form
 {
-    private const string SearchHint = "Everything · Enter 搜索 · 单击条目执行 · Esc 关闭";
     private readonly TextBox _query = new()
     {
         PlaceholderText = "搜索文件或文件夹",
@@ -26,9 +25,7 @@ internal sealed class MiddleClickPopup : Form
     };
     private readonly Label _search = new()
     {
-        // The placeholder hides while focused, so the hint names the search engine too.
-        // It also replaces the action panel's footer hint, which is hidden in this layout.
-        Text = SearchHint,
+        Text = "Enter 搜索",
         TextAlign = ContentAlignment.MiddleRight,
         ForeColor = UiTheme.TextMuted,
         Cursor = Cursors.Hand,
@@ -48,6 +45,7 @@ internal sealed class MiddleClickPopup : Form
     private Point _actionOffset;
     private Point _anchorOffset;
     private bool _hasLayout;
+    private bool _shownOnce;
     private Point _anchor;
     private (string Device, Rectangle Area, int Dpi)? _layoutEnvironment;
 
@@ -69,6 +67,7 @@ internal sealed class MiddleClickPopup : Form
         BackColor = UiTheme.Border;
         Padding = new Padding(1);
         FormStyler.ApplyRounded(this);
+        FormStyler.DisablePopupTransitions(this);
         _searchIcon.Font = new Font("Segoe MDL2 Assets", 10f);
         _search.Font = UiTheme.CreateFont(8.5f);
         _query.BackColor = UiTheme.Card;
@@ -79,6 +78,7 @@ internal sealed class MiddleClickPopup : Form
         _recent.Click += async (_, _) => await ShowRecentFoldersAsync();
         _bar.Layout += (_, _) => LayoutBar();
         Controls.Add(_bar);
+        ActiveControl = _query;
         _search.Click += (_, _) => SubmitSearch();
         _query.KeyDown += (_, e) =>
         {
@@ -95,7 +95,7 @@ internal sealed class MiddleClickPopup : Form
                 SendMessage(Handle, WM_NCLBUTTONDOWN, (IntPtr)HTCAPTION, IntPtr.Zero);
             };
         LocationChanged += (_, _) => MovePanels();
-        _focusTimer.Tick += (_, _) => CheckFocus();
+        _focusTimer.Tick += (_, _) => CheckFocus(GetForegroundWindow());
         FormClosing += (_, e) =>
         {
             if (e.CloseReason != CloseReason.UserClosing) return;
@@ -108,7 +108,6 @@ internal sealed class MiddleClickPopup : Form
         int S(int value) => UiScaleHelper.Scale(this, value);
         var size = _bar.ClientSize;
         _searchIcon.Bounds = new Rectangle(S(6), 0, S(34), size.Height);
-        _search.Text = "Enter 搜索";
         var hintWidth = TextRenderer.MeasureText(_search.Text, _search.Font).Width + S(14);
         _search.Bounds = new Rectangle(size.Width - hintWidth - S(4), 0, hintWidth, size.Height);
         _recent.Bounds = new Rectangle(_search.Left - S(100), 0, S(96), size.Height);
@@ -169,15 +168,17 @@ internal sealed class MiddleClickPopup : Form
         try
         {
             Attach(launcher); Attach(actions);
-            // All three windows already have their final bounds. Show them without
-            // extra slide/focus cycles, then give keyboard focus to the search bar.
-            Show();
+            // Let WinForms run its normal first-show lifecycle. On later opens,
+            // reveal the three existing HWNDs in one compositor transaction.
+            if (_shownOnce) RevealGroup(launcher, actions);
             launcher.Show();
             actions.Show();
             actions.EnterInteractiveMode();
+            Show();
             WindowActivator.TryForceForeground(Handle);
-            _query.Focus();
+            if (!_query.Focused) _query.Focus();
             _focusTimer.Start();
+            _shownOnce = true;
         }
         catch { HidePanels(); throw; }
         finally { _arranging = false; }
@@ -200,7 +201,7 @@ internal sealed class MiddleClickPopup : Form
 
     private void PreparePanels(MainPopup launcher, AiActionPickerPopup actions, Point point, IntPtr sourceWindow)
     {
-        HidePanels();
+        if (_launcher != null) HidePanels();
         _arranging = true;
         _launcher = launcher;
         _actions = actions;
@@ -234,6 +235,19 @@ internal sealed class MiddleClickPopup : Form
         panel.Owner = this;
         panel.VisibleChanged += PanelVisibilityChanged;
         panel.SizeChanged += PanelSizeChanged;
+    }
+
+    private void RevealGroup(Form launcher, Form actions)
+    {
+        const uint flags = 0x0001 | 0x0002 | 0x0004 | 0x0010 | 0x0040 | 0x0200;
+        // SHOWWINDOW only, preserving size, position, z-order, owner order and focus.
+        var batch = BeginDeferWindowPos(3);
+        foreach (var panel in new[] { launcher, actions, this })
+        {
+            if (batch == IntPtr.Zero) return; // Managed Show below also handles a failed batch.
+            batch = DeferWindowPos(batch, panel.Handle, IntPtr.Zero, 0, 0, 0, 0, flags);
+        }
+        if (batch != IntPtr.Zero) EndDeferWindowPos(batch);
     }
 
     private void PanelVisibilityChanged(object? sender, EventArgs e)
@@ -306,12 +320,11 @@ internal sealed class MiddleClickPopup : Form
         ArrangePanels();
     }
 
-    private void CheckFocus()
+    private void CheckFocus(IntPtr window)
     {
         if (!Visible || _arranging || _closing) return;
         if (_recentMenu.Visible) return;
         if (_launcher is MainPopup { IsContextInteraction: true }) return;
-        var window = GetForegroundWindow();
         if (window == IntPtr.Zero) return;
         // Context menus and edit dialogs can be owned by either child panel.
         var root = GetAncestor(window, 2); // GA_ROOT
@@ -330,7 +343,7 @@ internal sealed class MiddleClickPopup : Form
 
     internal void HidePanels()
     {
-        if (_closing) return;
+        if (_closing || (_launcher == null && !Visible)) return;
         _closing = true;
         try
         {
@@ -372,6 +385,10 @@ internal sealed class MiddleClickPopup : Form
     private const int WM_NCLBUTTONDOWN = 0x00A1;
     private const int HTCAPTION = 2;
     [DllImport("user32.dll")] private static extern IntPtr GetForegroundWindow();
+    [DllImport("user32.dll")] private static extern IntPtr BeginDeferWindowPos(int count);
+    [DllImport("user32.dll")] private static extern IntPtr DeferWindowPos(IntPtr batch, IntPtr window, IntPtr after,
+        int x, int y, int width, int height, uint flags);
+    [DllImport("user32.dll")] private static extern bool EndDeferWindowPos(IntPtr batch);
     [DllImport("user32.dll")] private static extern IntPtr GetAncestor(IntPtr window, uint flags);
     [DllImport("user32.dll")] private static extern IntPtr GetWindow(IntPtr window, uint command);
     [DllImport("user32.dll")] private static extern bool ReleaseCapture();

@@ -10,15 +10,17 @@ public static class FormStyler
 {
     public const int StandardCornerRadius = 10;
     private const int DwmWindowCornerPreferenceAttribute = 33;
+    private const int DwmTransitionsForceDisabled = 3;
 
     public static void ApplyRounded(Form form, int logicalCornerRadius = StandardCornerRadius)
     {
         ArgumentNullException.ThrowIfNull(form);
 
+        var systemCorners = false;
         void RefreshRoundedAppearance()
         {
-            bool appliedBySystem = TryApplySystemRoundedCorners(form.Handle);
-            if (appliedBySystem)
+            systemCorners = TryApplySystemRoundedCorners(form.Handle);
+            if (systemCorners)
             {
                 ClearRegion(form);
             }
@@ -29,7 +31,10 @@ public static class FormStyler
         }
 
         form.HandleCreated += (_, _) => RefreshRoundedAppearance();
-        form.Resize += (_, _) => UpdateRoundedRegionIfNeeded(form, logicalCornerRadius);
+        form.Resize += (_, _) =>
+        {
+            if (form.IsHandleCreated && !systemCorners) UpdateRoundedRegion(form, logicalCornerRadius);
+        };
         form.DpiChanged += (_, _) => RefreshRoundedAppearance();
         form.FormClosed += (_, _) => ClearRegion(form);
 
@@ -37,15 +42,17 @@ public static class FormStyler
             RefreshRoundedAppearance();
     }
 
-    private static void UpdateRoundedRegionIfNeeded(Form form, int logicalCornerRadius)
+    internal static void DisablePopupTransitions(Form form)
     {
-        // Constructor-time layout must not create the entire native window tree
-        // merely to update a corner. HandleCreated applies the final appearance.
-        if (!form.IsHandleCreated) return;
-        if (TryApplySystemRoundedCorners(form.Handle))
-            return;
-
-        UpdateRoundedRegion(form, logicalCornerRadius);
+        void Apply()
+        {
+            // Gesture windows supply their own motion. Independent DWM transitions
+            // on the bar and both columns make the middle-click group appear in stages.
+            var disabled = 1;
+            DwmSetWindowAttribute(form.Handle, DwmTransitionsForceDisabled, ref disabled, sizeof(int));
+        }
+        form.HandleCreated += (_, _) => Apply();
+        if (form.IsHandleCreated) Apply();
     }
 
     private static void UpdateRoundedRegion(Form form, int logicalCornerRadius)

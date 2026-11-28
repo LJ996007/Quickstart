@@ -93,6 +93,8 @@ static class Program
         launcher.NavigationFailed += message => trayIcon.ShowBalloon("目录跳转", message, ToolTipIcon.Warning);
         using var uiDispatcher = new Control();
         _ = uiDispatcher.Handle;
+        using var recentDocuments = new RecentDocumentRecorder(uiDispatcher);
+        OfficePreviewPane.FilePreviewed += recentDocuments.Record;
         var mouseHook = new GlobalMouseHook();
         using var globalHotKey = new GlobalHotKey();
         using var fileSearchHotKey = new GlobalHotKey();
@@ -261,7 +263,7 @@ static class Program
         var initialUiPrewarmed = false;
         var deferredStartupDone = false;
         var aiPopupPrewarmTimer = new System.Windows.Forms.Timer { Interval = 3000 };
-        var popupPrewarmTimer = new System.Windows.Forms.Timer { Interval = 600 };
+        var popupPrewarmTimer = new System.Windows.Forms.Timer { Interval = 150 };
         var popupPrewarmPhase = 0;
 
         void PostToUi(Action action)
@@ -351,12 +353,12 @@ static class Program
         void HideInputPanels()
         {
             middleClickPopup?.HidePanels();
-            mainPopup?.Hide();
+            if (mainPopup is { Visible: true }) mainPopup.Hide();
             radialMenuPopup?.HidePanels();
-            aiActionPicker?.Hide();
-            aiPopup?.Hide();
-            fileSearchPopup?.Hide();
-            dialogQuickBar.Bar.Hide();
+            if (aiActionPicker is { Visible: true }) aiActionPicker.Hide();
+            if (aiPopup is { Visible: true }) aiPopup.Hide();
+            if (fileSearchPopup is { Visible: true }) fileSearchPopup.Hide();
+            if (dialogQuickBar.Bar.Visible) dialogQuickBar.Bar.Hide();
         }
 
         async void ShowFileSearch(string query = "", IntPtr sourceWindow = default)
@@ -368,7 +370,8 @@ static class Program
                 if (await dialogQuickBar.ShowSearchAsync(query, sourceWindow)) return;
                 if (fileSearchPopup == null || fileSearchPopup.IsDisposed)
                     fileSearchPopup = new FileSearchPopup(configManager, launcher);
-                fileSearchPopup.ShowSearch(query, sourceWindow);
+                // The quick bar has already resolved this source window.
+                fileSearchPopup.ShowSearch(query, sourceWindow, detectDialog: false);
             }
             catch (Exception ex)
             {
@@ -510,6 +513,7 @@ static class Program
         };
         Application.ApplicationExit += (_, _) =>
         {
+            OfficePreviewPane.FilePreviewed -= recentDocuments.Record;
             DisplayEnvironmentWatcher.Stop();
             gestureMoveTimer.Stop();
             gestureMoveTimer.Dispose();
@@ -529,6 +533,7 @@ static class Program
 
         aiPopupPrewarmTimer.Tick += (_, _) =>
         {
+            if (settingsDialogOpen || Application.OpenForms.Cast<Form>().Any(form => form.Visible)) return;
             aiPopupPrewarmTimer.Stop();
             if (ShouldPrewarmAiPopup(configManager.Config))
                 _ = EnsureAiPopup();
@@ -547,12 +552,24 @@ static class Program
                             break;
                         case 1:
                             if (configManager.Config.MiddleClickEnabled)
+                            {
+                                _ = EnsureAiActionPicker();
+                                _ = EnsureMiddleClickPopup();
+                            }
+                            break;
+                        case 2:
+                            if (configManager.Config.MiddleClickEnabled)
                                 EnsureMiddleClickPopup().Prewarm(EnsureMainPopup(), EnsureAiActionPicker(), Cursor.Position);
                             break;
-                        default:
+                        case 3:
                             fileSearchPopup ??= new FileSearchPopup(configManager, launcher);
-                            PopupWarmup.CreateHiddenHandles(fileSearchPopup);
+                            break;
+                        case 4:
+                            if (fileSearchPopup is { IsDisposed: false }) PopupWarmup.CreateHiddenHandles(fileSearchPopup);
+                            break;
+                        default:
                             popupPrewarmTimer.Stop();
+                            if (fileSearchPopup is { IsDisposed: false }) _ = fileSearchPopup.WarmPreviewIfPreviouslyUsedAsync();
                             Perf($"popup-prewarm-done; visible={Application.OpenForms.Cast<Form>().Count(form => form.Visible)}");
                             break;
                     }

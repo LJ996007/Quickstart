@@ -10,6 +10,12 @@ using Quickstart.Utils;
 public sealed class OfficePreviewPane : UserControl
 {
     private const string Origin = "https://quickstart-preview.invalid";
+    // Give immutable scripts/styles a new URL when the executable changes. Document
+    // URLs remain short-lived and are always checked against this pane's current token.
+    private static readonly string AssetRoot = "/app/" + typeof(OfficePreviewPane).Module.ModuleVersionId.ToString("N") + "/";
+    private static readonly Dictionary<string, string> AssetNames = typeof(OfficePreviewPane).Assembly.GetManifestResourceNames()
+        .Where(name => name.StartsWith("OfficePreview/", StringComparison.Ordinal))
+        .ToDictionary(name => AssetRoot + name["OfficePreview/".Length..].Replace('\\', '/'), StringComparer.Ordinal);
     private readonly Label _title = new() { Dock = DockStyle.Fill, AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft,
         Margin = Padding.Empty, Visible = false };
     private readonly Label _message = new() { Dock = DockStyle.Fill, Padding = new Padding(24), Text = "选择文件预览",
@@ -29,25 +35,30 @@ public sealed class OfficePreviewPane : UserControl
     private readonly ToolTip _toolTips = new();
     private WebView2? _web;
     private Task? _initialize;
-    private Dictionary<string, byte[]> _assets = new(StringComparer.Ordinal);
+    private Task? _previewTask;
     private CancellationTokenSource? _readCts;
     private OfficePreviewDocument? _document;
     private string? _path;
     private string? _allowedNavigation;
+    private ulong? _navigationId;
+    private string? _reportedPreviewToken;
     private int _revision;
     private int _copyRevision;
     private bool _ready;
-    private bool _pinEnabled;
+    private bool _standalone;
     private bool _pinned;
     private readonly SemaphoreSlim _imageGate = new(1, 1);
     private long _imageBytes;
 
     public event EventHandler? OpenRequested;
     public event EventHandler? EscapeRequested;
+    internal static event Action<string>? FilePreviewed;
     /// <summary>只有独立预览窗启用钉住按钮；本地搜索的内嵌预览保持原样。</summary>
     public event EventHandler? PinToggled;
     /// <summary>独立预览窗右上角的关闭按钮（本地搜索的内嵌预览不显示）。</summary>
     public event EventHandler? CloseRequested;
+    internal event MouseEventHandler? TitleDragRequested;
+    internal event Action<Size>? ImageDecoded;
     public bool HasPreviewFocus => _web?.ContainsFocus == true;
     /// <summary>是否一直显示在最前面（不随失焦自动关闭）。</summary>
     public bool Pinned => _pinned;
@@ -58,12 +69,12 @@ public sealed class OfficePreviewPane : UserControl
         ForeColor = UiTheme.TextPrimary;
         Margin = Padding.Empty;
         _title.Font = UiTheme.CreateFont(9.5f, FontStyle.Bold);
+        _title.MouseDown += (sender, e) => TitleDragRequested?.Invoke(sender, e);
         foreach (var button in new[] { _copy, _copyAll, _open })
         {
             UiTheme.StyleFlatButton(button, UiTheme.Card);
             button.Dock = DockStyle.Fill;
             button.AutoSize = false;
-            button.TextChanged += (_, _) => ApplyHeaderMetrics();
         }
         _toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         for (var i = 0; i < 5; i++) _toolbar.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
@@ -101,34 +112,41 @@ public sealed class OfficePreviewPane : UserControl
         try
         {
             int S(int value) => (int)Math.Round(value * DeviceDpi / 96d);
-            _layout.RowStyles[0].Height = _path == null ? 0 : S(40);
-            var inset = _pinEnabled ? S(8) : 0;
-            _toolbar.Margin = new Padding(inset, 0, inset, S(4));
+            var buttonHeight = S(_standalone ? 27 : 36);
+            _layout.RowStyles[0].Height = _path == null ? 0 : S(_standalone ? 30 : 40);
+            var inset = _standalone ? S(6) : 0;
+            _toolbar.Margin = new Padding(inset, 0, inset, S(_standalone ? 3 : 4));
             foreach (var button in new[] { _copy, _copyAll, _open })
             {
                 button.MinimumSize = Size.Empty;
-                button.Size = new Size(TextRenderer.MeasureText(button.Text, button.Font).Width + S(20), S(36));
-                button.Margin = new Padding(S(8), 0, 0, 0);
+                button.Size = new Size(TextRenderer.MeasureText(button.Text, button.Font).Width + S(_standalone ? 14 : 20), buttonHeight);
+                button.Margin = new Padding(S(_standalone ? 3 : 8), 0, 0, 0);
             }
             _pin.MinimumSize = _close.MinimumSize = Size.Empty;
-            _pin.Size = _close.Size = new Size(S(34), S(36));
-            _pin.Margin = new Padding(S(6), 0, 0, 0);
+            _pin.Size = _close.Size = new Size(S(29), buttonHeight);
+            _pin.Margin = new Padding(S(4), 0, 0, 0);
             _close.Margin = new Padding(S(2), 0, 0, 0);
         }
         finally { _sizingHeader = false; }
     }
 
-    /// <summary>启用 / 停用窗口右侧的钉住按钮。</summary>
-    public void SetPinEnabled(bool enabled)
+    internal void UseStandaloneToolbar()
     {
-        _pinEnabled = enabled;
-        _pin.Visible = _close.Visible = enabled;
+        _standalone = true;
+        _pin.Visible = _close.Visible = true;
+        _title.Cursor = Cursors.SizeAll;
+        _title.ForeColor = UiTheme.TextPrimary;
+        foreach (var button in new[] { _copy, _copyAll, _open })
+        {
+            button.ForeColor = UiTheme.TextSecondary;
+            button.FlatAppearance.MouseOverBackColor = UiTheme.SelectionFill;
+        }
         ApplyHeaderMetrics();
     }
 
     private void TogglePin()
     {
-        if (!_pinEnabled) return;
+        if (!_standalone) return;
         _pinned = !_pinned;
         ApplyPinState();
         PinToggled?.Invoke(this, EventArgs.Empty);
@@ -140,12 +158,6 @@ public sealed class OfficePreviewPane : UserControl
         _pin.AccessibleName = _pinned ? "取消钉住" : "钉在最前面";
         _toolTips.SetToolTip(_pin, _pin.AccessibleName);
         _pin.Invalidate();
-    }
-
-    protected override void OnLayout(LayoutEventArgs e)
-    {
-        ApplyHeaderMetrics();
-        base.OnLayout(e);
     }
 
     protected override void OnDpiChangedAfterParent(EventArgs e)
@@ -160,29 +172,30 @@ public sealed class OfficePreviewPane : UserControl
         catch { /* Missing runtime is explained when an actual preview is requested. */ }
     }
 
-    private Task EnsureInitializedAsync() => _initialize ??= InitializeAsync();
+    // WebView2 starts the shared browser process with its first controller. Keep
+    // that cost off the first click for users who already use local previews.
+    private static string BrowserProfile => Path.Combine(AppPaths.Root, "office-preview", "webview");
+
+    internal async Task WarmUpIfPreviouslyUsedAsync()
+    {
+        if (await Task.Run(() => Directory.Exists(BrowserProfile)) && !IsDisposed && !Disposing)
+            await WarmUpAsync();
+    }
+
+    private Task EnsureInitializedAsync()
+    {
+        if (_initialize == null || _initialize.IsFaulted || _initialize.IsCanceled)
+            _initialize = InitializeAsync();
+        return _initialize;
+    }
 
     private async Task InitializeAsync()
     {
-        // Checks for an installed Evergreen runtime without installing or opening anything.
-        _ = CoreWebView2Environment.GetAvailableBrowserVersionString();
-        _assets = await Task.Run(() =>
-        {
-            var assembly = typeof(OfficePreviewPane).Assembly;
-            var assets = new Dictionary<string, byte[]>(StringComparer.Ordinal);
-            foreach (var name in assembly.GetManifestResourceNames().Where(n => n.StartsWith("OfficePreview/", StringComparison.Ordinal)))
-            {
-                using var source = assembly.GetManifestResourceStream(name)!;
-                using var buffer = new MemoryStream(); source.CopyTo(buffer);
-                assets["/" + name["OfficePreview/".Length..].Replace('\\', '/')] = buffer.ToArray();
-            }
-            return assets;
-        });
+        var environment = await CoreWebView2Environment.CreateAsync(null, BrowserProfile);
         if (IsDisposed) return;
+        _web?.Dispose(); // A previous controller initialization may have failed.
         _web = new WebView2 { Dock = DockStyle.Fill, Visible = false, DefaultBackgroundColor = Color.White };
         _body.Controls.Add(_web);
-        var environment = await CoreWebView2Environment.CreateAsync(null, Path.Combine(AppPaths.Root, "office-preview", "webview"));
-        if (IsDisposed) return;
         await _web.EnsureCoreWebView2Async(environment);
         if (IsDisposed) return;
         var core = _web.CoreWebView2;
@@ -195,7 +208,11 @@ public sealed class OfficePreviewPane : UserControl
         core.Settings.HiddenPdfToolbarItems = CoreWebView2PdfToolbarItems.Save | CoreWebView2PdfToolbarItems.SaveAs | CoreWebView2PdfToolbarItems.Print;
         core.AddWebResourceRequestedFilter("*", CoreWebView2WebResourceContext.All);
         core.WebResourceRequested += ResourceRequested;
-        core.NavigationStarting += (_, e) => e.Cancel = e.Uri != _allowedNavigation;
+        core.NavigationStarting += (_, e) =>
+        {
+            e.Cancel = e.Uri != _allowedNavigation;
+            if (!e.Cancel) _navigationId = e.NavigationId;
+        };
         core.NewWindowRequested += (_, e) => e.Handled = true;
         core.DownloadStarting += (_, e) => e.Cancel = true;
         core.PermissionRequested += (_, e) => e.State = CoreWebView2PermissionState.Deny;
@@ -211,9 +228,10 @@ public sealed class OfficePreviewPane : UserControl
         };
         core.NavigationCompleted += (_, e) =>
         {
-            if (_document?.Kind != "pdf" || core.Source != _allowedNavigation) return;
+            if (_document?.Kind != "pdf" || e.NavigationId != _navigationId || core.Source != _allowedNavigation) return;
             if (!e.IsSuccess) { ShowMessage("PDF 预览失败，请用默认程序打开。"); return; }
             _hint.Text = "选择 PDF 文字后按 Ctrl+C；扫描件不提供文字识别。";
+            ReportDisplayedFile();
         };
         _web.KeyDown += (_, e) =>
         {
@@ -224,59 +242,106 @@ public sealed class OfficePreviewPane : UserControl
                 BeginInvoke(() => EscapeRequested?.Invoke(this, EventArgs.Empty));
             }
         };
-        Navigate(Origin + "/index.html");
+    }
+
+    private void CancelDocument()
+    {
+        _revision++; _copyRevision++; _readCts?.Cancel();
+        _readCts?.Dispose(); _readCts = null;
+        _document = null; _path = null; _ready = false;
+        _previewTask = null;
+        _imageBytes = 0;
+        _copy.Enabled = _copyAll.Enabled = false;
     }
 
     public void Clear(string? message = null)
     {
-        _revision++; _copyRevision++; _readCts?.Cancel();
-        _document = null; _path = null; _ready = false;
-        _imageBytes = 0;
-        _copy.Enabled = _copyAll.Enabled = _open.Enabled = false;
+        var text = message ?? "选择文件预览";
+        if (_path == null && !_open.Enabled && _message.Text == text) return;
+        CancelDocument();
+        _open.Enabled = false;
         _title.Text = "";
         _title.Visible = _toolbar.Visible = _copy.Visible = _copyAll.Visible = false;
         ApplyHeaderMetrics();
         _body.Margin = Padding.Empty;
         _toolTips.SetToolTip(_title, "");
         _hint.Text = "";
-        ShowMessage(message ?? "选择文件预览");
-        if (_web?.CoreWebView2 != null) Navigate(Origin + "/index.html");
+        ShowMessage(text);
+        UnloadViewer();
     }
 
-    public async Task PreviewAsync(string path)
+    private void UnloadViewer()
     {
-        if (path == _path && _document != null) return;
-        Clear();
+        if (_allowedNavigation != null && _allowedNavigation != "about:blank" && _web?.CoreWebView2 != null)
+            Navigate("about:blank");
+    }
+
+    public Task PreviewAsync(string path)
+    {
+        SelectFile(path);
+        return _previewTask ??= LoadPreviewAsync(path);
+    }
+
+    // Keyboard repeat can select several rows before reading any of them. Invalidate
+    // the old token and copy actions as soon as the selection actually changes.
+    internal bool SelectFile(string path)
+    {
+        if (string.Equals(path, _path, StringComparison.OrdinalIgnoreCase)) return _previewTask == null;
+        CancelDocument();
         _path = path;
-        _open.Enabled = true;
-        _title.Text = Path.GetFileName(path);
-        _title.Visible = _toolbar.Visible = true;
-        _body.Margin = Padding.Empty;
-        ApplyHeaderMetrics();
+        var supported = OfficePreviewDocument.IsSupported(path);
+        var kind = Path.GetExtension(path).TrimStart('.').ToLowerInvariant();
+        var isImage = OfficePreviewDocument.IsImageKind(kind);
+        _layout.SuspendLayout();
+        _toolbar.SuspendLayout();
+        try
+        {
+            _open.Enabled = true;
+            _title.Text = Path.GetFileName(path);
+            _title.Visible = _toolbar.Visible = true;
+            _copy.Visible = supported && kind != "pdf";
+            _copyAll.Visible = supported && kind != "pdf" && !isImage;
+            _copy.Text = isImage ? "复制图片" : "复制选中";
+            _copyAll.Text = kind is "docx" or "md" or "markdown" ? "复制全文" : "复制工作表";
+            ApplyHeaderMetrics();
+        }
+        finally
+        {
+            _toolbar.ResumeLayout(true);
+            _layout.ResumeLayout(true);
+        }
         _toolTips.SetToolTip(_title, path);
-        if (!OfficePreviewDocument.IsSupported(path)) { ShowMessage("此类型暂不支持预览，请双击结果或用默认程序打开。"); return; }
+        _hint.Text = "";
+        if (!supported)
+        {
+            ShowMessage("此类型暂不支持预览，请双击结果或用默认程序打开。");
+            UnloadViewer();
+            _previewTask = Task.CompletedTask;
+        }
+        else ShowMessage("正在加载预览…");
+        return supported;
+    }
+
+    private async Task LoadPreviewAsync(string path)
+    {
         var revision = _revision;
-        _readCts?.Dispose();
-        var cts = _readCts = new CancellationTokenSource();
-        ShowMessage("正在加载预览…");
+        _readCts = new CancellationTokenSource();
+        var token = _readCts.Token;
         try
         {
             // Reading and ZIP metadata validation never run on the search UI thread.
-            var read = Task.Run(() => OfficePreviewDocument.ReadAsync(path, cts.Token), cts.Token);
+            var read = Task.Run(() => OfficePreviewDocument.ReadAsync(path, token), token);
             // Always observe both tasks, including read errors if runtime initialization fails.
             await Task.WhenAll(EnsureInitializedAsync(), read);
             var document = await read;
-            if (IsDisposed || revision != _revision || cts.IsCancellationRequested) return;
+            if (IsDisposed || revision != _revision || token.IsCancellationRequested) return;
             _document = document;
             var isPdf = document.Kind == "pdf";
-            _copy.Visible = !isPdf;
-            _copyAll.Visible = !isPdf && !document.IsImage;
-            _copy.Text = document.IsImage ? "复制图片" : "复制选中";
-            _copyAll.Text = document.Kind is "docx" or "md" or "markdown" ? "复制全文" : "复制工作表";
             _hint.Text = isPdf ? "选择 PDF 文字后按 Ctrl+C；扫描件不提供文字识别。" : "正在解析文档…";
             _message.Visible = false;
             _web!.Visible = true; _web.BringToFront();
-            Navigate(isPdf ? Origin + document.ResourcePath : $"{Origin}/index.html?token={document.Token}&kind={document.Kind}");
+            Navigate(isPdf ? Origin + document.ResourcePath + (_standalone ? "#view=FitH" : "")
+                : $"{Origin}{AssetRoot}index.html?token={document.Token}&kind={document.Kind}{(_standalone ? "&standalone=1" : "")}");
         }
         catch (OperationCanceledException) { }
         catch (Exception ex)
@@ -287,6 +352,7 @@ public sealed class OfficePreviewPane : UserControl
             ShowMessage(detail is WebView2RuntimeNotFoundException
                 ? "预览需要 Microsoft Edge WebView2 Runtime。安装后重新启动 Quickstart；当前仍可用默认程序打开。"
                 : $"无法预览：{detail.Message}\n可用默认程序打开文件。");
+            UnloadViewer();
         }
     }
 
@@ -298,8 +364,16 @@ public sealed class OfficePreviewPane : UserControl
 
     private void Navigate(string uri)
     {
+        _navigationId = null;
         _allowedNavigation = uri;
         _web?.CoreWebView2?.Navigate(uri);
+    }
+
+    private void ReportDisplayedFile()
+    {
+        if (_path == null || _document == null || _web?.Visible != true || _reportedPreviewToken == _document.Token) return;
+        _reportedPreviewToken = _document.Token;
+        FilePreviewed?.Invoke(_path);
     }
 
     private void ResourceRequested(object? sender, CoreWebView2WebResourceRequestedEventArgs e)
@@ -320,22 +394,26 @@ public sealed class OfficePreviewPane : UserControl
         }
         byte[]? bytes = null;
         string mime = "application/octet-stream";
-        var isDocument = false;
         if (uri.GetLeftPart(UriPartial.Authority) == Origin && e.Request.Method == "GET")
         {
             if (_document != null && uri.AbsolutePath == _document.ResourcePath)
             {
                 bytes = _document.Bytes;
-                isDocument = true;
                 mime = _document.ContentType;
             }
-            else if (_assets.TryGetValue(uri.AbsolutePath, out bytes))
+            else if (AssetNames.TryGetValue(uri.AbsolutePath, out var name))
             {
                 mime = Path.GetExtension(uri.AbsolutePath) switch
                 {
                     ".js" => "text/javascript; charset=utf-8", ".css" => "text/css; charset=utf-8",
                     ".html" => "text/html; charset=utf-8", _ => "text/plain; charset=utf-8"
                 };
+                // Manifest streams refer directly to the bundled resource. Each request
+                // gets its own seek position and never copies the Excel/Word bundles.
+                var asset = typeof(OfficePreviewPane).Assembly.GetManifestResourceStream(name)!;
+                e.Response = core.Environment.CreateWebResourceResponse(asset, 200, "OK",
+                    $"Content-Type: {mime}\r\nCache-Control: max-age=31536000, immutable\r\nX-Content-Type-Options: nosniff\r\nContent-Length: {asset.Length}");
+                return;
             }
         }
         if (bytes == null)
@@ -344,9 +422,9 @@ public sealed class OfficePreviewPane : UserControl
             e.Response = core.Environment.CreateWebResourceResponse(Stream.Null, 403, "Forbidden", "Content-Type: text/plain");
             return;
         }
-        var headers = $"Content-Type: {mime}\r\nCache-Control: {(isDocument ? "no-store" : "no-cache")}\r\nX-Content-Type-Options: nosniff";
+        var headers = $"Content-Type: {mime}\r\nCache-Control: no-store\r\nX-Content-Type-Options: nosniff";
         // PDFium may request byte ranges when jumping between pages.
-        if (isDocument && mime == "application/pdf" && e.Request.Headers.Contains("Range"))
+        if (mime == "application/pdf" && e.Request.Headers.Contains("Range"))
         {
             var range = e.Request.Headers.GetHeader("Range");
             var parts = range.StartsWith("bytes=", StringComparison.Ordinal) ? range[6..].Split('-') : [];
@@ -416,6 +494,10 @@ public sealed class OfficePreviewPane : UserControl
                 case "ready":
                     _ready = true; _copy.Enabled = _copyAll.Enabled = true;
                     _hint.Text = _document.IsImage ? "点击图片切换原始大小" : "";
+                    if (_document.IsImage && root.TryGetProperty("width", out var width) && width.TryGetInt32(out var w)
+                        && root.TryGetProperty("height", out var height) && height.TryGetInt32(out var h) && w > 0 && h > 0)
+                        ImageDecoded?.Invoke(new Size(w, h));
+                    ReportDisplayedFile();
                     break;
                 case "copy" when _ready && text.Length is > 0 and <= 8 * 1024 * 1024:
                     await CopyDataAsync(text, _document.Token); break;
@@ -446,7 +528,7 @@ public sealed class OfficePreviewPane : UserControl
             try
             {
                 // Clipboard managers can briefly hold the clipboard. Retry without blocking search/UI.
-                Clipboard.SetDataObject(data, true, 0, 0);
+                Clipboard.SetDataObject(data is string text ? new DataObject(DataFormats.UnicodeText, text) : data, true, 0, 0);
                 _hint.Text = "已复制内容";
                 return;
             }
@@ -470,7 +552,7 @@ public sealed class OfficePreviewPane : UserControl
         if (disposing && !IsDisposed)
         {
             _revision++; _readCts?.Cancel(); _readCts?.Dispose();
-            _document = null; _web?.Dispose(); _assets.Clear();
+            _document = null; _web?.Dispose();
             _toolTips.Dispose();
         }
         base.Dispose(disposing);

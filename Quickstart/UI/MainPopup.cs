@@ -21,8 +21,17 @@ public sealed class MainPopup : Form
     private EntryView[] _renderedEntries = [];
     private DateTime _listRefreshedAt;
 
-    private EntryView[] CaptureEntryView() => _configManager.Config.Entries.Select(e =>
-        new EntryView(e, e.Id, e.Name, e.Path, e.Type, e.Group, e.SortOrder, e.LastUsedAt, e.UseCount, e.CustomIconPath)).ToArray();
+    private static EntryView CaptureEntry(QuickEntry e) =>
+        new(e, e.Id, e.Name, e.Path, e.Type, e.Group, e.SortOrder, e.LastUsedAt, e.UseCount, e.CustomIconPath);
+
+    private bool EntriesMatch()
+    {
+        var entries = _configManager.Config.Entries;
+        if (_renderedEntries.Length != entries.Count) return false;
+        for (var i = 0; i < entries.Count; i++)
+            if (_renderedEntries[i] != CaptureEntry(entries[i])) return false;
+        return true;
+    }
 
     private (TabKind, string, string, bool, bool) CaptureView() => (_activeTab, _activeGroup, _searchBox.Text,
         _configManager.Config.SortByRecentUsage, _configManager.Config.SortFoldersByFrequency);
@@ -30,13 +39,17 @@ public sealed class MainPopup : Form
     private void RefreshListForOpening()
     {
         // Reuse native list rows only when every input is unchanged. Dynamic dates,
-        // clipboard/recent history and expired file status always take the normal path.
+        // clipboard and recent history always take the normal path.
         if (_activeTab is TabKind.Folders or TabKind.Files or TabKind.Urls
-            && _renderedView == CaptureView() && DateTime.UtcNow - _listRefreshedAt < TimeSpan.FromSeconds(30)
-            && _renderedEntries.SequenceEqual(CaptureEntryView()))
+            && _renderedView == CaptureView() && EntriesMatch())
         {
+            if (_activeTab is TabKind.Folders or TabKind.Files && DateTime.UtcNow - _listRefreshedAt >= TimeSpan.FromSeconds(30))
+            {
+                _listRefreshedAt = DateTime.UtcNow;
+                QueuePathValidation(_listView.Items.Cast<ListViewItem>().Select(item => (QuickEntry)item.Tag!));
+            }
             _listView.SelectedItems.Clear();
-            if (_listView.Items.Count > 0) _listView.TopItem = _listView.Items[0];
+            if (_listView.TopItem is { Index: > 0 }) _listView.TopItem = _listView.Items[0];
             return;
         }
         RefreshList();
@@ -171,6 +184,8 @@ public sealed class MainPopup : Form
         Font = UiTheme.CreateFont(9f);
         TopMost = true;
         FormStyler.ApplyRounded(this);
+        FormStyler.DisablePopupTransitions(this);
+        WindowsRecentItemsService.Changed += OnRecentItemsChanged;
 
         var border = new Panel
         {
@@ -1606,7 +1621,7 @@ public sealed class MainPopup : Form
         ApplyTabStyles();
         UpdateSearchPlaceholder();
         PrepareTargetScreen(GetTrayScreen());
-        RefreshList();
+        RefreshListForOpening();
         PersistCurrentView();
         PositionNearTray();
         Show();
@@ -2268,16 +2283,10 @@ public sealed class MainPopup : Form
 
             if (entry.Type is EntryType.Folder or EntryType.File)
             {
-                if (_pathExistsCache.TryGetValue(entry.Path, out var status)
-                    && DateTime.UtcNow - status.CheckedAtUtc < TimeSpan.FromSeconds(30))
-                {
-                    if (!status.Exists)
-                        item.ForeColor = Color.Red;
-                }
-                else
-                {
+                var known = _pathExistsCache.TryGetValue(entry.Path, out var status);
+                if (known && !status.Exists) item.ForeColor = Color.Red;
+                if (!known || DateTime.UtcNow - status.CheckedAtUtc >= TimeSpan.FromSeconds(30))
                     pathsToValidate.Add(entry);
-                }
             }
 
             _listView.Items.Add(item);
@@ -2299,7 +2308,7 @@ public sealed class MainPopup : Form
 
         QueuePathValidation(pathsToValidate);
         _renderedView = CaptureView();
-        _renderedEntries = CaptureEntryView();
+        _renderedEntries = _configManager.Config.Entries.Select(CaptureEntry).ToArray();
         _listRefreshedAt = DateTime.UtcNow;
     }
 
@@ -2679,6 +2688,11 @@ public sealed class MainPopup : Form
         _listView.EndUpdate();
         SetCountText(items.Count);
         UpdateListColumnWidth();
+    }
+
+    private void OnRecentItemsChanged()
+    {
+        if (Visible && !IsDisposed && _activeTab == TabKind.RecentItems) RefreshRecentItemsList();
     }
 
     private WindowsRecentItem? GetSelectedRecentItem()
@@ -3233,8 +3247,9 @@ public sealed class MainPopup : Form
             if (token.IsCancellationRequested)
                 return;
 
+            var previouslyExisted = !_pathExistsCache.TryGetValue(path, out var previous) || previous.Exists;
             _pathExistsCache[path] = new PathStatus(exists, DateTime.UtcNow);
-            if (IsDisposed || !IsHandleCreated)
+            if (previouslyExisted == exists || IsDisposed || !IsHandleCreated)
                 return;
 
             try
@@ -3402,7 +3417,6 @@ public sealed class MainPopup : Form
         PrepareAtGesturePoint(screenPt, sourceWindow);
         if (MiddleClickHost == null) PopupMotion.SlideIn(this, direction: +1);
         Show();
-        Refresh();
     }
 
     internal void PrepareAtGesturePoint(Point screenPt, IntPtr sourceWindow = default)
@@ -3424,6 +3438,7 @@ public sealed class MainPopup : Form
         PrepareTargetScreen(screen);
         RefreshListForOpening();
         PersistCurrentView();
+        if (MiddleClickHost != null) return; // The group places both panels together.
 
         var workingArea = screen.WorkingArea;
         var popupMargin = UiScaleHelper.Scale(this, 8);
@@ -3616,8 +3631,10 @@ public sealed class MainPopup : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        var release = disposing && !IsDisposed;
+        if (release)
         {
+            WindowsRecentItemsService.Changed -= OnRecentItemsChanged;
             if (_clipboardHistory != null)
                 _clipboardHistory.Changed -= OnClipboardHistoryChanged;
             _disposeCts.Cancel();
@@ -3636,7 +3653,7 @@ public sealed class MainPopup : Form
 
         base.Dispose(disposing);
 
-        if (disposing)
+        if (release)
             _imageList.Dispose();
     }
 

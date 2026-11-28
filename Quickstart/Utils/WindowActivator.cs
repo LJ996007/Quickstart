@@ -74,8 +74,11 @@ internal static class WindowActivator
         if (root != IntPtr.Zero)
             hwnd = root;
 
-        if (IsForegroundRoot(hwnd) && IsWindowVisible(hwnd) && !IsIconic(hwnd))
-            return true;
+        if (IsWindowVisible(hwnd) && !IsIconic(hwnd))
+        {
+            if (IsForegroundRoot(hwnd)) return true;
+            if (SetForegroundWindow(hwnd) && IsForegroundRoot(hwnd)) return true;
+        }
 
         try
         {

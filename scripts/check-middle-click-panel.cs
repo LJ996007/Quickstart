@@ -39,6 +39,9 @@ static class MiddleClickChecks
         using var classic = new MainPopup(config, launcher);
         using var actions = (Form)Activator.CreateInstance(Type("AiActionPickerPopup"), config)!;
         using var host = (Form)Activator.CreateInstance(Type("MiddleClickPopup"))!;
+        // On a non-input test desktop Windows does not publish foreground changes.
+        // Feed the real fixture HWNDs to the same handler used by the focus timer.
+        var isolatedFocus = args.Contains("--isolated-focus");
         var showButton = new Button { Text = "中键面板", Dock = DockStyle.Top, Height = 45 };
         showButton.Click += (_, _) => Call(host, "ShowPanels", classic, actions, new Point(500, 300), source.Handle);
         source.Controls.Add(showButton);
@@ -65,6 +68,7 @@ static class MiddleClickChecks
                     var clock = System.Diagnostics.Stopwatch.StartNew();
                     Call(host, "ShowPanels", panel, actions, new Point(500, 300), source.Handle);
                     Console.WriteLine($"TIMING show {++showNumber}: {clock.Elapsed.TotalMilliseconds:F1} ms");
+                    if (isolatedFocus) Field<System.Windows.Forms.Timer>(host, "_focusTimer").Stop();
                 }
                 void AssertLayout(Form panel)
                 {
@@ -73,7 +77,8 @@ static class MiddleClickChecks
                     var hint = Field<Label>(host, "_search");
                     Check(recent.Parent!.ClientRectangle.Contains(recent.Bounds) && query.Right <= recent.Left && recent.Right <= hint.Left,
                         "Recent folders button overlaps search input or hint");
-                    Check(host.Visible && panel.Visible && actions.Visible, $"All three areas must be visible (bar={host.Visible}, list={panel.Visible}, actions={actions.Visible})");
+                    Check(host.Visible && panel.Visible && actions.Visible,
+                        $"Group visibility: bar={host.Visible}, list={panel.Visible}, actions={actions.Visible}; foreground={GetForegroundWindow()}, source={source.Handle}, bar={host.Handle}");
                     var area = Screen.FromControl(host).WorkingArea;
                     foreach (var bounds in new[] { host.Bounds, panel.Bounds, actions.Bounds })
                         Check(area.Contains(bounds), "Group extends outside screen");
@@ -94,6 +99,7 @@ static class MiddleClickChecks
                     foreach (var target in new[] { panel, actions, host })
                     {
                         target.Activate(); await Task.Delay(220);
+                        if (isolatedFocus) Call(host, "CheckFocus", target.Handle);
                         AssertLayout(panel);
                     }
                     var offset = panel.Location - new Size(host.Location);
@@ -115,6 +121,7 @@ static class MiddleClickChecks
                     Check(!host.Visible && !actions.Visible, "Child Escape must dismiss group");
                     Show(panel);
                     source.Activate(); await Task.Delay(350);
+                    if (isolatedFocus) Call(host, "CheckFocus", source.Handle);
                     Check(!host.Visible && !panel.Visible && !actions.Visible, "External click must dismiss group");
                     var list = Field<ListView>(classic, "_listView");
                     config.Config.Entries[0].Name = "已更新目录";
@@ -127,7 +134,7 @@ static class MiddleClickChecks
                     Show(panel);
                     AssertLayout(panel);
                     Call(host, "HidePanels");
-                    Console.WriteLine($"PASS {panel.GetType().Name}: layout, focus, source, movement, search, action, Escape, external dismissal");
+                    Console.WriteLine($"PASS {panel.GetType().Name}: layout, focus, source, movement, search, action, Escape, external dismissal (foreground handles: {(isolatedFocus ? "fixture" : "system")})");
                 }
                 if (args.Contains("--interactive"))
                 {

@@ -1,4 +1,4 @@
-param([switch]$Interactive, [switch]$Portable)
+param([switch]$Interactive, [switch]$Portable, [switch]$MeasureLatency)
 $ErrorActionPreference = 'Stop'
 $repo = Split-Path -Parent $PSScriptRoot
 $testRoot = Join-Path $repo 'artifacts/debug/checks/office-preview'
@@ -32,10 +32,12 @@ if ($Portable) {
     if ($LASTEXITCODE -ne 0) { throw 'Portable test runner publish failed.' }
     $runArgs = @($testRoot)
     if ($Interactive) { $runArgs += '--interactive' }
+    if ($MeasureLatency) { $runArgs += '--measure-latency' }
     & (Join-Path $portableDir 'PreviewChecks.exe') @runArgs
 } else {
     $runArgs = @('run', '--project', (Join-Path $runner 'PreviewChecks.csproj'), '-c', 'Debug', '--', $testRoot)
     if ($Interactive) { $runArgs += '--interactive' }
+    if ($MeasureLatency) { $runArgs += '--measure-latency' }
     & dotnet @runArgs
 }
 exit $LASTEXITCODE

@@ -36,7 +36,8 @@ public static class LocalFolderBrowser
                     if (!matches && (!includeSubfolders || entry is not DirectoryInfo)) continue;
                     try
                     {
-                        entry.Refresh();
+                        // Directory enumeration already supplies attributes, size and write time.
+                        // Refresh would add a disk or network round trip for every matching row.
                         if (!entry.Exists) continue;
                         var isFolder = (entry.Attributes & FileAttributes.Directory) != 0;
                         // Search a link by its name, but don't follow it into a cycle or another tree.

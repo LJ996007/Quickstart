@@ -165,7 +165,7 @@ static class RadialFolderBrowserChecks
             results.SelectedItems.Clear();
             folderRowInClipboard.Selected = true;
             Call(browser, "CopySelectedFile");
-            Check(ReadFileDrop().Single() == Path.Combine(root, "2026"),
+            WaitFor(() => ReadFileDrop().SequenceEqual([Path.Combine(root, "2026")]),
                 "Copying a folder must place the directory itself on the clipboard");
         }
         else Console.WriteLine("SKIP clipboard checks: the system clipboard is unavailable in this session");

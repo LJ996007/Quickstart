@@ -21,9 +21,11 @@ public sealed class FaviconService : IDisposable
 
     private readonly HttpClient _http;
     private readonly SemaphoreSlim _downloadGate = new(4);
+    private readonly object _lifetime = new();
+    private volatile bool _disposed;
     // value 为 null 表示"已查询但无图标"，避免重复下载
     private readonly ConcurrentDictionary<string, Image?> _memCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, Task<Image?>> _inflight = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, Task<Image?>> _inflight = new(StringComparer.OrdinalIgnoreCase);
 
     public FaviconService()
     {
@@ -103,18 +105,20 @@ public sealed class FaviconService : IDisposable
     public Task<Image?> GetFaviconAsync(string url)
     {
         var host = GetHost(url);
-        if (host == null)
+        if (host == null || _disposed)
             return Task.FromResult<Image?>(null);
 
         if (_memCache.TryGetValue(host, out var cached))
             return Task.FromResult(cached);
 
-        // 查磁盘缓存（命中会写入 _memCache）
-        TryGetCached(url);
-        if (_memCache.TryGetValue(host, out var afterDisk))
-            return Task.FromResult(afterDisk);
-
-        return _inflight.GetOrAdd(host, _ => DownloadAndCacheAsync(url, host));
+        // A cold disk cache can block just like a download. Rows on the same
+        // host share one worker (including its disk read and image decoding).
+        lock (_lifetime)
+        {
+            if (_disposed) return Task.FromResult<Image?>(null);
+            if (_inflight.TryGetValue(host, out var pending)) return pending;
+            return _inflight[host] = Task.Run(() => DownloadAndCacheAsync(url, host));
+        }
     }
 
     private async Task<Image?> DownloadAndCacheAsync(string url, string host)
@@ -122,6 +126,9 @@ public sealed class FaviconService : IDisposable
         await _downloadGate.WaitAsync().ConfigureAwait(false);
         try
         {
+            if (_disposed) return null;
+            TryGetCached(url);
+            if (_memCache.TryGetValue(host, out var cached)) return cached;
             var scheme = url.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ? "http" : "https";
 
             // 1. 直接尝试 /favicon.ico
@@ -143,6 +150,7 @@ public sealed class FaviconService : IDisposable
                 image = await TryDownloadIconAsync(googleUrl).ConfigureAwait(false);
             }
 
+            if (_disposed) { image?.Dispose(); return null; }
             if (image != null)
                 SaveToDisk(host, image);
             else
@@ -153,6 +161,7 @@ public sealed class FaviconService : IDisposable
         }
         catch
         {
+            if (_disposed) return null;
             MarkMiss(host);
             _memCache[host] = null;
             return null;
@@ -160,7 +169,7 @@ public sealed class FaviconService : IDisposable
         finally
         {
             _downloadGate.Release();
-            _inflight.TryRemove(host, out _);
+            lock (_lifetime) _inflight.Remove(host);
         }
     }
 
@@ -321,7 +330,21 @@ public sealed class FaviconService : IDisposable
 
     public void Dispose()
     {
+        Task[] pending;
+        lock (_lifetime)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            pending = _inflight.Values.ToArray();
+        }
         _http.Dispose();
+        _ = ReleaseCacheAsync(pending);
+    }
+
+    private async Task ReleaseCacheAsync(Task[] pending)
+    {
+        // A queued disk read can still own the gate or an image when its form closes.
+        await Task.WhenAll(pending).ConfigureAwait(false);
         _downloadGate.Dispose();
         foreach (var image in _memCache.Values)
             image?.Dispose();

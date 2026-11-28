@@ -16,14 +16,14 @@ internal sealed class RadialFolderBrowserPopup : Form
     private readonly Panel _dragGrip = new() { Cursor = Cursors.SizeAll, AccessibleName = "拖动窗口" };
     private readonly TextBox _query = new() { PlaceholderText = "查找文件或文件夹", AccessibleName = "查找文件或文件夹" };
     private readonly CheckBox _includeSubfolders = new() { Appearance = Appearance.Button, Text = "含子目录", TextAlign = ContentAlignment.MiddleCenter };
-    private readonly ListView _results = new()
+    private readonly BufferedListView _results = new()
     {
         View = View.Details, HeaderStyle = ColumnHeaderStyle.None, FullRowSelect = true,
         MultiSelect = false, HideSelection = false, ShowItemToolTips = true, AccessibleName = "目录内容"
     };
     private readonly Button _previous = new() { Text = "上一页" };
     private readonly Button _next = new() { Text = "下一页" };
-    private readonly System.Windows.Forms.Timer _previewDelay = new() { Interval = 280 };
+    private readonly System.Windows.Forms.Timer _previewDelay = new();
     private readonly Label _status = new() { AutoEllipsis = true, TextAlign = ContentAlignment.MiddleLeft };
     private readonly TableLayoutPanel _layout = new();
     private readonly TableLayoutPanel _navigation = new();
@@ -66,6 +66,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         Padding = new Padding(1);
         ForeColor = UiTheme.TextPrimary;
         FormStyler.ApplyRounded(this);
+        FormStyler.DisablePopupTransitions(this);
 
         foreach (var button in new[] { _breadcrumb, _previous, _next })
             UiTheme.StyleFlatButton(button, UiTheme.Surface);
@@ -455,6 +456,19 @@ internal sealed class RadialFolderBrowserPopup : Form
             ? (string.IsNullOrWhiteSpace(_query.Text) ? "此文件夹为空" : "未找到匹配项")
             : (_next.Visible ? $"{page.Offset + 1}–{page.Offset + page.Items.Count} / {page.Total}" : "");
         ResizeColumns();
+        if (_previewPopup == null && page.Items.Any(item => !item.IsFolder && OfficePreviewDocument.IsSupported(item.FullPath)))
+        {
+            Application.Idle -= WarmPreviewOnIdle;
+            Application.Idle += WarmPreviewOnIdle;
+        }
+    }
+
+    private void WarmPreviewOnIdle(object? sender, EventArgs e)
+    {
+        Application.Idle -= WarmPreviewOnIdle;
+        if (Visible && !Disposing && !IsDisposed && _previewPopup == null &&
+            _page?.Items.FirstOrDefault(item => !item.IsFolder && OfficePreviewDocument.IsSupported(item.FullPath)) is { } file)
+            _ = EnsurePreviewPopup().WarmUpAsync(file.FullPath, Bounds);
     }
 
     private string EnsureResultIcon(FileSearchResult item)
@@ -549,7 +563,7 @@ internal sealed class RadialFolderBrowserPopup : Form
         if (hit.Item?.Tag is not FileSearchResult result) return;
         var arrow = hit.SubItem == hit.Item.SubItems[2];
         if (!arrow && hit.SubItem != hit.Item.SubItems[0]) return;
-        ActivateResult(result, arrow, reveal: Control.ModifierKeys.HasFlag(Keys.Control), open: false);
+        ActivateResult(result, arrow, reveal: Control.ModifierKeys.HasFlag(Keys.Control), open: false, _results.PointToScreen(e.Location));
     }
 
     private void OnResultDoubleClick(object? sender, MouseEventArgs e)
@@ -557,7 +571,8 @@ internal sealed class RadialFolderBrowserPopup : Form
         if (e.Button != MouseButtons.Left) return;
         _previewDelay.Stop();
         _previewPending = null;
-        if (_results.HitTest(e.Location).Item?.Tag is not FileSearchResult result) return;        ActivateResult(result, arrow: false, reveal: Control.ModifierKeys.HasFlag(Keys.Control), open: true);
+        if (_results.HitTest(e.Location).Item?.Tag is not FileSearchResult result) return;
+        ActivateResult(result, arrow: false, reveal: Control.ModifierKeys.HasFlag(Keys.Control), open: true, _results.PointToScreen(e.Location));
     }
 
     private enum ResultClick { Preview, OpenFile, OpenFolder, EnterFolder, Reveal }
@@ -570,8 +585,10 @@ internal sealed class RadialFolderBrowserPopup : Form
         return open ? ResultClick.OpenFile : ResultClick.Preview;
     }
 
-    private void ActivateResult(FileSearchResult result, bool arrow, bool reveal, bool open)
+    private void ActivateResult(FileSearchResult result, bool arrow, bool reveal, bool open, Point click)
     {
+        _previewDelay.Stop();
+        _previewPending = null;
         switch (ResolveClick(result.IsFolder, arrow, reveal, open))
         {
             case ResultClick.Reveal: Reveal(result); break;
@@ -579,8 +596,24 @@ internal sealed class RadialFolderBrowserPopup : Form
             case ResultClick.OpenFolder:
             case ResultClick.OpenFile: Open(result); break;
             default:
+                if (!OfficePreviewDocument.IsSupported(result.FullPath))
+                {
+                    _status.Text = "此类型暂不支持预览，双击或用默认程序打开";
+                    return;
+                }
+                if (result.Size > OfficePreviewDocument.MaxFileBytes)
+                {
+                    _status.Text = "文件超过 64 MB，双击用默认程序打开";
+                    return;
+                }
                 _previewPending = result;
-                _previewDelay.Start();
+                // Only wait for a second click when the preview would cover the row.
+                if (EnsurePreviewPopup().WouldCoverClick(result.FullPath, Bounds, click))
+                {
+                    _previewDelay.Interval = SystemInformation.DoubleClickTime;
+                    _previewDelay.Start();
+                }
+                else FlushPreview();
                 break;
         }
     }
@@ -590,17 +623,12 @@ internal sealed class RadialFolderBrowserPopup : Form
         _previewDelay.Stop();
         if (_previewPending is not { } result) return;
         _previewPending = null;
-        if (!OfficePreviewDocument.IsSupported(result.FullPath))
-        {
-            _status.Text = "此类型暂不支持预览，双击或用默认程序打开";
-            return;
-        }
-        if (NewFileSize(result.FullPath) is long size && size > OfficePreviewDocument.MaxFileBytes)
-        {
-            _status.Text = "文件超过 64 MB，双击用默认程序打开";
-            return;
-        }
         _previewed = result;
+        EnsurePreviewPopup().ShowFile(result.FullPath, Bounds);
+    }
+
+    private FilePreviewPopup EnsurePreviewPopup()
+    {
         if (_previewPopup is null || _previewPopup.IsDisposed)
         {
             _previewPopup = new FilePreviewPopup { OwnerBounds = () => Bounds };
@@ -608,17 +636,12 @@ internal sealed class RadialFolderBrowserPopup : Form
             // 在预览里按 Esc 或者点到两个窗口之外，整组关闭。
             _previewPopup.Dismissed += () => { HidePreview(); Hide(); };
         }
-        _previewPopup.ShowFile(result.FullPath, Bounds);
-    }
-
-    private static long? NewFileSize(string path)
-    {
-        try { return new FileInfo(path).Length; }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ArgumentException) { return null; }
+        return _previewPopup;
     }
 
     private void HidePreview()
     {
+        Application.Idle -= WarmPreviewOnIdle;
         _previewDelay.Stop();
         _previewPending = null;
         _previewPopup?.HideUnlessPinned();
@@ -672,6 +695,7 @@ internal sealed class RadialFolderBrowserPopup : Form
     {
         if (disposing)
         {
+            Application.Idle -= WarmPreviewOnIdle;
             CancelRead();
             _debounce.Dispose();
             _previewDelay.Dispose();

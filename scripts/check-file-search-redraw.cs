@@ -92,7 +92,7 @@ static class FileSearchRedrawChecks
     {
         Field<CheckBox>(popup, "_previewEnabled").Checked = false;
         popup.ShowSearch(detectDialog: false);
-        popup.ClientSize = new Size(1200, 720);
+        popup.ClientSize = popup.LogicalToDeviceUnits(new Size(1200, 720));
         // Keep this renderer test independent of WebView initialization/network.
         typeof(FileSearchPopup).GetField("_detectingDialog", Private)!.SetValue(popup, true);
         var entries = Enumerable.Range(0, 90).Select(i => new FileSearchResult(
@@ -111,7 +111,7 @@ static class FileSearchRedrawChecks
             Call(popup, "ResizeColumns");
             foreach (var width in new[] { 530, 720, 490, 620 })
             {
-                split.SplitterDistance = Math.Clamp(width, split.Panel1MinSize, split.Width - split.Panel2MinSize - split.SplitterWidth);
+                split.SplitterDistance = Math.Clamp(popup.LogicalToDeviceUnits(width), split.Panel1MinSize, split.Width - split.Panel2MinSize - split.SplitterWidth);
                 await Task.Delay(25);
                 var before = list.TopItem!.Index;
                 SendMessage(list.Handle, 0x115, (IntPtr)3, IntPtr.Zero); // WM_VSCROLL / SB_PAGEDOWN

@@ -44,7 +44,8 @@ public sealed class FileSearchPopup : Form
     private readonly ToolTip _toolTip = new();
     private bool _layoutReady;
     private bool _adjustingLayout;
-    private readonly System.Windows.Forms.Timer _previewDelay = new() { Interval = 180 };
+    private readonly System.Windows.Forms.Timer _previewDelay = new() { Interval = 75 };
+    private bool _selectionPending;
     private CancellationTokenSource? _searchCts;
     private int _revision;
     private uint _offset;
@@ -76,6 +77,7 @@ public sealed class FileSearchPopup : Form
         ClientSize = new Size(1180, 720);
         MinimumSize = new Size(720, 420);
         FormBorderStyle = FormBorderStyle.None;
+        FormStyler.DisablePopupTransitions(this);
         BackColor = UiTheme.Surface;
         ForeColor = UiTheme.TextPrimary;
         DoubleBuffered = true;
@@ -178,18 +180,22 @@ public sealed class FileSearchPopup : Form
         {
             if (e.Button == MouseButtons.Left && _results.GetItemAt(e.X, e.Y) != null) RunAction(OpenSelected);
         };
-        _results.ItemSelectionChanged += (_, e) =>
+        _results.SelectedIndexChanged += (_, _) =>
         {
-            if (!e.IsSelected) { _previewDelay.Stop(); _preview.Clear(); }
-            else if (_results.Focused) SchedulePreview();
+            if (_selectionPending || !Visible || !IsHandleCreated) return;
+            _selectionPending = true;
+            // comctl32 deselects the old row before selecting the new one.
+            // Read the final selection once, without navigating through a blank page.
+            BeginInvoke(() =>
+            {
+                _selectionPending = false;
+                if (!Visible || IsDisposed) return;
+                if (_results.Focused || Selected == null) SchedulePreview();
+            });
         };
-        _results.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && _results.GetItemAt(e.X, e.Y) != null) SchedulePreview(); };
-        _results.KeyUp += (_, e) => { if (e.KeyCode is Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.PageUp or Keys.PageDown) SchedulePreview(); };
-        _previewDelay.Tick += async (_, _) =>
-        {
-            _previewDelay.Stop();
-            if (CanPreview && Selected is { IsFolder: false } result) await _preview.PreviewAsync(result.FullPath);
-        };
+        _results.MouseClick += (_, e) => { if (e.Button == MouseButtons.Left && _results.GetItemAt(e.X, e.Y) != null) PreviewSelected(); };
+        _results.KeyUp += (_, e) => { if (e.KeyCode is Keys.Up or Keys.Down or Keys.Home or Keys.End or Keys.PageUp or Keys.PageDown) PreviewSelected(); };
+        _previewDelay.Tick += (_, _) => PreviewSelected();
         _preview.OpenRequested += (_, _) => RunAction(OpenSelected);
         _preview.EscapeRequested += (_, _) => Hide();
         _previewEnabled.CheckedChanged += (_, _) => UpdatePreviewLayout();
@@ -434,10 +440,23 @@ public sealed class FileSearchPopup : Form
 
     private bool CanPreview => Visible && !_split.Panel2Collapsed && _previewEnabled.Checked && !UseDialog && !_detectingDialog && !_dialogDetectionFailed;
 
+    internal Task WarmPreviewIfPreviouslyUsedAsync() => _previewEnabled.Checked
+        ? _preview.WarmUpIfPreviouslyUsedAsync() : Task.CompletedTask;
+
     private void SchedulePreview()
     {
         _previewDelay.Stop();
-        if (CanPreview && Selected is { IsFolder: false }) _previewDelay.Start();
+        if (CanPreview && Selected is { IsFolder: false } file)
+        {
+            if (_preview.SelectFile(file.FullPath)) _previewDelay.Start();
+        }
+        else _preview.Clear();
+    }
+
+    private void PreviewSelected()
+    {
+        _previewDelay.Stop();
+        if (CanPreview && Selected is { IsFolder: false } file) _ = _preview.PreviewAsync(file.FullPath);
         else _preview.Clear();
     }
 

@@ -117,7 +117,7 @@ public sealed class SettingsForm : Form
                 _tcPathBox.Text = dlg.FileName;
         };
         var tcDetectBtn = CreateDetectButton();
-        tcDetectBtn.Click += (_, _) => DetectPath(
+        tcDetectBtn.Click += async (_, _) => await DetectPathAsync(tcDetectBtn,
             TcDetector.Detect,
             _tcPathBox,
             "Total Commander",
@@ -136,7 +136,7 @@ public sealed class SettingsForm : Form
                 _dopusPathBox.Text = dlg.FileName;
         };
         var doDetectBtn = CreateDetectButton();
-        doDetectBtn.Click += (_, _) => DetectPath(
+        doDetectBtn.Click += async (_, _) => await DetectPathAsync(doDetectBtn,
             DopusDetector.Detect,
             _dopusPathBox,
             "Directory Opus",
@@ -155,7 +155,7 @@ public sealed class SettingsForm : Form
                 _everythingPathBox.Text = dlg.FileName;
         };
         var everythingDetectBtn = CreateDetectButton();
-        everythingDetectBtn.Click += (_, _) => DetectPath(
+        everythingDetectBtn.Click += async (_, _) => await DetectPathAsync(everythingDetectBtn,
             EverythingDetector.Detect,
             _everythingPathBox,
             "Everything",
@@ -1211,9 +1211,15 @@ public sealed class SettingsForm : Form
         return path;
     }
 
-    private void DetectPath(Func<string?> detect, TextBox target, string productName, string notFoundMessage)
+    private async Task DetectPathAsync(Button button, Func<string?> detect, TextBox target, string productName, string notFoundMessage)
     {
-        var detected = detect();
+        var originalText = target.Text;
+        button.Enabled = false;
+        string? detected;
+        try { detected = await Task.Run(detect); }
+        catch (Exception ex) { detected = null; notFoundMessage = ex.GetBaseException().Message; }
+        finally { if (!button.IsDisposed) button.Enabled = true; }
+        if (IsDisposed || !Visible || target.Text != originalText) return;
         if (detected != null)
         {
             target.Text = detected;
@@ -1232,8 +1238,13 @@ public sealed class SettingsForm : Form
         if (index < 0 || index >= _pages.Length)
             return;
 
-        for (var i = 0; i < _pages.Length; i++)
-            _pages[i].Visible = i == index;
+        _contentHost.SuspendLayout();
+        try
+        {
+            for (var i = 0; i < _pages.Length; i++)
+                _pages[i].Visible = i == index;
+        }
+        finally { _contentHost.ResumeLayout(true); }
 
         if (index < _pagesMeta.Length)
         {
@@ -1346,12 +1357,14 @@ public sealed class SettingsForm : Form
         };
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
 
+        layout.SuspendLayout();
         for (var i = 0; i < controls.Length; i++)
         {
             layout.RowStyles.Add(new RowStyle(SizeType.AutoSize));
             controls[i].Margin = new Padding(0, 0, 0, 12);
             layout.Controls.Add(controls[i], 0, i);
         }
+        layout.ResumeLayout(false);
 
         var page = new Panel
         {
@@ -1390,6 +1403,7 @@ public sealed class SettingsForm : Form
             ForeColor = TextPrimary,
             Margin = new Padding(0, 0, 0, compact ? 6 : 10)
         };
+        body.SuspendLayout();
         body.Controls.Add(titleLabel, 0, 0);
 
         for (var i = 0; i < children.Length; i++)
@@ -1400,6 +1414,7 @@ public sealed class SettingsForm : Form
             children[i].Margin = children[i].Margin with { Bottom = bottom };
             body.Controls.Add(children[i], 0, i + 1);
         }
+        body.ResumeLayout(false);
 
         // 外层带边框的壳
         var shell = new Panel

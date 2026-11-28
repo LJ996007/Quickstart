@@ -64,7 +64,7 @@ static class PopupPerformanceChecks
             if (args.Contains("--prewarm"))
                 Measure("hidden prewarm", () => Call(host, "Prewarm", main, actions, point));
             var first = new List<double>();
-            for (var i = 0; i < 7; i++)
+            for (var i = 0; i < 8; i++)
             {
                 layouts = drawRows = 0;
                 var clock = Stopwatch.StartNew();
@@ -79,10 +79,10 @@ static class PopupPerformanceChecks
             Measure("phase prepare group", () => Call(host, "PreparePanels", main, actions, point, source.Handle));
             host.GetType().GetField("_arranging", Flags)!.SetValue(host, true);
             Measure("phase attach", () => { Call(host, "Attach", main); Call(host, "Attach", actions); });
-            Measure("phase show bar", host.Show);
             Measure("phase show main", main.Show);
             Measure("phase show actions", actions.Show);
             Measure("phase interactive", () => Call(actions, "EnterInteractiveMode"));
+            Measure("phase show bar", host.Show);
             Measure("phase focus", () =>
             {
                 App.GetType("Quickstart.Utils.WindowActivator")!.GetMethod("TryForceForeground")!.Invoke(null, [host.Handle]);

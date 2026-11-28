@@ -12,7 +12,8 @@ public sealed record OfficePreviewDocument(string Token, string Kind, string Nam
         ".docx" or ".xlsx" or ".xls" or ".pdf" or ".md" or ".markdown" or
         ".png" or ".jpg" or ".jpeg" or ".gif" or ".bmp" or ".webp" or ".ico";
 
-    public bool IsImage => Kind is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp" or "ico";
+    internal static bool IsImageKind(string kind) => kind is "png" or "jpg" or "jpeg" or "gif" or "bmp" or "webp" or "ico";
+    public bool IsImage => IsImageKind(Kind);
     public string ContentType => Kind switch
     {
         "pdf" => "application/pdf", "md" or "markdown" => "text/plain; charset=utf-8",
@@ -29,6 +30,9 @@ public sealed record OfficePreviewDocument(string Token, string Kind, string Nam
         var bytes = new byte[checked((int)stream.Length)];
         await stream.ReadExactlyAsync(bytes, token);
         var kind = Path.GetExtension(path)[1..].ToLowerInvariant();
+        // A 200 response for a non-PDF also completes navigation in the native viewer.
+        if (kind == "pdf" && bytes.AsSpan(0, Math.Min(bytes.Length, 1024)).IndexOf("%PDF-"u8) < 0)
+            throw new InvalidDataException("文件不是有效的 PDF。");
         if (kind is "docx" or "xlsx")
         {
             using var zip = new ZipArchive(new MemoryStream(bytes, false), ZipArchiveMode.Read);

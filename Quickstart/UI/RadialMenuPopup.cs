@@ -135,7 +135,6 @@ internal sealed class RadialMenuPopup : Form
     private readonly List<GroupSlot> _groups = [];
     private readonly List<ItemSlot> _items = [];
     private readonly Dictionary<string, Image> _iconCache = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> _faviconInflight = new(StringComparer.OrdinalIgnoreCase);
     private Font _segmentTitleFont = null!;
     private Font _segmentCountFont = null!;
     private Font _groupFont = null!;
@@ -195,6 +194,7 @@ internal sealed class RadialMenuPopup : Form
         _launcher = launcher;
         _clipboardHistory = clipboardHistory;
         if (_clipboardHistory != null) _clipboardHistory.Changed += OnClipboardHistoryChanged;
+        WindowsRecentItemsService.Changed += OnRecentItemsChanged;
 
         // This layered surface owns every physical pixel, including its fonts.
         AutoScaleMode = AutoScaleMode.None;
@@ -448,8 +448,8 @@ internal sealed class RadialMenuPopup : Form
 
     public void HidePanels()
     {
-        _folderBrowser?.Hide();
-        Hide();
+        if (_folderBrowser is { Visible: true }) _folderBrowser.Hide();
+        if (Visible) Hide();
     }
 
     private void BrowseFolder(string folder, string title)
@@ -637,6 +637,7 @@ internal sealed class RadialMenuPopup : Form
         {
             _folderBrowser?.Dispose();
             if (_clipboardHistory != null) _clipboardHistory.Changed -= OnClipboardHistoryChanged;
+            WindowsRecentItemsService.Changed -= OnRecentItemsChanged;
             _animTimer.Stop();
             _animTimer.Dispose();
             _iconLoader.Dispose();
@@ -952,7 +953,6 @@ internal sealed class RadialMenuPopup : Form
             return;
 
         var g = _layerGfx;
-        g.Clear(Color.Transparent);
 
         if (fast)
         {
@@ -974,7 +974,13 @@ internal sealed class RadialMenuPopup : Form
         // 静态层：分类环底与标签文字（滑动手势过程中不再重建）
         EnsureStaticLayer(fast);
         if (_staticLayer != null)
+        {
+            // Copy the entire premultiplied surface, including transparent pixels,
+            // in one pass. Overlay the changing parts with normal alpha blending.
+            g.CompositingMode = CompositingMode.SourceCopy;
             g.DrawImageUnscaled(_staticLayer, 0, 0);
+            g.CompositingMode = CompositingMode.SourceOver;
+        }
 
         // 动态叠加：随指针实时变化，但每帧只画命中的少数扇区，成本远低于重建静态层
         DrawSegmentHighlights(g);
@@ -1005,7 +1011,7 @@ internal sealed class RadialMenuPopup : Form
         }
 
         _staticLayer?.Dispose();
-        _staticLayer = new Bitmap(Width, Height, PixelFormat.Format32bppArgb);
+        _staticLayer = new Bitmap(Width, Height, PixelFormat.Format32bppPArgb);
         using var g = Graphics.FromImage(_staticLayer);
         g.Clear(Color.Transparent);
         g.SmoothingMode = SmoothingMode.AntiAlias;
@@ -1342,7 +1348,6 @@ internal sealed class RadialMenuPopup : Form
         }
 
         _items.Clear();
-        _faviconInflight.Clear();
         _listPanelBounds = RectangleF.Empty;
         _listClipBounds = RectangleF.Empty;
         _scrollIndex = 0;
@@ -1360,6 +1365,21 @@ internal sealed class RadialMenuPopup : Form
         }
         else
             foreach (var tab in _tabs) tab.Count = CountForTab(tab.Kind);
+        RequestRender();
+    }
+
+    private void OnRecentItemsChanged()
+    {
+        if (!Visible || IsDisposed) return;
+        if (_activeTab == TabKind.RecentItems)
+        {
+            var scroll = _scrollIndex;
+            LoadItemsForActiveTab(restartAnim: false);
+            _scrollIndex = scroll;
+            LayoutItemList();
+        }
+        else if (_tabs.FirstOrDefault(t => t.Kind == TabKind.RecentItems) is { } tab)
+            tab.Count = CountForTab(tab.Kind);
         RequestRender();
     }
 
@@ -1393,15 +1413,12 @@ internal sealed class RadialMenuPopup : Form
             case TabKind.ClipboardHistory:
                 foreach (var hist in (_clipboardHistory?.GetItems() ?? []))
                 {
-                    var thumbnail = ClipboardHistoryContent.CreateThumbnail(hist);
                     _items.Add(new ItemSlot
                     {
                         Title = hist.Preview(40),
                         Subtitle = hist.Kind == ClipboardHistoryKind.Image ? FormatRelativeTime(hist.CopiedAt)
                             : $"{FormatRelativeTime(hist.CopiedAt)} · {hist.Details}",
                         Payload = hist,
-                        Icon = thumbnail ?? GetCachedGlyphIcon(hist.Kind == ClipboardHistoryKind.Files ? "file" : "clipboard"),
-                        OwnsIcon = thumbnail != null
                     });
                 }
                 break;
@@ -1460,11 +1477,10 @@ internal sealed class RadialMenuPopup : Form
                 QueuePathIcon(slot, entry.Path, isDirectory: false);
                 break;
             case EntryType.Url:
-                slot.Icon = _faviconService.TryGetMemoryCached(entry.Path)
-                    ?? _faviconService.TryGetCached(entry.Path)
-                    ?? GetWebPlaceholder();
-                slot.OwnsIcon = false;
-                QueueFavicon(slot, entry.Path);
+                var cached = _faviconService.TryGetMemoryCached(entry.Path);
+                slot.Icon = cached ?? GetWebPlaceholder();
+                if (cached == null && !_faviconService.IsKnownMiss(entry.Path))
+                    _ = LoadFaviconAsync(slot, entry.Path);
                 break;
             case EntryType.Text:
                 slot.Icon = GetCachedGlyphIcon("text");
@@ -1486,6 +1502,12 @@ internal sealed class RadialMenuPopup : Form
             slot.IconRequested = true;
             if (slot.Payload is QuickEntry entry)
                 AssignEntryIcon(slot, entry);
+            else if (slot.Payload is ClipboardHistoryItem history)
+            {
+                var thumbnail = ClipboardHistoryContent.CreateThumbnail(history);
+                slot.Icon = thumbnail ?? GetCachedGlyphIcon(history.Kind == ClipboardHistoryKind.Files ? "file" : "clipboard");
+                slot.OwnsIcon = thumbnail != null;
+            }
             else if (slot.Payload is WindowsRecentItem recent)
             {
                 QueuePathIcon(slot, recent.LaunchPath, recent.IsDirectory);
@@ -1619,51 +1641,18 @@ internal sealed class RadialMenuPopup : Form
         return bmp;
     }
 
-    private void QueueFavicon(ItemSlot slot, string url)
-    {
-        var host = FaviconService.GetHost(url);
-        if (host == null)
-            return;
-        if (!_faviconInflight.Add(host))
-            return;
-
-        _ = LoadFaviconAsync(slot, url, host);
-    }
-
-    private async Task LoadFaviconAsync(ItemSlot slot, string url, string host)
+    private async Task LoadFaviconAsync(ItemSlot slot, string url)
     {
         try
         {
-            var image = await _faviconService.GetFaviconAsync(url).ConfigureAwait(false);
-            if (IsDisposed || !IsHandleCreated)
-                return;
-
-            void Apply()
-            {
-                if (IsDisposed || !_items.Contains(slot))
-                    return;
-                if (image != null)
-                    slot.Icon = image;
-                RequestRender();
-            }
-
-            try
-            {
-                if (IsHandleCreated)
-                    BeginInvoke(Apply);
-            }
-            catch (ObjectDisposedException)
-            {
-                // ignore
-            }
+            var image = await _faviconService.GetFaviconAsync(url);
+            if (image == null || IsDisposed || !_items.Contains(slot)) return;
+            slot.Icon = image;
+            RequestRender();
         }
         catch
         {
             // ignore
-        }
-        finally
-        {
-            _faviconInflight.Remove(host);
         }
     }
 
@@ -1762,8 +1751,6 @@ internal sealed class RadialMenuPopup : Form
         }
 
         // 定时器线程即 UI 线程：直接渲染，不走 BeginInvoke
-        RenderLayered(fast: true);
-
         if (allDone)
         {
             _animating = false;
@@ -1773,6 +1760,7 @@ internal sealed class RadialMenuPopup : Form
             // 结束时高质量补一帧
             RenderLayered(fast: false);
         }
+        else RenderLayered(fast: true);
     }
 
     /// <summary>

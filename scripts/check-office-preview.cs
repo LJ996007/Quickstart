@@ -11,6 +11,8 @@ using Quickstart.UI;
 static class PreviewChecks
 {
     const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    static extern IntPtr SendMessage(IntPtr hwnd, int message, IntPtr wParam, IntPtr lParam);
     static T Field<T>(object owner, string name) => (T)owner.GetType().GetField(name, Private)!.GetValue(owner)!;
     static void Check(bool value, string message) { if (!value) throw new Exception(message); }
     static void CheckCompactHeader(OfficePreviewPane pane)
@@ -53,6 +55,65 @@ static class PreviewChecks
         }
     }
 
+    static async Task CheckStandalone(string root, string docx, Form owner)
+    {
+        var type = typeof(OfficePreviewPane).Assembly.GetType("Quickstart.UI.FilePreviewPopup")!;
+        using var window = (Form)Activator.CreateInstance(type)!;
+        var pane = Field<OfficePreviewPane>(window, "_pane");
+        void ShowFile(string path) => type.GetMethod("ShowFile")!.Invoke(window, [path, owner.Bounds]);
+        ShowFile(docx);
+        await Until(() => Field<bool>(pane, "_ready"), "Standalone DOCX did not render");
+        var web = Field<WebView2>(pane, "_web");
+        const string widths = "(()=>{const p=document.querySelector('section.docx'), c=document.querySelector('#content');return c.scrollWidth<=c.clientWidth+1&&p.getBoundingClientRect().right<=c.clientWidth+1})()";
+        await UntilJs(web, widths, "DOCX overflows at its default width");
+        int Hit(int x, int y)
+        {
+            var p = window.PointToScreen(new Point(x, y));
+            return (int)SendMessage(window.Handle, 0x84, IntPtr.Zero, (IntPtr)((p.Y << 16) | (p.X & 0xffff)));
+        }
+        Check(Hit(window.Width - 2, window.Height / 2) == 11 && Hit(window.Width - 3, window.Height - 3) == 17
+            && Hit(40, 40) == 1, "The preview frame must expose native edge and corner sizing without covering the content");
+        var dpi = window.DeviceDpi / 96d;
+        var toolbar = Field<TableLayoutPanel>(pane, "_toolbar");
+        Check(toolbar.Height < 30 * dpi, "Standalone toolbar must stay compact");
+        window.Size = new Size((int)(470 * dpi), (int)(500 * dpi));
+        type.GetMethod("OnResizeEnd", Private)!.Invoke(window, [EventArgs.Empty]);
+        await UntilJs(web, widths, "DOCX overflows after making the preview narrower");
+        Check(await Js(web, "Number(document.querySelector('section.docx').style.zoom) < 0.8") == "true", "DOCX did not refit after resize");
+        await Js(web, """
+            (()=>{const p=[...document.querySelectorAll('section.docx p')].find(e=>e.textContent.startsWith('合同条款'));
+            p.scrollIntoView({block:'center'}); const range=document.createRange(); range.selectNodeContents(p);
+            getSelection().removeAllRanges();getSelection().addRange(range);})()
+            """);
+        await UntilJs(web, "!document.querySelector('#selection-copy').hidden", "Selecting DOCX text did not show the floating copy button");
+        await using (var shot = File.Create(Path.Combine(root, "standalone-selection.png")))
+            await web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, shot);
+        await Js(web, "document.querySelector('#selection-copy').click()");
+        await Until(() => Clipboard.GetText() == "合同条款：中文正文可以选择、复制。金额 1,234.50 元。"
+            && !Clipboard.ContainsText(TextDataFormat.Html), "Floating copy did not write plain DOCX text");
+        var manualSize = window.Size;
+        ShowFile(Path.Combine(root, "预览 测试.xlsx"));
+        await Until(() => Field<bool>(pane, "_ready"), "Standalone XLSX did not render");
+        Check(window.Size == manualSize, "Opening another file lost the manual size");
+        using var point = JsonDocument.Parse(await Js(web, """
+            (()=>{const grid=document.querySelector('.x-spreadsheet-overlayer');
+            const zoom=Number(document.querySelector('.vue-office-excel').style.zoom)||1;
+            const {left,top}=grid.getBoundingClientRect();return {x:left+85*zoom,y:top+57*zoom};})()
+            """));
+        var x = point.RootElement.GetProperty("x").GetDouble();
+        var y = point.RootElement.GetProperty("y").GetDouble();
+        await web.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent",
+            JsonSerializer.Serialize(new { type = "mousePressed", x, y, button = "left", clickCount = 1 }));
+        await web.CoreWebView2.CallDevToolsProtocolMethodAsync("Input.dispatchMouseEvent",
+            JsonSerializer.Serialize(new { type = "mouseReleased", x, y, button = "left", clickCount = 1 }));
+        await UntilJs(web, "!document.querySelector('#selection-copy').hidden", "Selecting a cell did not show the floating copy button");
+        await Js(web, "document.querySelector('#selection-copy').click()");
+        await Until(() => Clipboard.GetText() == "中文测试", "Floating copy did not write plain cell text");
+        ShowFile(Path.Combine(root, "文字 PDF.pdf"));
+        await Until(() => web.Source?.Fragment == "#view=FitH", "Standalone PDF did not use fit-to-width");
+        Console.WriteLine("PASS standalone preview: narrow viewport fit, compact header, manual size retention, DOCX/XLSX floating plain-text copy and PDF fit-to-width.");
+    }
+
     static void CreateFixtures(string root)
     {
         using (var zip = ZipFile.Open(Path.Combine(root, "合同 中文.docx"), ZipArchiveMode.Create))
@@ -92,6 +153,122 @@ static class PreviewChecks
         File.WriteAllText(Path.Combine(root, "损坏.docx"), "not a zip");
     }
 
+    // Run through MouseUp on a real folder row and wait for the renderer's ready
+    // message. These timings include window placement, dispatch, I/O and rendering.
+    static int MeasureLatency(string root, ConfigManager config)
+    {
+        var folder = Directory.CreateDirectory(Path.Combine(root, "latency-files")).FullName;
+        const string word = "合同 中文.docx", excel = "预览 测试.xlsx";
+        foreach (var name in new[] { word, excel, "预览 测试.xls", "文字 PDF.pdf", "万行表格.xlsx" })
+            File.Copy(Path.Combine(root, name), Path.Combine(folder, name), overwrite: true);
+        File.WriteAllText(Path.Combine(folder, "说明.md"), "# 目录预览");
+        using (var png = new Bitmap(640, 180)) png.Save(Path.Combine(folder, "图片.png"), System.Drawing.Imaging.ImageFormat.Png);
+        var type = typeof(OfficePreviewPane).Assembly.GetType("Quickstart.UI.RadialFolderBrowserPopup")!;
+        using var browser = (Form)Activator.CreateInstance(type, config)!;
+        using var search = new FileSearchPopup(config, new ProcessLauncher(config));
+        var embedded = Field<OfficePreviewPane>(search, "_preview");
+        var list = Field<ListView>(browser, "_results");
+        var displayed = new List<string>();
+        var previewEvent = typeof(OfficePreviewPane).GetEvent("FilePreviewed", BindingFlags.Static | BindingFlags.NonPublic)!;
+        Action<string> record = displayed.Add;
+        previewEvent.GetAddMethod(true)!.Invoke(null, [record]);
+        var result = 0;
+        void Click(string name)
+        {
+            var row = list.Items.Cast<ListViewItem>().Single(item => item.Text == name);
+            var bounds = row.SubItems[0].Bounds;
+            type.GetMethod("OnResultClick", Private)!.Invoke(browser, [list,
+                new MouseEventArgs(MouseButtons.Left, 1, bounds.Left + 4, bounds.Top + bounds.Height / 2, 0)]);
+        }
+        browser.Shown += async (_, _) =>
+        {
+            try
+            {
+                await Until(() => list.Items.Count == 7, "Folder rows did not load");
+                await Task.Delay(650); // same think time for cold and warm comparisons
+                Check(displayed.Count == 0, "Warmup recorded a preview");
+                foreach (var name in new[] { word, excel, "图片.png", "说明.md", word, excel, "预览 测试.xls", "万行表格.xlsx" })
+                {
+                    var previousCount = displayed.Count;
+                    var clock = Stopwatch.StartNew();
+                    Click(name);
+                    await Until(() => Field<Form?>(browser, "_previewPopup") is { Visible: true } f &&
+                        Field<string?>(Field<OfficePreviewPane>(f, "_pane"), "_path") == Path.Combine(folder, name), "Wrong file selected");
+                    var shown = clock.ElapsedMilliseconds;
+                    var pane = Field<OfficePreviewPane>(Field<Form>(browser, "_previewPopup"), "_pane");
+                    await Until(() => Field<bool>(pane, "_ready"), name + " did not render", 30000);
+                    Check(displayed.Count == previousCount + 1 && displayed[^1] == Path.Combine(folder, name), "Displayed file missing or reported twice: " + name);
+                    Console.WriteLine($"PERF {name}: preview selected {shown} ms, content ready {clock.ElapsedMilliseconds} ms");
+                    if (name == "图片.png") Check(Field<Size?>(Field<Form>(browser, "_previewPopup"), "_imagePixels") == new Size(640, 180),
+                        "Preview sizing did not use the renderer's decoded dimensions");
+                }
+                var window = Field<Form>(browser, "_previewPopup");
+                var preview = Field<OfficePreviewPane>(window, "_pane");
+                var count = displayed.Count;
+                Click(word);
+                var first = preview.PreviewAsync(Path.Combine(folder, word));
+                Check(ReferenceEquals(first, preview.PreviewAsync(Path.Combine(folder, word))), "Duplicate input restarted a pending read");
+                Click(excel);
+                await Until(() => Field<bool>(preview, "_ready") && Field<OfficePreviewDocument>(preview, "_document").Kind == "xlsx",
+                    "A stale selection replaced the last document");
+                var web = Field<WebView2>(preview, "_web");
+                await Js(web, "window.chrome.webview.postMessage({type:'ready',token:new URLSearchParams(location.search).get('token'),text:''})");
+                Click("文字 PDF.pdf");
+                await Until(() => web.Source?.Fragment == "#view=FitH" && displayed.LastOrDefault() == Path.Combine(folder, "文字 PDF.pdf"), "PDF navigation was not recorded");
+                Check(displayed.Skip(count).SequenceEqual(new[] { Path.Combine(folder, excel), Path.Combine(folder, "文字 PDF.pdf") }), "Stale or duplicate preview entered history");
+                count = displayed.Count;
+                await preview.PreviewAsync(Path.Combine(root, "损坏.docx"));
+                var badPdf = Path.Combine(root, "invalid-preview.pdf");
+                File.WriteAllText(badPdf, "invalid PDF fixture");
+                await preview.PreviewAsync(badPdf);
+                Check(Field<Label>(preview, "_message").Visible && displayed.Count == count, "Failed previews entered history");
+                window.Hide();
+                Check(Field<OfficePreviewDocument?>(preview, "_document") == null, "Hidden preview retained the document");
+                Check(web.CoreWebView2.BrowserProcessId == Field<WebView2>(embedded, "_web").CoreWebView2.BrowserProcessId,
+                    "The two preview windows did not reuse the warmed browser process");
+                browser.Hide();
+                await search.ShowFolderAsync(folder);
+                var results = Field<ListView>(search, "_results");
+                var item = results.Items.Cast<ListViewItem>().Single(row => row.Text == word);
+                results.Focus(); item.Selected = true;
+                var cell = item.SubItems[0].Bounds;
+                typeof(Control).GetMethod("OnMouseClick", Private)!.Invoke(results, [new MouseEventArgs(MouseButtons.Left, 1, cell.Left + 4, cell.Top + cell.Height / 2, 0)]);
+                Check(Field<string?>(embedded, "_path") == Path.Combine(folder, word), "Search click deferred selection");
+                await Until(() => Field<bool>(embedded, "_ready"), "Embedded Word preview failed");
+                CheckCompactHeader(embedded);
+                results.Items.Cast<ListViewItem>().Single(row => row.Text == excel).Selected = true;
+                await Until(() => Field<OfficePreviewDocument?>(embedded, "_document")?.Kind == "xlsx" && Field<bool>(embedded, "_ready"), "Search keyboard selection failed");
+                Check(displayed.Skip(count).SequenceEqual(new[] { Path.Combine(folder, word), Path.Combine(folder, excel) }), "Search previews did not record the displayed paths");
+                Field<CheckBox>(search, "_previewEnabled").Checked = false;
+                Check(Field<OfficePreviewDocument?>(embedded, "_document") == null, "Collapsing search preview retained a document");
+                Console.WriteLine("PASS directory and search input, shared browser, duplicate reads, image dimensions, latest document, PDF, ready-only preview history and hide cleanup.");
+            }
+            catch (Exception ex) { Console.Error.WriteLine(ex); result = 1; }
+            finally { Application.ExitThread(); }
+        };
+        async void WarmOnIdle(object? sender, EventArgs e)
+        {
+            Application.Idle -= WarmOnIdle;
+            try
+            {
+                // Model a returning tray user. Measure the hidden controller startup
+                // separately from the user's subsequent directory click.
+                Directory.CreateDirectory(Path.Combine(AppPaths.Root, "office-preview", "webview"));
+                var clock = Stopwatch.StartNew();
+                await (Task)typeof(FileSearchPopup).GetMethod("WarmPreviewIfPreviouslyUsedAsync", Private)!.Invoke(search, null)!;
+                Check(!search.Visible && Field<WebView2>(embedded, "_web").CoreWebView2 != null, "Hidden tray warmup did not initialize the preview");
+                Console.WriteLine($"PERF idle WebView2 startup {clock.ElapsedMilliseconds} ms");
+                var area = Screen.PrimaryScreen!.WorkingArea;
+                type.GetMethod("ShowFolder")!.Invoke(browser, [folder, "预览", new Rectangle(area.Left + 10, area.Top + 24, 140, 60)]);
+            }
+            catch (Exception ex) { Console.Error.WriteLine(ex); result = 1; Application.ExitThread(); }
+        }
+        Application.Idle += WarmOnIdle;
+        Application.Run();
+        previewEvent.GetRemoveMethod(true)!.Invoke(null, [record]);
+        return result;
+    }
+
     [STAThread]
     static int Main(string[] args)
     {
@@ -107,6 +284,7 @@ static class PreviewChecks
         Application.EnableVisualStyles();
         using var config = new ConfigManager();
         config.Config.FileDialogNavigationEnabled = false;
+        if (args.Contains("--measure-latency")) return MeasureLatency(root, config);
         using var popup = new FileSearchPopup(config, new ProcessLauncher(config)) { TopMost = false, ShowInTaskbar = true };
         var pane = Field<OfficePreviewPane>(popup, "_preview");
         var list = Field<ListView>(popup, "_results");
@@ -321,6 +499,7 @@ static class PreviewChecks
                 await using (var image = File.Create(Path.Combine(root, "pdf-preview.png")))
                     await web.CoreWebView2.CapturePreviewAsync(CoreWebView2CapturePreviewImageFormat.Png, image);
                 Console.WriteLine("PASS PDF navigation; inspect pdf-preview.png and perform native Ctrl+C in interactive mode.");
+                await CheckStandalone(root, docx, popup);
                 if (interactive)
                 {
                     popup.Text = "Quickstart · Office 预览验收";
@@ -333,7 +512,8 @@ static class PreviewChecks
                 Console.WriteLine("MESSAGE: " + Field<Label>(pane, "_message").Text + " / " + Field<Label>(pane, "_hint").Text);
                 var web = Field<WebView2>(pane, "_web");
                 if (web?.CoreWebView2 != null) Console.WriteLine("PAGE: " + await Js(web, "JSON.stringify({url:location.href,body:document.body?.innerText})"));
-                Console.WriteLine("ASSETS: " + string.Join(",", Field<Dictionary<string, byte[]>>(pane, "_assets").Keys));
+                Console.WriteLine("Viewer resource names: " + string.Join(", ", typeof(OfficePreviewPane).Assembly.GetManifestResourceNames()
+                    .Where(name => name.StartsWith("OfficePreview/", StringComparison.Ordinal))));
             }
             finally { if (!interactive || failure != 0) { popup.Dispose(); Application.ExitThread(); } }
         };
